@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+yarn.lock
+
+# Build outputs
+dist/
+*.log
+
+# Configuration
+config.json
+!config.example.json
+
+# Local data caches
+generated/
+public/books/
+public/data/
+sourceRar/*
+!sourceRar/PLACE_YOUR_RAR_BOOKS_HERE
+
+# OS files
+.DS_Store
+Thumbs.db

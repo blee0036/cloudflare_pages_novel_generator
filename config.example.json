@@ -1,0 +1,8 @@
+{
+  "siteName": "Cloudflare 边缘小说库",
+  "shortName": "CF",
+  "tagline": "纯静态 Cloudflare Pages 小说阅读器",
+  "description": "一个部署在 Cloudflare Pages 上的纯静态小说阅读站点",
+  "keywords": ["小说", "阅读", "Cloudflare Pages"],
+  "favicon": "/favicon.svg"
+}
