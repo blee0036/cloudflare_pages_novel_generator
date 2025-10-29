@@ -66,6 +66,24 @@ interface ParsedChapter {
   content: string;
 }
 
+const BASE_CHINESE_NUMERAL_CHARS = "〇零一二三四五六七八九十百千两";
+const EXTENDED_CHINESE_NUMERAL_CHARS = `${BASE_CHINESE_NUMERAL_CHARS}萬万亿億兆壹贰叁肆伍陆柒捌玖拾佰仟廿卅卌○`;
+const ORDINAL_FRAGMENT_PATTERN = `(?:[IVXLCDM]+|[ivxlcdm]+|[Ⅰ-Ⅻ]+|[ⅰ-ⅻ]+|\\d+|[${EXTENDED_CHINESE_NUMERAL_CHARS}]+)`;
+const PRIMARY_CHAPTER_MARKERS = ["章", "节", "回", "集", "篇", "幕", "话", "段", "折", "品"];
+const UPPER_MARKER_CANDIDATES = ["卷", "部", "册", "季"];
+const LATIN_CHAPTER_KEYWORDS = "chapter|chap\\.?|ch\\.?|episode|ep\\.?|act|scene|story";
+const ALL_MARKER_CANDIDATES = [...UPPER_MARKER_CANDIDATES, ...PRIMARY_CHAPTER_MARKERS];
+const ALL_HEADING_MARKERS = ALL_MARKER_CANDIDATES.join("|");
+const SENTENCE_PUNCTUATION_REGEX = /[，。,。？！、；]/g;
+const HEADING_LEADING_DELIMITER_REGEX = /[:：\-—·,，.。!！?？()（）【】《》「」『』"“”‘’\s]/;
+const ALLOWED_SUFFIX_PREFIXES = new Set(["上", "下", "中", "末", "终", "序", "外", "前", "后", "番", "篇", "卷", "章"]);
+const HEADING_CONFIDENCE_THRESHOLD = 1.8;
+const ASCII_ALNUM_REGEX = /[A-Za-z0-9]/;
+const CJK_LETTER_REGEX = /\p{Unified_Ideograph}/u;
+const HEADING_POST_MARKER_PATTERN = /^(?<gap>[\s　]+)(?<lead>[\p{P}\p{S}"“”'‘’《》【】()（）]*)/u;
+const CHINESE_NUMERAL_ONLY_REGEX = new RegExp(`^[${EXTENDED_CHINESE_NUMERAL_CHARS}]+$`);
+const ARABIC_OR_ROMAN_REGEX = /[0-9０-９IVXLCDMⅰ-ⅻⅰ-ⅻ]/i;
+
 function normaliseWhitespace(input: string): string {
   return input.replace(/\r\n?/g, "\n");
 }
@@ -106,77 +124,436 @@ function detectEncoding(buffer: Buffer): string {
   return "utf-8";
 }
 
+interface HeadingPatternMatch {
+  lineIndex: number;
+  marker: string;
+  hasOrdinalPrefix: boolean;
+  numeral: string;
+}
+
+interface HeadingHierarchy {
+  upperMarkers: Set<string>;
+  primaryMarkers: Set<string>;
+}
+
+function scanHeadingPatterns(lines: string[]): HeadingHierarchy {
+  const markerPattern = new RegExp(
+    `^(?:【[^】]+】\\s*)?(?:第\\s*)?(?<num>${ORDINAL_FRAGMENT_PATTERN})\\s*(?<marker>${ALL_HEADING_MARKERS})`,
+    "iu",
+  );
+  const markerCounts = new Map<string, number>();
+  const markerPositions = new Map<string, number[]>();
+  const matches: HeadingPatternMatch[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line || line.length > 100) continue;
+    const match = line.match(markerPattern);
+    if (!match || !match.groups) continue;
+    const marker = match.groups.marker.trim();
+    const numeral = match.groups.num?.trim() ?? "";
+    const hasOrdinalPrefix = /第/.test(match[0]);
+    markerCounts.set(marker, (markerCounts.get(marker) ?? 0) + 1);
+    const positions = markerPositions.get(marker) ?? [];
+    positions.push(i);
+    markerPositions.set(marker, positions);
+    matches.push({ lineIndex: i, marker, hasOrdinalPrefix, numeral });
+  }
+
+  const upperMarkers = new Set<string>();
+  const primaryMarkers = new Set<string>();
+
+  for (const marker of UPPER_MARKER_CANDIDATES) {
+    const count = markerCounts.get(marker) ?? 0;
+    if (count > 0) {
+      upperMarkers.add(marker);
+    }
+  }
+
+  for (const marker of PRIMARY_CHAPTER_MARKERS) {
+    const count = markerCounts.get(marker) ?? 0;
+    if (count > 0) {
+      primaryMarkers.add(marker);
+    }
+  }
+
+  const ambiguousMarkers = new Set<string>();
+  for (const marker of ALL_MARKER_CANDIDATES) {
+    if (upperMarkers.has(marker) && primaryMarkers.has(marker)) {
+      ambiguousMarkers.add(marker);
+    }
+  }
+
+  for (const marker of ambiguousMarkers) {
+    const count = markerCounts.get(marker) ?? 0;
+    const positions = markerPositions.get(marker) ?? [];
+    const isRareInEarly = positions.length > 0 && positions[0] > lines.length * 0.15;
+    const isFrequent = count > Math.max(10, lines.length / 200);
+
+    if (isFrequent && !isRareInEarly) {
+      upperMarkers.delete(marker);
+    } else {
+      primaryMarkers.delete(marker);
+    }
+  }
+
+  for (const upperMarker of upperMarkers) {
+    const upperCount = markerCounts.get(upperMarker) ?? 0;
+    let appearsBefore = 0;
+    for (const primaryMarker of primaryMarkers) {
+      const primaryPositions = markerPositions.get(primaryMarker) ?? [];
+      const upperPositions = markerPositions.get(upperMarker) ?? [];
+      for (const upperPos of upperPositions) {
+        const nextPrimary = primaryPositions.find((p) => p > upperPos);
+        if (nextPrimary !== undefined) {
+          appearsBefore += 1;
+        }
+      }
+    }
+    const beforeRatio = upperCount > 0 ? appearsBefore / upperCount : 0;
+    if (beforeRatio < 0.3 && upperCount > 50) {
+      upperMarkers.delete(upperMarker);
+      primaryMarkers.add(upperMarker);
+    }
+  }
+
+  return { upperMarkers, primaryMarkers };
+}
+
 function parseChapters(rawText: string): ParsedChapter[] {
   const text = normaliseWhitespace(rawText);
-  const lines = text.split("\n");
+  const originalLines = text.split("\n");
+  
+  const hierarchy = scanHeadingPatterns(originalLines);
+  
+  const primaryMarkerPattern = Array.from(hierarchy.primaryMarkers).join("|");
+  const allMarkerPattern = [...hierarchy.upperMarkers, ...hierarchy.primaryMarkers].join("|");
+  
+  const HEADING_SPLIT_REGEX = new RegExp(
+    `(?:【[^】\r\n]+】\\s*)?第\\s*(?:${ORDINAL_FRAGMENT_PATTERN})\\s*(?:${allMarkerPattern || ALL_HEADING_MARKERS})`,
+    "giu",
+  );
+
+  const splitCompositeLine = (line: string): string[] => {
+    if (!line) return [line];
+    const headingStarts: number[] = [];
+    HEADING_SPLIT_REGEX.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = HEADING_SPLIT_REGEX.exec(line)) !== null) {
+      headingStarts.push(match.index ?? 0);
+    }
+
+    if (headingStarts.length === 0) {
+      return [line];
+    }
+
+    const segments: string[] = [];
+    let lastIndex = 0;
+    for (let i = 0; i < headingStarts.length; i += 1) {
+      const start = headingStarts[i];
+      if (start > lastIndex) {
+        const prefixSegment = line.slice(lastIndex, start).trim();
+        if (prefixSegment) segments.push(prefixSegment);
+      }
+      const end = i + 1 < headingStarts.length ? headingStarts[i + 1] : line.length;
+      const headingSegment = line.slice(start, end).trim();
+      if (headingSegment) segments.push(headingSegment);
+      lastIndex = end;
+    }
+    if (lastIndex < line.length) {
+      const tailSegment = line.slice(lastIndex).trim();
+      if (tailSegment) segments.push(tailSegment);
+    }
+    return segments.length > 0 ? segments : [""];
+  };
+
+  const lines: string[] = [];
+  const compositeFlags: boolean[] = [];
+  for (const line of originalLines) {
+    const segments = splitCompositeLine(line);
+    const isComposite = segments.length > 1;
+    if (segments.length === 0) {
+      lines.push("");
+      compositeFlags.push(isComposite);
+      continue;
+    }
+    for (const segment of segments) {
+      lines.push(segment);
+      compositeFlags.push(isComposite);
+    }
+  }
   const chapterIndices: Array<{ index: number; title: string }> = [];
 
-  const chapterRegex = /^第\s*([〇零一二三四五六七八九十百千0-9两]+)\s*(章|节|回|集|篇|幕)\s*(.*)$/;
-  const specialTitles = /^(楔子|序章|序言|引子|终章|尾声|后记)(.*)$/;
-  let currentHeading: string | null = null;
+  const chapterPatterns: Array<{ regex: RegExp; baseConfidence: number }> = primaryMarkerPattern
+    ? [
+        {
+          regex: new RegExp(
+            `^(?:【[^】]+】\\s*)?第\\s*(?<num>${ORDINAL_FRAGMENT_PATTERN})\\s*(?<kind>${primaryMarkerPattern})(?<sep>\\s*[:：-]?\\s*)(?<rest>.*)$`,
+            "iu",
+          ),
+          baseConfidence: 2.4,
+        },
+        {
+          regex: new RegExp(
+            `^(?:【[^】]+】\\s*)?(?<num>${ORDINAL_FRAGMENT_PATTERN})\\s*(?<kind>${primaryMarkerPattern})(?<sep>\\s*[:：-]?\\s*)(?<rest>.*)$`,
+            "iu",
+          ),
+          baseConfidence: 2.25,
+        },
+        {
+          regex: new RegExp(
+            `^(?:【[^】]+】\\s*)?(?<kind>${primaryMarkerPattern})\\s*(?<num>${ORDINAL_FRAGMENT_PATTERN})(?<sep>\\s*[:：-]?\\s*)(?<rest>.*)$`,
+            "iu",
+          ),
+          baseConfidence: 2.1,
+        },
+        {
+          regex: new RegExp(
+            `^(?:【[^】]+】\\s*)?(?<keyword>${LATIN_CHAPTER_KEYWORDS})\\s*(?:\\.|:)?\\s*(?:No\\.?|№|#)?\\s*(?<num>${ORDINAL_FRAGMENT_PATTERN})(?<sep>\\s*[:：-]?\\s*)(?<rest>.*)$`,
+            "iu",
+          ),
+          baseConfidence: 1.9,
+        },
+      ]
+    : [];
+  const specialTitles = /^(楔子|序章|序言|引子|终章|尾声|尾记|后记|番外|外传)(.*)$/;
+  type UpperHeadingInfo = { title: string; marker: string };
+  let currentHeading: UpperHeadingInfo | null = null;
 
-  const extractUpperHeading = (line: string): string | null => {
-    const patterns: Array<(line: string) => string | null> = [
+  const computeHeadingConfidence = (
+    sourceLine: string,
+    baseConfidence: number,
+    markerRest?: string,
+    separator?: string,
+  ): number => {
+    const trimmedLine = sourceLine.trim();
+    let score = baseConfidence;
+    const length = trimmedLine.length;
+
+    if (length <= 18) score += 1.2;
+    else if (length <= 34) score += 0.8;
+    else if (length <= 48) score += 0.2;
+    else score -= 1.5;
+
+    // 计算标点密度，但排除末尾的感叹号和问号（标题常用）
+    const lineWithoutTrailing = trimmedLine.replace(/[！!？?]+$/, "");
+    const punctuationMatches = lineWithoutTrailing.match(SENTENCE_PUNCTUATION_REGEX);
+    const punctuationCount = punctuationMatches ? punctuationMatches.length : 0;
+    if (punctuationCount === 0) {
+      score += 0.8;
+    } else if (punctuationCount === 1 && trimmedLine.includes("：")) {
+      score += 0.1;
+    } else {
+      score -= punctuationCount * 1.1;
+    }
+
+    const combinedRest = `${separator ?? ""}${markerRest ?? ""}`;
+
+    if (combinedRest) {
+      const match = HEADING_POST_MARKER_PATTERN.exec(combinedRest);
+      if (match?.groups?.gap) {
+        const gapLength = match.groups.gap.length;
+        score += gapLength >= 2 ? 1.0 : 0.8;
+        if (match.groups.lead) score += 0.2;
+      } else if (/^[\s　]/.test(combinedRest)) {
+        score += 0.6;
+      }
+
+      const leadingChar = combinedRest.trimStart().charAt(0);
+      if (leadingChar) {
+        if (HEADING_LEADING_DELIMITER_REGEX.test(leadingChar)) {
+          score += 0.25;
+        } else if (ALLOWED_SUFFIX_PREFIXES.has(leadingChar)) {
+          score += 0.45;
+        } else if (ASCII_ALNUM_REGEX.test(leadingChar)) {
+          score += 0.25;
+        } else if (CJK_LETTER_REGEX.test(leadingChar)) {
+          score += 0.25;
+        } else {
+          score -= 0.6;
+        }
+      }
+
+      const trimmedRest = combinedRest.trim();
+      const restLength = trimmedRest.length;
+      if (restLength > 60) {
+        score -= 1.4;
+      } else if (restLength > 44) {
+        score -= 0.9;
+      } else if (restLength > 32) {
+        score -= 0.4;
+      }
+
+      // 检查标题内部标点，排除末尾感叹号/问号
+      const restWithoutTrailing = trimmedRest.replace(/[！!？?]+$/, "");
+      const innerPunctuationMatches = restWithoutTrailing.match(SENTENCE_PUNCTUATION_REGEX);
+      const innerPunctuationCount = innerPunctuationMatches ? innerPunctuationMatches.length : 0;
+      if (innerPunctuationCount >= 2 && restLength > 24) {
+        score -= innerPunctuationCount * 0.45;
+      }
+    }
+
+    return score;
+  };
+
+  const isHeadingAccepted = (confidence: number): boolean => confidence >= HEADING_CONFIDENCE_THRESHOLD;
+
+  const upperMarkerPattern = Array.from(hierarchy.upperMarkers).join("|");
+  const hasUpperMarkers = upperMarkerPattern.length > 0;
+
+  const upperHeadingRegex1 = hasUpperMarkers
+    ? new RegExp(
+        `^第\\s*(?<num>${ORDINAL_FRAGMENT_PATTERN})\\s*(?<kind>${upperMarkerPattern})\\s*[:：-]?\\s*(?<rest>.*)$`,
+        "iu",
+      )
+    : null;
+  const upperHeadingRegex2 = hasUpperMarkers
+    ? new RegExp(`^(?<kind>${upperMarkerPattern})\\s*(?<num>${ORDINAL_FRAGMENT_PATTERN})\\s*[:：-]?\\s*(?<rest>.*)$`, "iu")
+    : null;
+  const upperHeadingRegex3 = new RegExp(
+    `^(?<keyword>Book|Part|Section|Volume|Vol\\.?)\\s*(?<num>${ORDINAL_FRAGMENT_PATTERN})\\s*[:：-]?\\s*(?<rest>.*)$`,
+    "iu",
+  );
+
+  const extractUpperHeading = (line: string): UpperHeadingInfo | null => {
+    const patterns: Array<(source: string) => UpperHeadingInfo | null> = [];
+    
+    if (upperHeadingRegex1) {
+      patterns.push((source) => {
+        const match = source.match(upperHeadingRegex1);
+        if (!match || !match.groups) return null;
+        const ordinal = match.groups.num ?? "";
+        const kind = match.groups.kind ?? "";
+        const suffix = match.groups.rest?.trim();
+        const baseTitle = `第${ordinal}${kind}`.trim();
+        const title = suffix ? `${baseTitle} ${suffix}` : baseTitle;
+        return { title: title.trim(), marker: kind.trim() };
+      });
+    }
+    
+    if (upperHeadingRegex2) {
+      patterns.push((source) => {
+        const match = source.match(upperHeadingRegex2);
+        if (!match || !match.groups) return null;
+        const kind = match.groups.kind ?? "";
+        const ordinal = match.groups.num ?? "";
+        const suffix = match.groups.rest?.trim();
+        const baseTitle = `${kind}${ordinal}`.trim();
+        const title = suffix ? `${baseTitle} ${suffix}` : baseTitle;
+        return { title: title.trim(), marker: kind.trim() };
+      });
+    }
+    
+    patterns.push(
       (source) => {
-        const match = source.match(
-          /^第\s*([〇零一二三四五六七八九十百千0-9两]+)\s*(卷|部|篇|册|集|季|章)\s*[:：]?\s*(.*)$/i,
-        );
-        if (!match) return null;
-        const [, ordinal, kind, rest] = match;
-        const suffix = rest?.trim();
-        return suffix ? `第${ordinal}${kind} ${suffix}` : `第${ordinal}${kind}`;
-      },
-      (source) => {
-        const match = source.match(
-          /^(卷|部|篇|册|集|季)\s*([〇零一二三四五六七八九十百千0-9两]+)\s*[:：]?\s*(.*)$/i,
-        );
-        if (!match) return null;
-        const [, kind, ordinal, rest] = match;
-        const suffix = rest?.trim();
-        return suffix ? `${kind}${ordinal} ${suffix}` : `${kind}${ordinal}`;
-      },
-      (source) => {
-        const match = source.match(/^(Book|Part|Section)\s+(\d+)\s*[:：]?\s*(.*)$/i);
-        if (!match) return null;
-        const [, keyword, number, rest] = match;
-        const suffix = rest?.trim();
-        return suffix ? `${keyword} ${number} ${suffix}` : `${keyword} ${number}`;
-      },
+        const match = source.match(upperHeadingRegex3);
+        if (!match || !match.groups) return null;
+        const keyword = match.groups.keyword ?? "";
+        const number = match.groups.num ?? "";
+        const suffix = match.groups.rest?.trim();
+        const baseTitle = `${keyword} ${number}`.trim();
+        const title = suffix ? `${baseTitle} ${suffix}` : baseTitle;
+        return { title: title.trim(), marker: keyword.trim().toLowerCase() };
+      });
+    
+    patterns.push(
       (source) => {
         const match = source.match(/^【(.+?)】$/);
-        return match ? match[0] : null;
-      },
-    ];
+        if (!match) return null;
+        return { title: match[0], marker: "bracket" };
+      });
 
-    for (const pattern of patterns) {
-      const heading = pattern(line);
+
+    for (const extractor of patterns) {
+      const heading = extractor(line);
       if (heading) {
-        return heading.trim();
+        return heading;
       }
     }
     return null;
   };
 
+  const matchChapterHeading = (
+    line: string,
+    fromComposite: boolean,
+  ): { rest: string; separator: string; baseConfidence: number; marker: string } | null => {
+    for (const { regex, baseConfidence } of chapterPatterns) {
+      const result = regex.exec(line);
+      if (!result) continue;
+      const rest = result.groups?.rest ?? "";
+      const separator = result.groups?.sep ?? "";
+      const marker = (result.groups?.kind ?? result.groups?.keyword ?? "").trim();
+      const num = result.groups?.num ?? "";
+
+      const hasDigitOrRoman = ARABIC_OR_ROMAN_REGEX.test(num);
+      const isChineseNumeralOnly = num ? CHINESE_NUMERAL_ONLY_REGEX.test(num) : false;
+      const matchedSegment = result[0] ?? line;
+      const kindIndexInMatch = marker ? matchedSegment.indexOf(marker) : -1;
+      const matchedPrefix = kindIndexInMatch >= 0 ? matchedSegment.slice(0, kindIndexInMatch) : matchedSegment;
+      const hasExplicitOrdinalPrefix = /第/.test(matchedPrefix);
+
+      if (!hasExplicitOrdinalPrefix && !hasDigitOrRoman && isChineseNumeralOnly) {
+        continue;
+      }
+
+      if (!separator.length && rest.trim()) {
+        const nextChar = rest.trimStart().charAt(0);
+        if (/^[\w\u4e00-\u9fff]$/.test(nextChar) && !hasExplicitOrdinalPrefix && !hasDigitOrRoman) {
+          continue;
+        }
+      }
+
+      if (fromComposite && !rest.trim()) {
+        return null;
+      }
+
+      return { rest, separator, baseConfidence, marker };
+    }
+    return null;
+  };
+
+  const shouldAttachUpperHeading = (marker: string): boolean => {
+    if (!marker) return false;
+    const lowered = marker.toLowerCase();
+    if (hierarchy.primaryMarkers.has(marker) || hierarchy.primaryMarkers.has(lowered)) {
+      return false;
+    }
+    return hierarchy.upperMarkers.has(marker) || hierarchy.upperMarkers.has(lowered);
+  };
+
   for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i].trim();
+    const rawLine = lines[i];
+    const line = rawLine.trim();
     if (!line) continue;
+    const chapterCandidate = matchChapterHeading(line, compositeFlags[i]);
     const upperHeading = extractUpperHeading(line);
-    if (upperHeading && !chapterRegex.test(line)) {
-      currentHeading = upperHeading;
+    if (upperHeading && !chapterCandidate) {
+      const confidence = computeHeadingConfidence(line, 1.6);
+      if (isHeadingAccepted(confidence)) {
+        currentHeading = upperHeading;
+      }
       continue;
     }
-    const match = line.match(chapterRegex);
-    if (match) {
-      const [, , , rest] = match;
+    if (chapterCandidate) {
+      const { rest, separator, baseConfidence, marker } = chapterCandidate;
+      const confidence = computeHeadingConfidence(line, baseConfidence, rest, separator);
+      if (!isHeadingAccepted(confidence)) {
+        continue;
+      }
       const titleSuffix = rest?.trim() ?? "";
       const baseTitle = titleSuffix ? `${line}` : line;
-      const title = currentHeading ? `${currentHeading} ${baseTitle}` : baseTitle;
+      const headingPrefix = currentHeading && shouldAttachUpperHeading(currentHeading.marker) ? `${currentHeading.title} ` : "";
+      const title = `${headingPrefix}${baseTitle}`.trim();
       chapterIndices.push({ index: i, title });
       continue;
     }
     if (specialTitles.test(line)) {
-      const title = currentHeading ? `${currentHeading} ${line}` : line;
-      chapterIndices.push({ index: i, title });
+      const confidence = computeHeadingConfidence(line, 2.0);
+      if (isHeadingAccepted(confidence)) {
+        const headingPrefix = currentHeading && shouldAttachUpperHeading(currentHeading.marker) ? `${currentHeading.title} ` : "";
+        const title = `${headingPrefix}${line}`.trim();
+        chapterIndices.push({ index: i, title });
+      }
     }
   }
 
@@ -198,10 +575,11 @@ function parseChapters(rawText: string): ParsedChapter[] {
   for (let i = 0; i < chapterIndices.length; i += 1) {
     const { index, title } = chapterIndices[i];
     const endIndex = i + 1 < chapterIndices.length ? chapterIndices[i + 1].index : lines.length;
+    // 保留开头的缩进，只移除末尾的空白行
     const content = lines
       .slice(index + 1, endIndex)
       .join("\n")
-      .trim();
+      .replace(/\s+$/, "");
     chapters.push({ title, content });
   }
 
@@ -357,7 +735,8 @@ async function processBook(
     const chapterOrder = idx + 1;
     const chapterId = `${meta.bookId}-${String(chapterOrder).padStart(5, "0")}`;
     const chapterHeader = `${chapter.title.trim()}\n`;
-    const chapterBody = chapter.content ? `${chapter.content.trim()}\n\n` : "\n";
+    // 保留内容开头的空白字符（缩进），只移除结尾空白
+    const chapterBody = chapter.content ? `${chapter.content.replace(/\s+$/, "")}\n\n` : "\n";
     const chapterText = `${chapterHeader}${chapterBody}`;
     const chapterBuffer = Buffer.from(chapterText, "utf-8");
     const chapterLength = chapterBuffer.byteLength;

@@ -1,8 +1,10 @@
-import { ChangeEvent, useCallback, useEffect } from "react";
+import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useChapter, useChapterContent } from "../api/hooks";
 import { saveReadingProgress } from "../utils/readingProgress";
 import { siteConfig } from "../config/siteConfig";
+import { ReaderSettings as ReaderSettingsPanel } from "../components/ReaderSettings";
+import { loadSettings, saveSettings, applySettings, type ReaderSettings } from "../utils/readerSettings";
 
 const ReaderPage: React.FC = () => {
   const { chapterId } = useParams();
@@ -14,6 +16,10 @@ const ReaderPage: React.FC = () => {
     isLoading: isContentLoading,
     isFetching: isContentFetching,
   } = useChapterContent(data?.chapter);
+  
+  const [settings, setSettings] = useState<ReaderSettings>(loadSettings);
+  const [showSettings, setShowSettings] = useState(false);
+  const contentRef = useRef<HTMLElement>(null);
 
   const goToChapter = useCallback(
     (targetId: string | null | undefined) => {
@@ -73,6 +79,17 @@ const ReaderPage: React.FC = () => {
       updatedAt: Date.now(),
     });
   }, [data]);
+
+  useEffect(() => {
+    if (contentRef.current) {
+      applySettings(settings, contentRef.current);
+    }
+  }, [settings, content]);
+
+  const handleSettingsChange = useCallback((newSettings: ReaderSettings) => {
+    setSettings(newSettings);
+    saveSettings(newSettings);
+  }, []);
 
   if (error || contentError) {
     return (
@@ -137,6 +154,14 @@ const ReaderPage: React.FC = () => {
               <button type="button" onClick={() => goToChapter(nextChapterId)} disabled={disabledNext}>
                 下一章
               </button>
+              <button
+                type="button"
+                onClick={() => setShowSettings(true)}
+                className="reader-settings-toolbar-button"
+                title="阅读设置"
+              >
+                ⚙️
+              </button>
             </div>
           </div>
         </div>
@@ -148,7 +173,7 @@ const ReaderPage: React.FC = () => {
           </span>
         </div>
       </div>
-      <article className="chapter-content" aria-live="polite">
+      <article className="chapter-content" aria-live="polite" ref={contentRef}>
         <div className="chapter-meta">第 {displayIndex + 1} 章 / 共 {totalChapters} 章</div>
         {isContentLoading ? <div className="chapter-loading">加载中...</div> : content ?? ""}
       </article>
@@ -160,24 +185,13 @@ const ReaderPage: React.FC = () => {
           下一章
         </button>
       </div>
-      {!disabledPrev ? (
-        <div
-          className="reader-overlay reader-overlay-left"
-          role="button"
-          tabIndex={-1}
-          onClick={() => goToChapter(prevChapterId)}
-          aria-hidden
+      {showSettings && (
+        <ReaderSettingsPanel
+          settings={settings}
+          onSettingsChange={handleSettingsChange}
+          onClose={() => setShowSettings(false)}
         />
-      ) : null}
-      {!disabledNext ? (
-        <div
-          className="reader-overlay reader-overlay-right"
-          role="button"
-          tabIndex={-1}
-          onClick={() => goToChapter(nextChapterId)}
-          aria-hidden
-        />
-      ) : null}
+      )}
     </section>
   );
 };

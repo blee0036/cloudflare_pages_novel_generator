@@ -143,7 +143,8 @@ function stripLeadingTitle(title: string, content: string): string {
   const withoutBom = content.replace(/^\uFEFF/, "");
   const [firstLine, ...rest] = withoutBom.split(/\r?\n/);
   if (firstLine?.trim() === title.trim()) {
-    return rest.join("\n").trimStart();
+    // 保留内容开头的空白字符（缩进）
+    return rest.join("\n");
   }
   return withoutBom;
 }
