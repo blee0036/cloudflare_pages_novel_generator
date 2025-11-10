@@ -49,8 +49,9 @@ interface BookManifest {
   hash: string;
   title: string;
   author: string;
+  totalChapters: number;
   assets: string[];
-  chapters: ChapterManifest[];
+  // 注意：不再存储 chapters 列表，章节信息在单独的 ${bookId}_chapters.json 文件中
 }
 
 interface ManifestJSON {
@@ -831,16 +832,17 @@ async function processBook(
   const chaptersPath = path.join(DATA_DIR, `${meta.bookId}_chapters.json`);
   await fs.writeJson(chaptersPath, chaptersPayload, { spaces: 2 });
 
-  // 显式清理大对象，帮助GC回收内存（注意：不清理manifestChapters，因为返回值中需要）
+  // 显式清理大对象，帮助GC回收内存
   lines.length = 0;
   chapterIndices.length = 0;
+  manifestChapters.length = 0; // 不再需要返回，可以清理
   
   return {
     hash: await computeFileHash(rarPath),
     title: meta.title,
     author: meta.author,
+    totalChapters: compactChapters.length,
     assets: assetPaths,
-    chapters: manifestChapters,
   };
 }
 
@@ -958,7 +960,7 @@ async function main(): Promise<void> {
       const processed = await processBook(rarPath, meta, manifest, existing);
       if (processed) {
         nextManifest.books[meta.bookId] = processed;
-        console.log(`${progress} 完成《${meta.title}》，共 ${processed.chapters.length} 章。`);
+        console.log(`${progress} 完成《${meta.title}》，共 ${processed.totalChapters} 章。`);
         processedCount += 1;
         processedFiles.push(file);
       } else {
@@ -1003,7 +1005,7 @@ async function main(): Promise<void> {
     id: bookId,
     title: book.title,
     author: book.author,
-    totalChapters: book.chapters.length,
+    totalChapters: book.totalChapters,
   }));
   const bookRows = summaries.map((summary) => [summary.id, summary.title, summary.author, summary.totalChapters]);
   await fs.writeJson(
