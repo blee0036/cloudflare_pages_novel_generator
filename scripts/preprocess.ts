@@ -13,6 +13,27 @@ const MANIFEST_PATH = path.resolve("generated", "manifest.json");
 const BOOKS_JSON_PATH = path.join(DATA_DIR, "books.json");
 const MAX_CHUNK_SIZE = 25 * 1024 * 1024 - 1024; // Slightly below 25MiB safety margin
 
+function checkMemoryUsage(bookTitle?: string): void {
+  const used = process.memoryUsage();
+  const heapUsedMB = Math.round(used.heapUsed / 1024 / 1024);
+  const heapTotalMB = Math.round(used.heapTotal / 1024 / 1024);
+  const rssMB = Math.round(used.rss / 1024 / 1024);
+  
+  const prefix = bookTitle ? `[${bookTitle}] ` : "";
+  console.log(`${prefix}内存使用: 堆内存 ${heapUsedMB}MB / ${heapTotalMB}MB, 总内存 ${rssMB}MB`);
+  
+  // 如果堆内存使用超过80%，发出警告
+  if (heapUsedMB / heapTotalMB > 0.8) {
+    console.warn(`⚠️  警告: 内存使用率过高 (${Math.round((heapUsedMB / heapTotalMB) * 100)}%)，尝试GC...`);
+    if (global.gc) {
+      global.gc();
+      const afterGC = process.memoryUsage();
+      const afterMB = Math.round(afterGC.heapUsed / 1024 / 1024);
+      console.log(`✓ GC完成，当前堆内存: ${afterMB}MB`);
+    }
+  }
+}
+
 interface ChapterManifest {
   chapterId: string;
   bookId: string;
@@ -634,12 +655,15 @@ async function decodeTxtFromRar(rarPath: string): Promise<string | null> {
       const encoding = detectEncoding(buffer);
       const decoded = iconv.decode(buffer, encoding).trim();
       if (decoded) {
+        await fs.remove(tempDir);
         return decoded;
       }
     }
     return null;
   } finally {
     await fs.remove(tempDir);
+    nameMap.clear();
+    usedNames.clear();
   }
 }
 
@@ -683,17 +707,18 @@ async function processBook(
   manifest: ManifestJSON,
   existing?: BookManifest,
 ): Promise<BookManifest | null> {
-  const text = await decodeTxtFromRar(rarPath);
+  let text = await decodeTxtFromRar(rarPath);
   if (!text) {
     console.warn(`未在 ${path.basename(rarPath)} 中找到可用的 .txt 正文`);
     return existing ?? null;
   }
 
-  const normalizedText = normaliseWhitespace(text);
-  const lines = normalizedText.split("\n");
+  text = normaliseWhitespace(text);
+  const lines = text.split("\n");
   
   const chapterIndices = parseChapterIndices(lines);
   if (chapterIndices.length === 0) {
+    lines.length = 0;
     console.warn(`${meta.title} 未检测到任何章节，跳过`);
     return existing ?? null;
   }
@@ -805,6 +830,10 @@ async function processBook(
   const chaptersPath = path.join(DATA_DIR, `${meta.bookId}_chapters.json`);
   await fs.writeJson(chaptersPath, chaptersPayload, { spaces: 2 });
 
+  // 显式清理大对象，帮助GC回收内存（注意：不清理manifestChapters，因为返回值中需要）
+  lines.length = 0;
+  chapterIndices.length = 0;
+  
   return {
     hash: await computeFileHash(rarPath),
     title: meta.title,
@@ -815,6 +844,9 @@ async function processBook(
 }
 
 async function main(): Promise<void> {
+  console.log("开始预处理...");
+  checkMemoryUsage();
+  
   await ensureDirectories();
   const manifest = await loadManifest();
   const nextManifest: ManifestJSON = { books: {} };
@@ -825,14 +857,25 @@ async function main(): Promise<void> {
 
   if (totalBooks === 0) {
     console.log("未在 sourceRar 目录中找到任何 .rar 文件。");
+    return;
   }
+  
+  console.log(`找到 ${totalBooks} 本书，开始处理...\n`);
 
   for (let index = 0; index < rarFiles.length; index += 1) {
     const file = rarFiles[index];
     const rarPath = path.join(SOURCE_DIR, file);
     const meta = parseBookMeta(file);
     const progress = `[${index + 1}/${totalBooks}]`;
-    console.log(`${progress} 正在处理《${meta.title}》 - ${meta.author}`);
+    
+    // 检查文件大小
+    const stats = await fs.stat(rarPath);
+    const fileSizeMB = Math.round(stats.size / 1024 / 1024);
+    console.log(`${progress} 正在处理《${meta.title}》 - ${meta.author} (${fileSizeMB}MB)`);
+    
+    if (fileSizeMB > 30) {
+      console.warn(`⚠️  注意: 这是一个大文件 (${fileSizeMB}MB)，处理可能需要较多内存和时间`);
+    }
 
     const fileHash = await computeFileHash(rarPath);
     const existing = manifest.books[meta.bookId];
@@ -852,6 +895,15 @@ async function main(): Promise<void> {
     } else {
       console.log(`${progress} 跳过《${meta.title}》，未能生成有效章节。`);
     }
+
+    // 每处理完一本书后强制垃圾回收，释放内存
+    if (global.gc) {
+      global.gc();
+    }
+    
+    // 显示内存使用情况
+    checkMemoryUsage();
+    console.log(""); // 空行分隔
   }
 
   // Handle books removed from source: clean up assets
@@ -881,7 +933,9 @@ async function main(): Promise<void> {
     { spaces: 2 },
   );
 
-  console.log(`处理完成，共 ${summaries.length} 本书。`);
+  console.log(`\n处理完成，共 ${summaries.length} 本书。`);
+  console.log("最终内存使用:");
+  checkMemoryUsage();
 }
 
 main().catch((error) => {
