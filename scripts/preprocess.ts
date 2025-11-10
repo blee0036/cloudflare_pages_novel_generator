@@ -874,9 +874,12 @@ async function main(): Promise<void> {
   }
   
   console.log(`找到 ${totalBooks} 本书`);
+  console.log(`正在扫描文件，判断哪些需要处理...`);
   
   // 筛选出需要处理的书籍
   const booksToProcess: Array<{ file: string; index: number }> = [];
+  const progressInterval = Math.max(1, Math.floor(rarFiles.length / 10)); // 每10%显示一次
+  
   for (let index = 0; index < rarFiles.length; index += 1) {
     const file = rarFiles[index];
     const rarPath = path.join(SOURCE_DIR, file);
@@ -889,7 +892,15 @@ async function main(): Promise<void> {
     if (!existing || existing.hash !== fileHash || needArtifacts) {
       booksToProcess.push({ file, index });
     }
+    
+    // 显示进度
+    if ((index + 1) % progressInterval === 0 || index === rarFiles.length - 1) {
+      const percent = Math.round(((index + 1) / rarFiles.length) * 100);
+      const needCount = booksToProcess.length;
+      process.stdout.write(`\r扫描进度: ${percent}% (${index + 1}/${totalBooks})，已发现 ${needCount} 本需要处理...`);
+    }
   }
+  console.log("\n"); // 换行
   
   const totalNeedProcess = booksToProcess.length;
   const alreadyProcessed = totalBooks - totalNeedProcess;
