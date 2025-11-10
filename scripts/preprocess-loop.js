@@ -1,9 +1,10 @@
 /**
- * 循环执行预处理，直到所有书籍处理完毕
+ * 循环调用预处理脚本，直到所有书籍处理完成
+ * 每批处理完退出进程，彻底释放内存
  */
 const { spawn } = require('child_process');
-const path = require('path');
 const fs = require('fs-extra');
+const path = require('path');
 
 // 解析命令行参数
 const args = process.argv.slice(2);
@@ -18,54 +19,40 @@ for (const arg of args) {
   }
 }
 
-const BATCH_SIZE = process.env.BATCH_SIZE || batchSize;
-const MEMORY_LIMIT = process.env.MEMORY_LIMIT || memoryLimit;
-
 console.log('========================================');
 console.log('自动批处理模式');
-console.log(`批次大小: ${BATCH_SIZE} 本/批`);
-console.log(`内存限制: ${MEMORY_LIMIT}MB`);
+console.log(`批次大小: ${batchSize} 本/批`);
+console.log(`内存限制: ${memoryLimit}MB`);
 console.log('========================================\n');
 
+const pendingListPath = path.resolve('generated', 'pending_books.json');
 let iteration = 0;
+const startTime = Date.now();
 
 function runPreprocess() {
   return new Promise((resolve, reject) => {
     iteration++;
-    console.log(`\n>>> 开始第 ${iteration} 批处理 <<<\n`);
+    console.log(`\n>>> 第 ${iteration} 批 <<<\n`);
     
     const isWindows = process.platform === 'win32';
     const command = 'node';
-    const args = [
+    const spawnArgs = [
       '--expose-gc',
-      `--max-old-space-size=${MEMORY_LIMIT}`,
+      `--max-old-space-size=${memoryLimit}`,
       '-r',
       'tsx/cjs',
       'scripts/preprocess.ts'
     ];
     
-    let output = '';
-    const child = spawn(command, args, {
+    const child = spawn(command, spawnArgs, {
+      stdio: 'inherit',
       shell: isWindows,
-      env: { ...process.env, BATCH_SIZE }
-    });
-    
-    // 捕获输出以检测是否还有待处理的书
-    child.stdout.on('data', (data) => {
-      const str = data.toString();
-      output += str;
-      process.stdout.write(str);
-    });
-    
-    child.stderr.on('data', (data) => {
-      process.stderr.write(data);
+      env: { ...process.env, BATCH_SIZE: batchSize }
     });
     
     child.on('close', (code) => {
       if (code === 0) {
-        // 检查输出中是否包含"还有X本书待处理"
-        const hasMoreBooks = /还有\s+\d+\s+本书待处理/.test(output);
-        resolve({ hasMoreBooks });
+        resolve();
       } else {
         reject(new Error(`预处理退出码: ${code}`));
       }
@@ -78,27 +65,27 @@ function runPreprocess() {
 }
 
 async function main() {
-  const startTime = Date.now();
-  
   try {
-    const maxIterations = 10000; // 防护：最多10000批（理论上足够了）
-    let hasMore = true;
+    const maxIterations = 1000; // 防护
     
-    while (hasMore && iteration < maxIterations) {
-      const result = await runPreprocess();
-      hasMore = result.hasMoreBooks;
+    while (iteration < maxIterations) {
+      await runPreprocess();
       
-      if (hasMore) {
-        console.log('\n⏳ 等待3秒后继续下一批...\n');
-        await new Promise(resolve => setTimeout(resolve, 3000));
-      } else {
-        console.log('\n✅ 所有书籍处理完成！\n');
+      // 检查是否还有待处理的书籍
+      const hasPending = await fs.pathExists(pendingListPath);
+      
+      if (!hasPending) {
+        console.log('\n✅ 所有书籍已处理完成！\n');
         break;
       }
+      
+      // 等待3秒后继续下一批
+      console.log('\n⏳ 等待3秒后继续下一批...\n');
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
     
     if (iteration >= maxIterations) {
-      console.warn('\n⚠️  已达到最大迭代次数限制，可能还有书籍未处理\n');
+      console.warn('\n⚠️  已达到最大迭代次数限制\n');
     }
     
     const elapsed = Math.round((Date.now() - startTime) / 1000);

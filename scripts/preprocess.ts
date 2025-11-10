@@ -874,50 +874,76 @@ async function main(): Promise<void> {
   }
   
   console.log(`找到 ${totalBooks} 本书`);
-  console.log(`正在扫描文件，判断哪些需要处理...`);
   
-  // 筛选出需要处理的书籍
-  const booksToProcess: Array<{ file: string; index: number }> = [];
-  const progressInterval = Math.max(1, Math.floor(rarFiles.length / 10)); // 每10%显示一次
+  // 待处理列表文件路径
+  const pendingListPath = path.join(path.dirname(MANIFEST_PATH), "pending_books.json");
   
-  for (let index = 0; index < rarFiles.length; index += 1) {
-    const file = rarFiles[index];
-    const rarPath = path.join(SOURCE_DIR, file);
-    const meta = parseBookMeta(file);
-    const fileHash = await computeFileHash(rarPath);
-    const existing = manifest.books[meta.bookId];
-    const dataPath = path.join(DATA_DIR, `${meta.bookId}_chapters.json`);
-    const needArtifacts = !(await fs.pathExists(dataPath));
+  let booksToProcess: string[] = [];
+  
+  // 检查是否存在待处理列表
+  if (await fs.pathExists(pendingListPath)) {
+    // 从文件读取待处理列表
+    booksToProcess = await fs.readJson(pendingListPath);
+    console.log(`从缓存读取待处理列表: ${booksToProcess.length} 本\n`);
+  } else {
+    // 首次运行，需要扫描
+    console.log(`正在扫描文件，判断哪些需要处理...`);
     
-    if (!existing || existing.hash !== fileHash || needArtifacts) {
-      booksToProcess.push({ file, index });
+    const progressInterval = Math.max(1, Math.floor(rarFiles.length / 10)); // 每10%显示一次
+    
+    for (let index = 0; index < rarFiles.length; index += 1) {
+      const file = rarFiles[index];
+      const rarPath = path.join(SOURCE_DIR, file);
+      const meta = parseBookMeta(file);
+      const fileHash = await computeFileHash(rarPath);
+      const existing = manifest.books[meta.bookId];
+      const dataPath = path.join(DATA_DIR, `${meta.bookId}_chapters.json`);
+      const needArtifacts = !(await fs.pathExists(dataPath));
+      
+      if (!existing || existing.hash !== fileHash || needArtifacts) {
+        booksToProcess.push(file);
+      }
+      
+      // 显示进度
+      if ((index + 1) % progressInterval === 0 || index === rarFiles.length - 1) {
+        const percent = Math.round(((index + 1) / rarFiles.length) * 100);
+        const needCount = booksToProcess.length;
+        process.stdout.write(`\r扫描进度: ${percent}% (${index + 1}/${totalBooks})，已发现 ${needCount} 本需要处理...`);
+      }
     }
+    console.log("\n"); // 换行
     
-    // 显示进度
-    if ((index + 1) % progressInterval === 0 || index === rarFiles.length - 1) {
-      const percent = Math.round(((index + 1) / rarFiles.length) * 100);
-      const needCount = booksToProcess.length;
-      process.stdout.write(`\r扫描进度: ${percent}% (${index + 1}/${totalBooks})，已发现 ${needCount} 本需要处理...`);
+    // 保存待处理列表
+    if (booksToProcess.length > 0) {
+      await fs.writeJson(pendingListPath, booksToProcess);
+      console.log(`已保存待处理列表到缓存文件\n`);
     }
   }
-  console.log("\n"); // 换行
   
   const totalNeedProcess = booksToProcess.length;
   const alreadyProcessed = totalBooks - totalNeedProcess;
   
   if (totalNeedProcess === 0) {
     console.log(`所有 ${totalBooks} 本书都已是最新状态，无需处理。\n`);
+    // 删除待处理列表文件
+    if (await fs.pathExists(pendingListPath)) {
+      await fs.remove(pendingListPath);
+    }
   } else {
-    console.log(`其中 ${alreadyProcessed} 本已是最新，${totalNeedProcess} 本需要处理`);
-    const batchCount = Math.min(BATCH_SIZE, totalNeedProcess);
-    console.log(`本次将处理: ${batchCount} 本\n`);
+    console.log(`待处理: ${totalNeedProcess} 本`);
+    const batchSize = Math.min(BATCH_SIZE, totalNeedProcess);
+    const totalBatches = Math.ceil(totalNeedProcess / BATCH_SIZE);
+    console.log(`本批将处理: ${batchSize} 本 (总计还需 ${totalBatches} 批)\n`);
     
+    // 只处理本批的书籍
     let processedCount = 0;
-    for (let i = 0; i < batchCount; i += 1) {
-      const { file, index } = booksToProcess[i];
+    const processedFiles: string[] = [];
+    
+    for (let i = 0; i < batchSize; i += 1) {
+      const file = booksToProcess[i];
       const rarPath = path.join(SOURCE_DIR, file);
       const meta = parseBookMeta(file);
-      const progress = `[${i + 1}/${batchCount}]`;
+      const progress = `[${i + 1}/${batchSize}]`;
       
       // 检查文件大小
       const stats = await fs.stat(rarPath);
@@ -934,8 +960,10 @@ async function main(): Promise<void> {
         nextManifest.books[meta.bookId] = processed;
         console.log(`${progress} 完成《${meta.title}》，共 ${processed.chapters.length} 章。`);
         processedCount += 1;
+        processedFiles.push(file);
       } else {
         console.log(`${progress} 跳过《${meta.title}》，未能生成有效章节。`);
+        processedFiles.push(file); // 即使失败也标记为已处理，避免重复尝试
       }
 
       // 每处理完一本书后强制垃圾回收，释放内存
@@ -948,10 +976,16 @@ async function main(): Promise<void> {
       console.log(""); // 空行分隔
     }
     
-    const remaining = totalNeedProcess - batchCount;
-    if (remaining > 0) {
-      console.log(`\n📌 注意: 还有 ${remaining} 本书待处理`);
-      console.log(`请再次运行 "npm run preprocess" 继续处理剩余书籍\n`);
+    // 更新待处理列表（移除已处理的）
+    const remaining = booksToProcess.slice(batchSize);
+    if (remaining.length > 0) {
+      await fs.writeJson(pendingListPath, remaining);
+      console.log(`\n📌 本批完成，还有 ${remaining.length} 本待处理`);
+      console.log(`外部循环将自动继续...\n`);
+    } else {
+      // 全部处理完成，删除列表文件
+      await fs.remove(pendingListPath);
+      console.log(`\n✅ 全部处理完成！\n`);
     }
   }
 
