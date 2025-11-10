@@ -12,6 +12,7 @@ const DATA_DIR = path.resolve("public", "data");
 const MANIFEST_PATH = path.resolve("generated", "manifest.json");
 const BOOKS_JSON_PATH = path.join(DATA_DIR, "books.json");
 const MAX_CHUNK_SIZE = 25 * 1024 * 1024 - 1024; // Slightly below 25MiB safety margin
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "50", 10); // 每批处理的书籍数量
 
 function checkMemoryUsage(bookTitle?: string): void {
   const used = process.memoryUsage();
@@ -845,6 +846,7 @@ async function processBook(
 
 async function main(): Promise<void> {
   console.log("开始预处理...");
+  console.log(`批处理设置: 每批最多处理 ${BATCH_SIZE} 本书`);
   checkMemoryUsage();
   
   await ensureDirectories();
@@ -860,50 +862,86 @@ async function main(): Promise<void> {
     return;
   }
   
-  console.log(`找到 ${totalBooks} 本书，开始处理...\n`);
-
+  // 首先将所有已存在且有效的书籍加入nextManifest
+  for (const [bookId, bookManifest] of Object.entries(manifest.books)) {
+    const rarFile = rarFiles.find((file) => {
+      const meta = parseBookMeta(file);
+      return meta.bookId === bookId;
+    });
+    if (rarFile) {
+      nextManifest.books[bookId] = bookManifest;
+    }
+  }
+  
+  console.log(`找到 ${totalBooks} 本书`);
+  
+  // 筛选出需要处理的书籍
+  const booksToProcess: Array<{ file: string; index: number }> = [];
   for (let index = 0; index < rarFiles.length; index += 1) {
     const file = rarFiles[index];
     const rarPath = path.join(SOURCE_DIR, file);
     const meta = parseBookMeta(file);
-    const progress = `[${index + 1}/${totalBooks}]`;
-    
-    // 检查文件大小
-    const stats = await fs.stat(rarPath);
-    const fileSizeMB = Math.round(stats.size / 1024 / 1024);
-    console.log(`${progress} 正在处理《${meta.title}》 - ${meta.author} (${fileSizeMB}MB)`);
-    
-    if (fileSizeMB > 30) {
-      console.warn(`⚠️  注意: 这是一个大文件 (${fileSizeMB}MB)，处理可能需要较多内存和时间`);
-    }
-
     const fileHash = await computeFileHash(rarPath);
     const existing = manifest.books[meta.bookId];
     const dataPath = path.join(DATA_DIR, `${meta.bookId}_chapters.json`);
     const needArtifacts = !(await fs.pathExists(dataPath));
-
-    if (existing && existing.hash === fileHash && !needArtifacts) {
-      nextManifest.books[meta.bookId] = existing;
-      console.log(`${progress} 跳过《${meta.title}》，无内容变化。`);
-      continue;
+    
+    if (!existing || existing.hash !== fileHash || needArtifacts) {
+      booksToProcess.push({ file, index });
     }
+  }
+  
+  const totalNeedProcess = booksToProcess.length;
+  const alreadyProcessed = totalBooks - totalNeedProcess;
+  
+  if (totalNeedProcess === 0) {
+    console.log(`所有 ${totalBooks} 本书都已是最新状态，无需处理。\n`);
+  } else {
+    console.log(`其中 ${alreadyProcessed} 本已是最新，${totalNeedProcess} 本需要处理`);
+    const batchCount = Math.min(BATCH_SIZE, totalNeedProcess);
+    console.log(`本次将处理: ${batchCount} 本\n`);
+    
+    let processedCount = 0;
+    for (let i = 0; i < batchCount; i += 1) {
+      const { file, index } = booksToProcess[i];
+      const rarPath = path.join(SOURCE_DIR, file);
+      const meta = parseBookMeta(file);
+      const progress = `[${i + 1}/${batchCount}]`;
+      
+      // 检查文件大小
+      const stats = await fs.stat(rarPath);
+      const fileSizeMB = Math.round(stats.size / 1024 / 1024);
+      console.log(`${progress} 正在处理《${meta.title}》 - ${meta.author} (${fileSizeMB}MB)`);
+      
+      if (fileSizeMB > 30) {
+        console.warn(`⚠️  注意: 这是一个大文件 (${fileSizeMB}MB)，处理可能需要较多内存和时间`);
+      }
 
-    const processed = await processBook(rarPath, meta, manifest, existing);
-    if (processed) {
-      nextManifest.books[meta.bookId] = processed;
-      console.log(`${progress} 完成《${meta.title}》，共 ${processed.chapters.length} 章。`);
-    } else {
-      console.log(`${progress} 跳过《${meta.title}》，未能生成有效章节。`);
-    }
+      const existing = manifest.books[meta.bookId];
+      const processed = await processBook(rarPath, meta, manifest, existing);
+      if (processed) {
+        nextManifest.books[meta.bookId] = processed;
+        console.log(`${progress} 完成《${meta.title}》，共 ${processed.chapters.length} 章。`);
+        processedCount += 1;
+      } else {
+        console.log(`${progress} 跳过《${meta.title}》，未能生成有效章节。`);
+      }
 
-    // 每处理完一本书后强制垃圾回收，释放内存
-    if (global.gc) {
-      global.gc();
+      // 每处理完一本书后强制垃圾回收，释放内存
+      if (global.gc) {
+        global.gc();
+      }
+      
+      // 显示内存使用情况
+      checkMemoryUsage();
+      console.log(""); // 空行分隔
     }
     
-    // 显示内存使用情况
-    checkMemoryUsage();
-    console.log(""); // 空行分隔
+    const remaining = totalNeedProcess - batchCount;
+    if (remaining > 0) {
+      console.log(`\n📌 注意: 还有 ${remaining} 本书待处理`);
+      console.log(`请再次运行 "npm run preprocess" 继续处理剩余书籍\n`);
+    }
   }
 
   // Handle books removed from source: clean up assets
