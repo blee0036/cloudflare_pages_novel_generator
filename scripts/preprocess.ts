@@ -66,6 +66,12 @@ interface ParsedChapter {
   content: string;
 }
 
+interface ParsedChapterIndex {
+  title: string;
+  startLine: number;
+  endLine: number;
+}
+
 const BASE_CHINESE_NUMERAL_CHARS = "〇零一二三四五六七八九十百千两";
 const EXTENDED_CHINESE_NUMERAL_CHARS = `${BASE_CHINESE_NUMERAL_CHARS}萬万亿億兆壹贰叁肆伍陆柒捌玖拾佰仟廿卅卌○`;
 const ORDINAL_FRAGMENT_PATTERN = `(?:[IVXLCDM]+|[ivxlcdm]+|[Ⅰ-Ⅻ]+|[ⅰ-ⅻ]+|\\d+|[${EXTENDED_CHINESE_NUMERAL_CHARS}]+)`;
@@ -220,11 +226,9 @@ function scanHeadingPatterns(lines: string[]): HeadingHierarchy {
   return { upperMarkers, primaryMarkers };
 }
 
-function parseChapters(rawText: string): ParsedChapter[] {
-  const text = normaliseWhitespace(rawText);
-  const originalLines = text.split("\n");
+function parseChapterIndices(lines: string[]): ParsedChapterIndex[] {
   
-  const hierarchy = scanHeadingPatterns(originalLines);
+  const hierarchy = scanHeadingPatterns(lines);
   
   const primaryMarkerPattern = Array.from(hierarchy.primaryMarkers).join("|");
   const allMarkerPattern = [...hierarchy.upperMarkers, ...hierarchy.primaryMarkers].join("|");
@@ -267,22 +271,23 @@ function parseChapters(rawText: string): ParsedChapter[] {
     return segments.length > 0 ? segments : [""];
   };
 
-  const lines: string[] = [];
+  const processedLines: string[] = [];
   const compositeFlags: boolean[] = [];
-  for (const line of originalLines) {
+  for (const line of lines) {
     const segments = splitCompositeLine(line);
     const isComposite = segments.length > 1;
     if (segments.length === 0) {
-      lines.push("");
+      processedLines.push("");
       compositeFlags.push(isComposite);
       continue;
     }
     for (const segment of segments) {
-      lines.push(segment);
+      processedLines.push(segment);
       compositeFlags.push(isComposite);
     }
   }
   const chapterIndices: Array<{ index: number; title: string }> = [];
+  const linesCount = processedLines.length;
 
   const chapterPatterns: Array<{ regex: RegExp; baseConfidence: number }> = primaryMarkerPattern
     ? [
@@ -521,8 +526,8 @@ function parseChapters(rawText: string): ParsedChapter[] {
     return hierarchy.upperMarkers.has(marker) || hierarchy.upperMarkers.has(lowered);
   };
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const rawLine = lines[i];
+  for (let i = 0; i < linesCount; i += 1) {
+    const rawLine = processedLines[i];
     const line = rawLine.trim();
     if (!line) continue;
     const chapterCandidate = matchChapterHeading(line, compositeFlags[i]);
@@ -558,32 +563,23 @@ function parseChapters(rawText: string): ParsedChapter[] {
   }
 
   if (chapterIndices.length === 0) {
-    const trimmed = text.trim();
-    return trimmed
-      ? [
-          {
-            title: "全文",
-            content: trimmed,
-          },
-        ]
-      : [];
+    return [];
   }
 
   chapterIndices.sort((a, b) => a.index - b.index);
 
-  const chapters: ParsedChapter[] = [];
+  const result: ParsedChapterIndex[] = [];
   for (let i = 0; i < chapterIndices.length; i += 1) {
     const { index, title } = chapterIndices[i];
-    const endIndex = i + 1 < chapterIndices.length ? chapterIndices[i + 1].index : lines.length;
-    // 保留开头的缩进，只移除末尾的空白行
-    const content = lines
-      .slice(index + 1, endIndex)
-      .join("\n")
-      .replace(/\s+$/, "");
-    chapters.push({ title, content });
+    const endIndex = i + 1 < chapterIndices.length ? chapterIndices[i + 1].index : linesCount;
+    result.push({ 
+      title, 
+      startLine: index + 1, 
+      endLine: endIndex 
+    });
   }
 
-  return chapters;
+  return result;
 }
 
 async function decodeTxtFromRar(rarPath: string): Promise<string | null> {
@@ -693,8 +689,11 @@ async function processBook(
     return existing ?? null;
   }
 
-  const chapters = parseChapters(text);
-  if (chapters.length === 0) {
+  const normalizedText = normaliseWhitespace(text);
+  const lines = normalizedText.split("\n");
+  
+  const chapterIndices = parseChapterIndices(lines);
+  if (chapterIndices.length === 0) {
     console.warn(`${meta.title} 未检测到任何章节，跳过`);
     return existing ?? null;
   }
@@ -709,50 +708,71 @@ async function processBook(
   const manifestChapters: ChapterManifest[] = [];
   const assetPaths: string[] = [];
   let chunkIndex = 1;
-  let chunkParts: string[] = [];
+  let currentStream: fs.WriteStream | null = null;
   let chunkLength = 0;
   let chunkChapterEntries: ChapterManifest[] = [];
+  let currentFilename = "";
+  let currentRelativeAsset = "";
 
-  const flushChunk = async () => {
-    if (chunkParts.length === 0) return;
-    const filename = `part_${String(chunkIndex).padStart(3, "0")}.txt`;
-    const relativeAsset = `/books/${meta.bookId}/${filename}`;
-    const fullPath = path.join(bookDir, filename);
-    const chunkContent = chunkParts.join("");
-    await fs.writeFile(fullPath, chunkContent, "utf-8");
-    assetPaths.push(relativeAsset);
-    for (const chapter of chunkChapterEntries) {
-      manifestChapters.push({ ...chapter, assetPath: relativeAsset });
-    }
-    chunkIndex += 1;
-    chunkParts = [];
+  const startNewChunk = () => {
+    currentFilename = `part_${String(chunkIndex).padStart(3, "0")}.txt`;
+    currentRelativeAsset = `/books/${meta.bookId}/${currentFilename}`;
+    const fullPath = path.join(bookDir, currentFilename);
+    currentStream = fs.createWriteStream(fullPath, { encoding: "utf-8" });
     chunkLength = 0;
     chunkChapterEntries = [];
   };
 
-  for (let idx = 0; idx < chapters.length; idx += 1) {
-    const chapter = chapters[idx];
+  const flushChunk = async () => {
+    if (!currentStream) return;
+    
+    return new Promise<void>((resolve, reject) => {
+      currentStream!.end(() => {
+        assetPaths.push(currentRelativeAsset);
+        for (const chapter of chunkChapterEntries) {
+          manifestChapters.push({ ...chapter, assetPath: currentRelativeAsset });
+        }
+        chunkIndex += 1;
+        currentStream = null;
+        resolve();
+      });
+      currentStream!.on("error", reject);
+    });
+  };
+
+  startNewChunk();
+
+  for (let idx = 0; idx < chapterIndices.length; idx += 1) {
+    const chapterIndex = chapterIndices[idx];
     const chapterOrder = idx + 1;
     const chapterId = `${meta.bookId}-${String(chapterOrder).padStart(5, "0")}`;
-    const chapterHeader = `${chapter.title.trim()}\n`;
-    // 保留内容开头的空白字符（缩进），只移除结尾空白
-    const chapterBody = chapter.content ? `${chapter.content.replace(/\s+$/, "")}\n\n` : "\n";
-    const chapterText = `${chapterHeader}${chapterBody}`;
-    const chapterBuffer = Buffer.from(chapterText, "utf-8");
-    const chapterLength = chapterBuffer.byteLength;
+    
+    const chapterHeader = `${chapterIndex.title.trim()}\n`;
+    const contentLines = lines.slice(chapterIndex.startLine, chapterIndex.endLine);
+    
+    let chapterText = chapterHeader;
+    if (contentLines.length > 0) {
+      const body = contentLines.join("\n").replace(/\s+$/, "");
+      chapterText += `${body}\n\n`;
+    } else {
+      chapterText += "\n";
+    }
+    
+    const chapterLength = Buffer.byteLength(chapterText, "utf-8");
 
     if (chunkLength + chapterLength > MAX_CHUNK_SIZE && chunkLength > 0) {
       await flushChunk();
+      startNewChunk();
     }
 
     const startByte = chunkLength;
-    chunkParts.push(chapterText);
+    currentStream!.write(chapterText);
     chunkLength += chapterLength;
     chunkChapterEntries.push({
       chapterId,
       bookId: meta.bookId,
       order: chapterOrder,
-      title: chapter.title.trim() || `章节 ${chapterOrder}`,
+      title: chapterIndex.title.trim() || `章节 ${chapterOrder}`,
       assetPath: "", // placeholder, set on flush
       startByte,
       length: chapterLength,
