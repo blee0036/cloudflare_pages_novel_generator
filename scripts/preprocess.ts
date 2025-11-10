@@ -1042,11 +1042,11 @@ async function main(): Promise<void> {
   
   // 检查是否存在待处理列表
   if (await fs.pathExists(pendingListPath)) {
-    // 从文件读取待处理列表
+    // 从缓存读取
     booksToProcess = await fs.readJson(pendingListPath);
     console.log(`从缓存读取待处理列表: ${booksToProcess.length} 本\n`);
   } else {
-    // 首次运行，需要扫描
+    // 不存在缓存，重新扫描
     console.log(`正在扫描文件，判断哪些需要处理...`);
     
     const progressInterval = Math.max(1, Math.floor(rarFiles.length / 10)); // 每10%显示一次

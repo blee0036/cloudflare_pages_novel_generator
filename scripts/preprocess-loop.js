@@ -26,6 +26,13 @@ console.log(`内存限制: ${memoryLimit}MB`);
 console.log('========================================\n');
 
 const pendingListPath = path.resolve('generated', 'pending_books.json');
+
+// 删除旧的待处理列表，强制重新扫描
+if (fs.pathExistsSync(pendingListPath)) {
+  fs.removeSync(pendingListPath);
+  console.log('已删除旧的待处理列表，将重新扫描所有书籍\n');
+}
+
 let iteration = 0;
 const startTime = Date.now();
 
