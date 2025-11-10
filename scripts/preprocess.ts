@@ -141,16 +141,143 @@ async function computeFileHash(filePath: string): Promise<string> {
 }
 
 function detectEncoding(buffer: Buffer): string {
+  // 1. 优先检查 BOM (Byte Order Mark)
+  if (buffer.length >= 4) {
+    // UTF-32 LE: FF FE 00 00
+    if (buffer[0] === 0xFF && buffer[1] === 0xFE && buffer[2] === 0x00 && buffer[3] === 0x00) {
+      return "utf-32le";
+    }
+    // UTF-32 BE: 00 00 FE FF
+    if (buffer[0] === 0x00 && buffer[1] === 0x00 && buffer[2] === 0xFE && buffer[3] === 0xFF) {
+      return "utf-32be";
+    }
+  }
+  if (buffer.length >= 3) {
+    // UTF-8 BOM: EF BB BF
+    if (buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
+      return "utf-8";
+    }
+  }
+  if (buffer.length >= 2) {
+    // UTF-16 LE BOM: FF FE
+    if (buffer[0] === 0xFF && buffer[1] === 0xFE) {
+      return "utf-16le";
+    }
+    // UTF-16 BE BOM: FE FF
+    if (buffer[0] === 0xFE && buffer[1] === 0xFF) {
+      return "utf-16be";
+    }
+  }
+  
+  // 2. 使用 jschardet 检测
   const detection = jschardet.detect(buffer);
   const encoding = detection.encoding?.toLowerCase();
-  if (!encoding) return "utf-8";
-  if (encoding.includes("gb")) {
-    return "gb18030";
+  const confidence = detection.confidence || 0;
+  
+  if (encoding && confidence > 0.8) {
+    // 高置信度，直接使用检测结果
+    return normalizeEncodingName(encoding);
   }
-  if (encoding === "big5") {
+  
+  // 3. 置信度较低或未检测到，尝试多种编码
+  const candidateEncodings = [
+    "utf-8",
+    "gb18030", // 简体中文（GBK的超集）
+    "big5",    // 繁体中文
+    "utf-16le",
+    "shift_jis", // 日文
+    "euc-kr",  // 韩文
+  ];
+  
+  if (encoding) {
+    // 将检测到的编码放在第一位
+    const normalized = normalizeEncodingName(encoding);
+    if (!candidateEncodings.includes(normalized)) {
+      candidateEncodings.unshift(normalized);
+    }
+  }
+  
+  // 4. 尝试解码验证
+  for (const enc of candidateEncodings) {
+    try {
+      const decoded = iconv.decode(buffer, enc);
+      // 检查解码结果是否合理（包含常见中文字符，没有大量乱码）
+      if (isValidDecoding(decoded)) {
+        return enc;
+      }
+    } catch (e) {
+      // 编码不支持或解码失败，跳过
+      continue;
+    }
+  }
+  
+  // 5. 兜底：返回GB18030（最常见的简体中文编码）
+  return "gb18030";
+}
+
+function normalizeEncodingName(encoding: string): string {
+  const enc = encoding.toLowerCase();
+  
+  // UTF-16
+  if (enc.includes("utf-16")) {
+    if (enc.includes("le")) return "utf-16le";
+    if (enc.includes("be")) return "utf-16be";
+    return "utf-16le";
+  }
+  
+  // UTF-32
+  if (enc.includes("utf-32")) {
+    if (enc.includes("le")) return "utf-32le";
+    if (enc.includes("be")) return "utf-32be";
+    return "utf-32le";
+  }
+  
+  // 中文编码
+  if (enc.includes("gb") || enc === "gbk" || enc === "gb2312") {
+    return "gb18030"; // 使用最全的GB编码
+  }
+  if (enc.includes("big5") || enc.includes("big-5")) {
     return "big5";
   }
-  return "utf-8";
+  
+  // 日韩编码
+  if (enc.includes("shift") || enc.includes("sjis")) {
+    return "shift_jis";
+  }
+  if (enc.includes("euc-kr") || enc === "euc_kr") {
+    return "euc-kr";
+  }
+  
+  // UTF-8
+  if (enc.includes("utf-8") || enc === "utf8") {
+    return "utf-8";
+  }
+  
+  return enc;
+}
+
+function isValidDecoding(text: string): boolean {
+  if (!text || text.length < 100) return false;
+  
+  // 检查是否包含大量乱码字符（替换字符）
+  const replacementCharCount = (text.match(/�/g) || []).length;
+  if (replacementCharCount > text.length * 0.05) {
+    return false; // 超过5%的字符是乱码
+  }
+  
+  // 检查是否包含常见中文字符
+  const chineseCharCount = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+  if (chineseCharCount > text.length * 0.1) {
+    return true; // 超过10%是中文，认为是有效的
+  }
+  
+  // 检查是否包含常见标点和英文（小说可能是英文的）
+  const commonChars = (text.match(/[a-zA-Z0-9\s\.,!?;:"'()《》【】\u3000]/g) || []).length;
+  if (commonChars > text.length * 0.5) {
+    return true; // 超过50%是常见字符
+  }
+  
+  return false;
 }
 
 interface HeadingPatternMatch {
@@ -655,6 +782,7 @@ async function decodeTxtFromRar(rarPath: string): Promise<string | null> {
       if (!(await fs.pathExists(candidate))) continue;
       const buffer = await fs.readFile(candidate);
       const encoding = detectEncoding(buffer);
+      console.log(`   检测到编码: ${encoding}`);
       const decoded = iconv.decode(buffer, encoding).trim();
       if (decoded) {
         await fs.remove(tempDir);
@@ -711,18 +839,48 @@ async function processBook(
 ): Promise<BookManifest | null> {
   let text = await decodeTxtFromRar(rarPath);
   if (!text) {
-    console.warn(`未在 ${path.basename(rarPath)} 中找到可用的 .txt 正文`);
+    console.error(`❌ 失败: 未在 ${path.basename(rarPath)} 中找到可用的 .txt 文件`);
+    console.error(`   原因: RAR文件可能损坏或不包含.txt文件`);
     return existing ?? null;
   }
 
   text = normaliseWhitespace(text);
   const lines = text.split("\n");
   
-  const chapterIndices = parseChapterIndices(lines);
+  let chapterIndices = parseChapterIndices(lines);
+  let usedFallbackRule = false; // 标记是否使用了保底规则
+  
+  // 保底规则：如果检测不到章节，按固定行数切分
   if (chapterIndices.length === 0) {
-    lines.length = 0;
-    console.warn(`${meta.title} 未检测到任何章节，跳过`);
-    return existing ?? null;
+    const LINES_PER_CHAPTER = 2000; // 每章行数
+    const totalLines = lines.length;
+    
+    if (totalLines < 10) {
+      // 文件太小，可能是无效内容
+      lines.length = 0;
+      const textPreview = text.slice(0, 500).replace(/\n/g, " ");
+      console.error(`❌ 失败: 《${meta.title}》内容过少（仅${totalLines}行）`);
+      console.error(`   文本预览: ${textPreview}...`);
+      return existing ?? null;
+    }
+    
+    console.warn(`⚠️  《${meta.title}》未检测到标准章节标题`);
+    console.warn(`   启用保底规则: 按 ${LINES_PER_CHAPTER} 行自动切分`);
+    console.warn(`   文件信息: ${text.length} 字符，${totalLines} 行`);
+    
+    usedFallbackRule = true;
+    chapterIndices = [];
+    for (let startLine = 0; startLine < totalLines; startLine += LINES_PER_CHAPTER) {
+      const endLine = Math.min(startLine + LINES_PER_CHAPTER, totalLines);
+      const chapterNum = Math.floor(startLine / LINES_PER_CHAPTER) + 1;
+      chapterIndices.push({
+        title: `第${chapterNum}章 第${startLine + 1}-${endLine}行`,
+        startLine,
+        endLine
+      });
+    }
+    
+    console.warn(`   已生成 ${chapterIndices.length} 个自动章节`);
   }
 
   if (existing) {
@@ -960,11 +1118,11 @@ async function main(): Promise<void> {
       const processed = await processBook(rarPath, meta, manifest, existing);
       if (processed) {
         nextManifest.books[meta.bookId] = processed;
-        console.log(`${progress} 完成《${meta.title}》，共 ${processed.totalChapters} 章。`);
+        console.log(`${progress} ✓ 完成《${meta.title}》，共 ${processed.totalChapters} 章。`);
         processedCount += 1;
         processedFiles.push(file);
       } else {
-        console.log(`${progress} 跳过《${meta.title}》，未能生成有效章节。`);
+        console.log(`${progress} ✗ 失败: 《${meta.title}》（详见上方错误信息）`);
         processedFiles.push(file); // 即使失败也标记为已处理，避免重复尝试
       }
 
@@ -980,14 +1138,24 @@ async function main(): Promise<void> {
     
     // 更新待处理列表（移除已处理的）
     const remaining = booksToProcess.slice(batchSize);
+    const failedCount = batchSize - processedCount;
+    
     if (remaining.length > 0) {
       await fs.writeJson(pendingListPath, remaining);
-      console.log(`\n📌 本批完成，还有 ${remaining.length} 本待处理`);
-      console.log(`外部循环将自动继续...\n`);
+      console.log(`\n========================================`);
+      console.log(`本批完成: ✓ 成功 ${processedCount} 本，✗ 失败 ${failedCount} 本`);
+      if (failedCount > 0) {
+        console.log(`注意: 失败的书籍已跳过，不会重复处理`);
+      }
+      console.log(`还有 ${remaining.length} 本待处理，外部循环将自动继续...`);
+      console.log(`========================================\n`);
     } else {
       // 全部处理完成，删除列表文件
       await fs.remove(pendingListPath);
-      console.log(`\n✅ 全部处理完成！\n`);
+      console.log(`\n========================================`);
+      console.log(`✅ 全部处理完成！`);
+      console.log(`本批: ✓ 成功 ${processedCount} 本${failedCount > 0 ? `，✗ 失败 ${failedCount} 本` : ''}`);
+      console.log(`========================================\n`);
     }
   }
 
@@ -1018,7 +1186,8 @@ async function main(): Promise<void> {
     { spaces: 2 },
   );
 
-  console.log(`\n处理完成，共 ${summaries.length} 本书。`);
+  console.log(`\n本次处理完成。`);
+  console.log(`当前 manifest 包含: ${summaries.length} 本书`);
   console.log("最终内存使用:");
   checkMemoryUsage();
 }

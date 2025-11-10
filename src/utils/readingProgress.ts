@@ -5,6 +5,10 @@ export interface ReadingProgressEntry {
   chapterId: string;
   chapterTitle: string;
   updatedAt: number;
+  // 新增：滚动位置（字符偏移）
+  scrollPosition?: number;
+  // 新增：书籍hash，用于检测文件是否变化
+  bookHash?: string;
 }
 
 const STORAGE_KEY = "novel-reading-progress:v1";

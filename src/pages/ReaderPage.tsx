@@ -1,7 +1,7 @@
 import { ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useChapter, useChapterContent } from "../api/hooks";
-import { saveReadingProgress } from "../utils/readingProgress";
+import { saveReadingProgress, getBookProgress } from "../utils/readingProgress";
 import { siteConfig } from "../config/siteConfig";
 import { ReaderSettings as ReaderSettingsPanel } from "../components/ReaderSettings";
 import { loadSettings, saveSettings, applySettings, type ReaderSettings } from "../utils/readerSettings";
@@ -20,6 +20,7 @@ const ReaderPage: React.FC = () => {
   const [settings, setSettings] = useState<ReaderSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const contentRef = useRef<HTMLElement>(null);
+  const [restoredScroll, setRestoredScroll] = useState(false);
 
   const goToChapter = useCallback(
     (targetId: string | null | undefined) => {
@@ -40,7 +41,8 @@ const ReaderPage: React.FC = () => {
   );
 
   useEffect(() => {
-    window.scrollTo({ top: 0 });
+    // 章节切换时重置滚动恢复标记
+    setRestoredScroll(false);
   }, [chapterId]);
 
   useEffect(() => {
@@ -67,17 +69,61 @@ const ReaderPage: React.FC = () => {
     };
   }, [data?.chapter, data?.book]);
 
+  // 恢复滚动位置
+  useEffect(() => {
+    if (!data?.book || !data.chapter || !content || restoredScroll) return;
+    
+    const progress = getBookProgress(data.book.id);
+    if (progress && progress.chapterId === data.chapter.id && progress.scrollPosition) {
+      // 检查文件是否变化（通过totalChapters判断）
+      if (progress.bookHash && progress.bookHash !== String(data.book.totalChapters)) {
+        console.warn('书籍文件已更新，跳过滚动位置恢复');
+      } else {
+        // 延迟恢复滚动位置，确保内容已渲染
+        setTimeout(() => {
+          window.scrollTo({ top: progress.scrollPosition!, behavior: 'smooth' });
+        }, 100);
+      }
+    } else {
+      // 新章节，滚动到顶部
+      window.scrollTo({ top: 0 });
+    }
+    setRestoredScroll(true);
+  }, [data, content, restoredScroll]);
+
+  // 保存阅读进度（包含滚动位置）
   useEffect(() => {
     if (!data?.book || !data.chapter) return;
-    const { book, chapter } = data;
-    saveReadingProgress({
-      bookId: book.id,
-      bookTitle: book.title,
-      author: book.author,
-      chapterId: chapter.id,
-      chapterTitle: chapter.title,
-      updatedAt: Date.now(),
-    });
+    
+    const saveProgress = () => {
+      const { book, chapter } = data;
+      saveReadingProgress({
+        bookId: book.id,
+        bookTitle: book.title,
+        author: book.author,
+        chapterId: chapter.id,
+        chapterTitle: chapter.title,
+        scrollPosition: window.scrollY,
+        bookHash: String(book.totalChapters), // 使用totalChapters作为简单的hash
+        updatedAt: Date.now(),
+      });
+    };
+    
+    // 立即保存一次
+    saveProgress();
+    
+    // 监听滚动事件，防抖保存
+    let scrollTimer: number;
+    const handleScroll = () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = window.setTimeout(saveProgress, 1000);
+    };
+    
+    window.addEventListener('scroll', handleScroll);
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      clearTimeout(scrollTimer);
+    };
   }, [data]);
 
   useEffect(() => {
