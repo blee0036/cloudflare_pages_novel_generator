@@ -7,8 +7,8 @@ import jschardet from "jschardet";
 import iconv from "iconv-lite";
 
 const SOURCE_DIR = path.resolve("sourceRar");
-const OUTPUT_DIR = path.resolve("public", "books");
-const DATA_DIR = path.resolve("public", "data");
+const OUTPUT_DIR = path.resolve("dist", "books"); // 改为 dist/books，避免 Vite 复制导致翻倍
+const DATA_DIR = path.resolve("dist", "data");     // 改为 dist/data
 const MANIFEST_PATH = path.resolve("generated", "manifest.json");
 const BOOKS_JSON_PATH = path.join(DATA_DIR, "books.json");
 const MAX_CHUNK_SIZE = 25 * 1024 * 1024 - 1024; // Slightly below 25MiB safety margin

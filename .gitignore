@@ -13,8 +13,6 @@ config.json
 
 # Local data caches
 generated/
-public/books/
-public/data/
 sourceRar/*
 !sourceRar/PLACE_YOUR_RAR_BOOKS_HERE
 
