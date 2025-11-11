@@ -852,7 +852,7 @@ async function processBook(
   
   // 保底规则：如果检测不到章节，按固定行数切分
   if (chapterIndices.length === 0) {
-    const LINES_PER_CHAPTER = 2000; // 每章行数
+    const LINES_PER_CHAPTER = 500; // 每章行数
     const totalLines = lines.length;
     
     if (totalLines < 10) {
