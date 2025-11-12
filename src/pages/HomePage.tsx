@@ -12,11 +12,16 @@ const skeletonItems = Array.from({ length: 8 });
 
 const HomePage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState("");
-  const debounced = useDebounce(searchTerm, 300);
+  const debounced = useDebounce(searchTerm, 800); // 增加到 800ms，减少搜索频率
   const { data, error, isLoading, isFetching } = useBooks();
   const books = useMemo(() => data?.books ?? [], [data?.books]);
   const history = useReadingHistory(5);
   const [filtered, setFiltered] = useState<BookSummary[]>(books);
+  const [isSearching, setIsSearching] = useState(false);
+  
+  // 分页显示，避免渲染所有书籍
+  const [displayCount, setDisplayCount] = useState(50);
+  const displayedBooks = useMemo(() => filtered.slice(0, displayCount), [filtered, displayCount]);
 
   const searchDoc = useMemo(() => {
     if (!books.length) return null;
@@ -50,38 +55,55 @@ const HomePage: React.FC = () => {
 
   useEffect(() => {
     setFiltered(books);
+    setDisplayCount(50); // 重置显示数量
   }, [books]);
 
   useEffect(() => {
     const term = debounced.trim();
     if (!term) {
+      setIsSearching(false);
       setFiltered(books);
       return;
     }
     if (!searchDoc) {
+      setIsSearching(false);
       setFiltered([]);
       return;
     }
-    const results = (searchDoc?.search(term, { enrich: true }) ?? []) as Array<{
-      field: string;
-      result: Array<string | BookSummary>;
-    }>;
-    const ids = new Set<string>();
-    for (const group of results ?? []) {
-      for (const entry of group.result ?? []) {
-        if (typeof entry === "string") {
-          ids.add(entry);
-        } else if (entry && typeof entry === "object" && "id" in entry) {
-          ids.add(entry.id);
+    
+    setIsSearching(true);
+    
+    // 使用 setTimeout 让 UI 有时间显示 loading
+    setTimeout(() => {
+      const results = (searchDoc?.search(term, { enrich: true }) ?? []) as Array<{
+        field: string;
+        result: Array<string | BookSummary>;
+      }>;
+      const ids = new Set<string>();
+      for (const group of results ?? []) {
+        for (const entry of group.result ?? []) {
+          if (typeof entry === "string") {
+            ids.add(entry);
+          } else if (entry && typeof entry === "object" && "id" in entry) {
+            ids.add(entry.id);
+          }
         }
       }
-    }
-    if (ids.size === 0) {
-      setFiltered([]);
-      return;
-    }
-    setFiltered(books.filter((book) => ids.has(book.id)));
+      if (ids.size === 0) {
+        setFiltered([]);
+      } else {
+        setFiltered(books.filter((book) => ids.has(book.id)));
+      }
+      setIsSearching(false);
+    }, 0);
   }, [debounced, books, searchDoc]);
+  
+  // 监听用户输入，立即显示 loading
+  useEffect(() => {
+    if (searchTerm.trim()) {
+      setIsSearching(true);
+    }
+  }, [searchTerm]);
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     setSearchTerm(event.target.value);
@@ -138,11 +160,11 @@ const HomePage: React.FC = () => {
             </section>
           ) : null}
           <div className="book-grid" role="list">
-            {isLoading
+            {isLoading || isSearching
               ? skeletonItems.map((_, index) => (
                   <div key={index} className="book-card skeleton" style={{ height: 130 }} />
                 ))
-              : filtered.map((book) => (
+              : displayedBooks.map((book) => (
                   <article key={book.id} className="book-card" role="listitem">
                     <div>
                       <div className="book-title">{book.title}</div>
@@ -157,7 +179,18 @@ const HomePage: React.FC = () => {
                   </article>
                 ))}
           </div>
-          {!isLoading && filtered.length === 0 ? <div className="empty-state">暂无相关书籍</div> : null}
+          {!isLoading && !isSearching && displayedBooks.length < filtered.length ? (
+            <div style={{ textAlign: 'center', padding: '20px' }}>
+              <button
+                className="book-link"
+                style={{ display: 'inline-block', padding: '12px 24px' }}
+                onClick={() => setDisplayCount(prev => prev + 50)}
+              >
+                加载更多 ({displayedBooks.length}/{filtered.length})
+              </button>
+            </div>
+          ) : null}
+          {!isLoading && !isSearching && filtered.length === 0 ? <div className="empty-state">暂无相关书籍</div> : null}
         </>
       )}
     </section>

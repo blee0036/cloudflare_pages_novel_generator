@@ -23,6 +23,29 @@ export default defineConfig({
         }
       },
     },
+    {
+      name: "hardcode-config",
+      config() {
+        // 构建时读取 config.json 并硬编码
+        const configPath = path.resolve(__dirname, "config.json");
+        const exampleConfigPath = path.resolve(__dirname, "config.example.json");
+        
+        let userConfig = {};
+        if (fs.existsSync(configPath)) {
+          userConfig = fs.readJsonSync(configPath);
+        }
+        
+        const defaultConfig = fs.readJsonSync(exampleConfigPath);
+        const mergedConfig = { ...defaultConfig, ...userConfig };
+        
+        // 通过 define 注入到构建中
+        return {
+          define: {
+            '__SITE_CONFIG__': JSON.stringify(mergedConfig),
+          },
+        };
+      },
+    },
   ],
   publicDir: false, // 禁用自动复制 public/，避免复制大量书籍数据
   server: {

@@ -75,6 +75,9 @@ export const onRequestGet: PagesFunction<Env> = async ({ env, params, request })
         "Content-Disposition": `attachment; filename="${encodeURIComponent(asciiName)}"; filename*=UTF-8''${encodeURIComponent(
           utf8Name,
         )}`,
+        "Cache-Control": "no-cache, no-store, must-revalidate", // 禁止缓存，避免 304
+        "Pragma": "no-cache",
+        "Expires": "0",
       },
     });
   } catch (error) {
