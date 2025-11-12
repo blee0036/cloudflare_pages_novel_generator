@@ -3,7 +3,24 @@ import react from "@vitejs/plugin-react";
 import fs from "fs-extra";
 import path from "node:path";
 
+// 构建时读取 config.json
+const configPath = path.resolve(__dirname, "config.json");
+const exampleConfigPath = path.resolve(__dirname, "config.example.json");
+
+let userConfig = {};
+if (fs.existsSync(configPath)) {
+  userConfig = fs.readJsonSync(configPath);
+}
+
+const defaultConfig = fs.readJsonSync(exampleConfigPath);
+const siteConfig = { ...defaultConfig, ...userConfig };
+
 export default defineConfig({
+  define: {
+    // 硬编码配置，构建时替换
+    // 注意：define 要求值本身就是代码，所以要双层 stringify
+    '__SITE_CONFIG__': JSON.stringify(JSON.stringify(siteConfig)),
+  },
   plugins: [
     react(),
     {
@@ -21,29 +38,6 @@ export default defineConfig({
             fs.removeSync(fullPath);
           }
         }
-      },
-    },
-    {
-      name: "hardcode-config",
-      config() {
-        // 构建时读取 config.json 并硬编码
-        const configPath = path.resolve(__dirname, "config.json");
-        const exampleConfigPath = path.resolve(__dirname, "config.example.json");
-        
-        let userConfig = {};
-        if (fs.existsSync(configPath)) {
-          userConfig = fs.readJsonSync(configPath);
-        }
-        
-        const defaultConfig = fs.readJsonSync(exampleConfigPath);
-        const mergedConfig = { ...defaultConfig, ...userConfig };
-        
-        // 通过 define 注入到构建中
-        return {
-          define: {
-            '__SITE_CONFIG__': JSON.stringify(mergedConfig),
-          },
-        };
       },
     },
   ],
