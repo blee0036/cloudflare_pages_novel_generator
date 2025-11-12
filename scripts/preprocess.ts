@@ -846,22 +846,22 @@ async function processBook(
   // 保存原始文本的 Buffer，用于切片输出
   const originalBuffer = Buffer.from(originalText, "utf-8");
   
-  // 仅用于章节识别的规范化文本
-  const normalizedText = normaliseWhitespace(originalText);
-  const lines = normalizedText.split("\n");
+  // 在原始文本上识别章节（避免行数不匹配问题）
+  // 对每一行单独规范化空白（但保持行数一致）
+  const normalizedLines = originalText.split("\n").map(line => line.replace(/\r/g, "").replace(/\s+/g, " ").trim());
   
-  let chapterIndices = parseChapterIndices(lines);
+  let chapterIndices = parseChapterIndices(normalizedLines);
   let usedFallbackRule = false; // 标记是否使用了保底规则
   
   // 保底规则：如果检测不到章节，按固定行数切分
   if (chapterIndices.length === 0) {
     const LINES_PER_CHAPTER = 300; // 每章行数
-    const totalLines = lines.length;
+    const totalLines = normalizedLines.length;
     
     if (totalLines < 10) {
       // 文件太小，可能是无效内容
-      lines.length = 0;
-      const textPreview = normalizedText.slice(0, 500).replace(/\n/g, " ");
+      normalizedLines.length = 0;
+      const textPreview = originalText.slice(0, 500).replace(/\n/g, " ");
       console.error(`❌ 失败: 《${meta.title}》内容过少（仅${totalLines}行）`);
       console.error(`   文本预览: ${textPreview}...`);
       return existing ?? null;
@@ -910,13 +910,23 @@ async function processBook(
     const chapterIndex = chapterIndices[idx];
     const chapterOrder = idx + 1;
     const chapterId = `${meta.bookId}-${String(chapterOrder).padStart(5, "0")}`;
-    const byteOffset = lineBytePositions[chapterIndex.startLine];
     
-    chapterInfos.push({
-      id: chapterId,
-      title: chapterIndex.title.trim() || `章节 ${chapterOrder}`,
-      byteOffset,
-    });
+    // 边界检查，避免数组越界
+    const startLine = chapterIndex.startLine;
+    const byteOffset = startLine < lineBytePositions.length 
+      ? lineBytePositions[startLine] 
+      : totalSize; // 如果越界，使用文件末尾
+    
+    // 只保存有效的章节（byteOffset 在合理范围内）
+    if (byteOffset < totalSize) {
+      chapterInfos.push({
+        id: chapterId,
+        title: chapterIndex.title.trim() || `章节 ${chapterOrder}`,
+        byteOffset,
+      });
+    } else {
+      console.warn(`⚠️  章节 ${chapterOrder} "${chapterIndex.title}" 字节偏移超出范围，已跳过`);
+    }
   }
   
   // 按固定大小切割 part 文件（在行边界切）
@@ -978,7 +988,7 @@ async function processBook(
   // 显式清理大对象，帮助GC回收内存
   originalLines.length = 0;
   lineBytePositions.length = 0;
-  lines.length = 0;
+  normalizedLines.length = 0;
   chapterIndices.length = 0;
   chapterInfos.length = 0;
   
