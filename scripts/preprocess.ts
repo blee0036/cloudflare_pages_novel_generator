@@ -35,15 +35,7 @@ function checkMemoryUsage(bookTitle?: string): void {
   }
 }
 
-interface ChapterManifest {
-  chapterId: string;
-  bookId: string;
-  order: number;
-  title: string;
-  assetPath: string;
-  startByte: number;
-  length: number;
-}
+// ChapterManifest 不再使用，章节信息直接存储为紧凑格式
 
 interface BookManifest {
   hash: string;
@@ -65,7 +57,13 @@ interface BookSummary {
   totalChapters: number;
 }
 
-type ChapterCompactEntry = [string, string, number, number, number];
+// 章节信息：[id, 标题, 全局字节偏移]
+type ChapterCompactEntry = [string, string, number];
+
+interface PartInfo {
+  path: string;  // 相对路径，如 /books/xxx/part_001.txt
+  size: number;  // 该 part 的字节大小
+}
 
 interface ChaptersFile {
   book: {
@@ -73,9 +71,10 @@ interface ChaptersFile {
     title: string;
     author: string;
     totalChapters: number;
-    assets: string[];
+    parts: PartInfo[];      // 所有 part 信息
+    totalSize: number;      // 整本书总字节数
   };
-  chapters: ChapterCompactEntry[];
+  chapters: ChapterCompactEntry[];  // 章节用于导航
 }
 
 interface ParsedBookMeta {
@@ -837,15 +836,19 @@ async function processBook(
   manifest: ManifestJSON,
   existing?: BookManifest,
 ): Promise<BookManifest | null> {
-  let text = await decodeTxtFromRar(rarPath);
-  if (!text) {
+  let originalText = await decodeTxtFromRar(rarPath);
+  if (!originalText) {
     console.error(`❌ 失败: 未在 ${path.basename(rarPath)} 中找到可用的 .txt 文件`);
     console.error(`   原因: RAR文件可能损坏或不包含.txt文件`);
     return existing ?? null;
   }
 
-  text = normaliseWhitespace(text);
-  const lines = text.split("\n");
+  // 保存原始文本的 Buffer，用于切片输出
+  const originalBuffer = Buffer.from(originalText, "utf-8");
+  
+  // 仅用于章节识别的规范化文本
+  const normalizedText = normaliseWhitespace(originalText);
+  const lines = normalizedText.split("\n");
   
   let chapterIndices = parseChapterIndices(lines);
   let usedFallbackRule = false; // 标记是否使用了保底规则
@@ -858,7 +861,7 @@ async function processBook(
     if (totalLines < 10) {
       // 文件太小，可能是无效内容
       lines.length = 0;
-      const textPreview = text.slice(0, 500).replace(/\n/g, " ");
+      const textPreview = normalizedText.slice(0, 500).replace(/\n/g, " ");
       console.error(`❌ 失败: 《${meta.title}》内容过少（仅${totalLines}行）`);
       console.error(`   文本预览: ${textPreview}...`);
       return existing ?? null;
@@ -866,7 +869,7 @@ async function processBook(
     
     console.warn(`⚠️  《${meta.title}》未检测到标准章节标题`);
     console.warn(`   启用保底规则: 按 ${LINES_PER_CHAPTER} 行自动切分`);
-    console.warn(`   文件信息: ${text.length} 字符，${totalLines} 行`);
+    console.warn(`   文件信息: ${originalText.length} 字符，${totalLines} 行`);
     
     usedFallbackRule = true;
     chapterIndices = [];
@@ -890,92 +893,73 @@ async function processBook(
   const bookDir = path.join(OUTPUT_DIR, meta.bookId);
   await fs.ensureDir(bookDir);
 
-  const manifestChapters: ChapterManifest[] = [];
-  const assetPaths: string[] = [];
-  let chunkIndex = 1;
-  let currentStream: fs.WriteStream | null = null;
-  let chunkLength = 0;
-  let chunkChapterEntries: ChapterManifest[] = [];
-  let currentFilename = "";
-  let currentRelativeAsset = "";
-
-  const startNewChunk = () => {
-    currentFilename = `part_${String(chunkIndex).padStart(3, "0")}.txt`;
-    currentRelativeAsset = `/books/${meta.bookId}/${currentFilename}`;
-    const fullPath = path.join(bookDir, currentFilename);
-    currentStream = fs.createWriteStream(fullPath, { encoding: "utf-8" });
-    chunkLength = 0;
-    chunkChapterEntries = [];
-  };
-
-  const flushChunk = async () => {
-    if (!currentStream) return;
-    
-    return new Promise<void>((resolve, reject) => {
-      currentStream!.end(() => {
-        assetPaths.push(currentRelativeAsset);
-        for (const chapter of chunkChapterEntries) {
-          manifestChapters.push({ ...chapter, assetPath: currentRelativeAsset });
-        }
-        chunkIndex += 1;
-        currentStream = null;
-        resolve();
-      });
-      currentStream!.on("error", reject);
-    });
-  };
-
-  startNewChunk();
-
+  // 构建原始文本的行索引（字节位置）
+  const originalLines = originalText.split("\n");
+  const lineBytePositions: number[] = [0];
+  let currentBytePos = 0;
+  for (let i = 0; i < originalLines.length; i++) {
+    currentBytePos += Buffer.byteLength(originalLines[i], "utf-8") + 1; // +1 for \n
+    lineBytePositions.push(currentBytePos);
+  }
+  
+  const totalSize = originalBuffer.length;
+  
+  // 计算每个章节的全局字节偏移
+  const chapterInfos: Array<{ id: string; title: string; byteOffset: number }> = [];
   for (let idx = 0; idx < chapterIndices.length; idx += 1) {
     const chapterIndex = chapterIndices[idx];
     const chapterOrder = idx + 1;
     const chapterId = `${meta.bookId}-${String(chapterOrder).padStart(5, "0")}`;
+    const byteOffset = lineBytePositions[chapterIndex.startLine];
     
-    const chapterHeader = `${chapterIndex.title.trim()}\n`;
-    const contentLines = lines.slice(chapterIndex.startLine, chapterIndex.endLine);
-    
-    let chapterText = chapterHeader;
-    if (contentLines.length > 0) {
-      const body = contentLines.join("\n").replace(/\s+$/, "");
-      chapterText += `${body}\n\n`;
-    } else {
-      chapterText += "\n";
-    }
-    
-    const chapterLength = Buffer.byteLength(chapterText, "utf-8");
-
-    if (chunkLength + chapterLength > MAX_CHUNK_SIZE && chunkLength > 0) {
-      await flushChunk();
-      startNewChunk();
-    }
-
-    const startByte = chunkLength;
-    currentStream!.write(chapterText);
-    chunkLength += chapterLength;
-    chunkChapterEntries.push({
-      chapterId,
-      bookId: meta.bookId,
-      order: chapterOrder,
+    chapterInfos.push({
+      id: chapterId,
       title: chapterIndex.title.trim() || `章节 ${chapterOrder}`,
-      assetPath: "", // placeholder, set on flush
-      startByte,
-      length: chapterLength,
+      byteOffset,
     });
   }
-
-  await flushChunk();
-  const assetIndexMap = new Map<string, number>();
-  const compactAssets: string[] = [];
-  const compactChapters: ChapterCompactEntry[] = manifestChapters.map((chapter) => {
-    let assetIndex = assetIndexMap.get(chapter.assetPath);
-    if (assetIndex === undefined) {
-      assetIndex = compactAssets.length;
-      compactAssets.push(chapter.assetPath);
-      assetIndexMap.set(chapter.assetPath, assetIndex);
+  
+  // 按固定大小切割 part 文件（在行边界切）
+  const partInfos: PartInfo[] = [];
+  let partIndex = 1;
+  let partStartByte = 0;
+  
+  while (partStartByte < totalSize) {
+    const partFilename = `part_${String(partIndex).padStart(3, "0")}.txt`;
+    const partPath = `/books/${meta.bookId}/${partFilename}`;
+    const fullPath = path.join(bookDir, partFilename);
+    
+    // 计算这个 part 的结束位置（不超过 MAX_CHUNK_SIZE，在行边界）
+    let partEndByte = Math.min(partStartByte + MAX_CHUNK_SIZE, totalSize);
+    
+    // 如果不是最后一个 part，找到最近的行边界
+    if (partEndByte < totalSize) {
+      // 找到 partEndByte 对应的行号
+      let lineIndex = lineBytePositions.findIndex(pos => pos > partEndByte);
+      if (lineIndex > 0) {
+        partEndByte = lineBytePositions[lineIndex - 1]; // 回退到上一行的结尾
+      }
     }
-    return [chapter.chapterId, chapter.title, assetIndex, chapter.startByte, chapter.length];
-  });
+    
+    const partSize = partEndByte - partStartByte;
+    const partBuffer = originalBuffer.slice(partStartByte, partEndByte);
+    
+    await fs.writeFile(fullPath, partBuffer);
+    
+    partInfos.push({
+      path: partPath,
+      size: partSize,
+    });
+    
+    partStartByte = partEndByte;
+    partIndex += 1;
+  }
+  // 生成紧凑的章节数组：[id, 标题, 全局字节偏移]
+  const compactChapters: ChapterCompactEntry[] = chapterInfos.map(ch => [
+    ch.id,
+    ch.title,
+    ch.byteOffset,
+  ]);
 
   const chaptersPayload: ChaptersFile = {
     book: {
@@ -983,7 +967,8 @@ async function processBook(
       title: meta.title,
       author: meta.author,
       totalChapters: compactChapters.length,
-      assets: compactAssets,
+      parts: partInfos,
+      totalSize,
     },
     chapters: compactChapters,
   };
@@ -991,16 +976,18 @@ async function processBook(
   await fs.writeJson(chaptersPath, chaptersPayload, { spaces: 2 });
 
   // 显式清理大对象，帮助GC回收内存
+  originalLines.length = 0;
+  lineBytePositions.length = 0;
   lines.length = 0;
   chapterIndices.length = 0;
-  manifestChapters.length = 0; // 不再需要返回，可以清理
+  chapterInfos.length = 0;
   
   return {
     hash: await computeFileHash(rarPath),
     title: meta.title,
     author: meta.author,
     totalChapters: compactChapters.length,
-    assets: assetPaths,
+    assets: partInfos.map(p => p.path),
   };
 }
 

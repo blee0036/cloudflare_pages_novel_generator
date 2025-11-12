@@ -11,10 +11,7 @@ export interface ChapterView {
   id: string;
   title: string;
   order: number;
-  assetIndex: number;
-  assetPath: string;
-  startByte: number;
-  length: number;
+  byteOffset: number;  // 全局字节偏移
 }
 
 export interface BookDetailData {
@@ -55,7 +52,7 @@ export function useBookDetail(bookId: string | undefined) {
     queryKey: ["book", bookId],
     queryFn: async () => {
       const payload = await apiFetch<ChaptersFile>(`/data/${bookId}_chapters.json`);
-      const chapters = payload.chapters.map(toChapterView(payload.book.assets));
+      const chapters = payload.chapters.map(toChapterView);
       return {
         book: payload.book,
         chapters,
@@ -77,7 +74,7 @@ export function useChapter(chapterId: string | undefined) {
       }
       const bookId = inferBookIdFromChapterId(chapterId);
       const data = await apiFetch<ChaptersFile>(`/data/${bookId}_chapters.json`);
-      const chapters = data.chapters.map(toChapterView(data.book.assets));
+      const chapters = data.chapters.map(toChapterView);
       const index = chapters.findIndex((chapter) => chapter.id === chapterId);
       if (index === -1) {
         throw new ApiError(404, "Chapter not found");
@@ -103,67 +100,99 @@ function inferBookIdFromChapterId(chapterId: string): string {
   return chapterId.slice(0, lastDashIndex);
 }
 
-export function useChapterContent(chapter: ChapterView | undefined) {
+// 加载指定字节范围的内容（可能跨多个 part）
+export function useBookContent(bookId: string | undefined, startByte: number, length: number) {
   return useQuery<string, ApiError>({
-    queryKey: [
-      "chapter-content",
-      chapter?.id,
-      chapter?.assetPath,
-      chapter?.startByte,
-      chapter?.length,
-    ],
-    enabled: Boolean(chapter),
+    queryKey: ["book-content", bookId, startByte, length],
+    enabled: Boolean(bookId) && startByte >= 0 && length > 0,
     retry: 1,
+    staleTime: Infinity, // 内容不会变化，永久缓存
     queryFn: async () => {
-      if (!chapter) {
-        throw new ApiError(400, "Missing chapter metadata");
+      if (!bookId) {
+        throw new ApiError(400, "Missing book id");
       }
-      const start = chapter.startByte;
-      const end = chapter.startByte + chapter.length - 1;
-      const response = await fetch(chapter.assetPath, {
-        headers: {
-          Range: `bytes=${start}-${end}`,
-        },
-      });
-      if (!response.ok) {
-        throw new ApiError(response.status, "章节内容加载失败");
+      
+      const metadata = await apiFetch<ChaptersFile>(`/data/${bookId}_chapters.json`);
+      const { parts, totalSize } = metadata.book;
+      
+      // 限制读取范围
+      const endByte = Math.min(startByte + length, totalSize);
+      const actualLength = endByte - startByte;
+      
+      if (actualLength <= 0) {
+        return "";
       }
-      let buffer = new Uint8Array(await response.arrayBuffer());
-      if (response.status !== 206 && response.status !== 416) {
-        buffer = buffer.slice(start, start + chapter.length);
+      
+      // 找到起始字节所在的 part
+      const chunks: Uint8Array[] = [];
+      let currentByte = 0;
+      let remainingStart = startByte;
+      let remainingLength = actualLength;
+      
+      for (const part of parts) {
+        const partEnd = currentByte + part.size;
+        
+        // 判断这个 part 是否包含我们需要的数据
+        if (remainingStart < partEnd && remainingLength > 0) {
+          // 计算在这个 part 中的偏移和长度
+          const offsetInPart = Math.max(0, remainingStart - currentByte);
+          const bytesToRead = Math.min(remainingLength, part.size - offsetInPart);
+          
+          // 读取这个 part 的数据
+          const rangeStart = offsetInPart;
+          const rangeEnd = offsetInPart + bytesToRead - 1;
+          
+          const response = await fetch(part.path, {
+            headers: {
+              Range: `bytes=${rangeStart}-${rangeEnd}`,
+            },
+          });
+          
+          if (!response.ok) {
+            throw new ApiError(response.status, `Failed to load ${part.path}`);
+          }
+          
+          let buffer = new Uint8Array(await response.arrayBuffer());
+          // 如果服务器不支持 Range，手动切片
+          if (response.status !== 206 && response.status !== 416) {
+            buffer = buffer.slice(rangeStart, rangeStart + bytesToRead);
+          }
+          
+          chunks.push(buffer);
+          
+          remainingStart = partEnd;
+          remainingLength -= bytesToRead;
+        }
+        
+        currentByte = partEnd;
+        
+        if (remainingLength <= 0) {
+          break;
+        }
       }
+      
+      // 合并所有 chunks
+      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const merged = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
       const decoder = new TextDecoder("utf-8");
-      const raw = decoder.decode(buffer);
-      return stripLeadingTitle(chapter.title, raw);
+      const text = decoder.decode(merged);
+      return text.replace(/^\uFEFF/, ""); // 移除 BOM
     },
   });
 }
 
-function stripLeadingTitle(title: string, content: string): string {
-  const withoutBom = content.replace(/^\uFEFF/, "");
-  const [firstLine, ...rest] = withoutBom.split(/\r?\n/);
-  if (firstLine?.trim() === title.trim()) {
-    // 保留内容开头的空白字符（缩进）
-    return rest.join("\n");
-  }
-  return withoutBom;
-}
-
-function toChapterView(assets: string[]) {
-  return (entry: ChapterEntry, index: number): ChapterView => {
-    const [id, title, assetIndex, startByte, length] = entry;
-    const assetPath = assets[assetIndex];
-    if (!assetPath) {
-      throw new ApiError(500, `Missing asset for chapter ${id}`);
-    }
-    return {
-      id,
-      title,
-      order: index + 1,
-      assetIndex,
-      assetPath,
-      startByte,
-      length,
-    };
+function toChapterView(entry: ChapterEntry, index: number): ChapterView {
+  const [id, title, byteOffset] = entry;
+  return {
+    id,
+    title,
+    order: index + 1,
+    byteOffset,
   };
 }

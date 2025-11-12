@@ -2,7 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppHeader } from "./components/AppHeader";
 import HomePage from "./pages/HomePage";
 import BookDetailPage from "./pages/BookDetailPage";
-import ReaderPage from "./pages/ReaderPage";
+import { ContinuousReaderPage } from "./pages/ContinuousReaderPage";
 import NotFoundPage from "./pages/NotFoundPage";
 
 const App: React.FC = () => {
@@ -13,7 +13,7 @@ const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/books/:bookId" element={<BookDetailPage />} />
-          <Route path="/reader/:chapterId" element={<ReaderPage />} />
+          <Route path="/reader/:chapterId" element={<ContinuousReaderPage />} />
           <Route path="/404" element={<NotFoundPage />} />
           <Route path="*" element={<Navigate to="/404" replace />} />
         </Routes>
