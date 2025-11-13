@@ -847,44 +847,34 @@ async function processBook(
   const originalBuffer = Buffer.from(originalText, "utf-8");
   
   // 在原始文本上识别章节（避免行数不匹配问题）
-  // 对每一行单独规范化空白（但保持行数一致）
-  const normalizedLines = originalText.split("\n").map(line => line.replace(/\r/g, "").replace(/\s+/g, " ").trim());
+  // 强制按行切分（不再尝试识别章节标题）
+  const LINES_PER_CHAPTER = 300; // 每章300行
+  const originalLines = originalText.split("\n");
+  const totalLines = originalLines.length;
   
-  let chapterIndices = parseChapterIndices(normalizedLines);
-  let usedFallbackRule = false; // 标记是否使用了保底规则
-  
-  // 保底规则：如果检测不到章节，按固定行数切分
-  if (chapterIndices.length === 0) {
-    const LINES_PER_CHAPTER = 300; // 每章行数
-    const totalLines = normalizedLines.length;
-    
-    if (totalLines < 10) {
-      // 文件太小，可能是无效内容
-      normalizedLines.length = 0;
-      const textPreview = originalText.slice(0, 500).replace(/\n/g, " ");
-      console.error(`❌ 失败: 《${meta.title}》内容过少（仅${totalLines}行）`);
-      console.error(`   文本预览: ${textPreview}...`);
-      return existing ?? null;
-    }
-    
-    console.warn(`⚠️  《${meta.title}》未检测到标准章节标题`);
-    console.warn(`   启用保底规则: 按 ${LINES_PER_CHAPTER} 行自动切分`);
-    console.warn(`   文件信息: ${originalText.length} 字符，${totalLines} 行`);
-    
-    usedFallbackRule = true;
-    chapterIndices = [];
-    for (let startLine = 0; startLine < totalLines; startLine += LINES_PER_CHAPTER) {
-      const endLine = Math.min(startLine + LINES_PER_CHAPTER, totalLines);
-      const chapterNum = Math.floor(startLine / LINES_PER_CHAPTER) + 1;
-      chapterIndices.push({
-        title: `第${chapterNum}章 第${startLine + 1}-${endLine}行`,
-        startLine,
-        endLine
-      });
-    }
-    
-    console.warn(`   已生成 ${chapterIndices.length} 个自动章节`);
+  if (totalLines < 10) {
+    // 文件太小，可能是无效内容
+    const textPreview = originalText.slice(0, 500).replace(/\n/g, " ");
+    console.error(`❌ 失败: 《${meta.title}》内容过少（仅${totalLines}行）`);
+    console.error(`   文本预览: ${textPreview}...`);
+    return existing ?? null;
   }
+  
+  console.log(`📖 《${meta.title}》按行切分: ${LINES_PER_CHAPTER} 行/章`);
+  console.log(`   文件信息: ${originalText.length} 字符，${totalLines} 行`);
+  
+  const chapterIndices = [];
+  for (let startLine = 0; startLine < totalLines; startLine += LINES_PER_CHAPTER) {
+    const endLine = Math.min(startLine + LINES_PER_CHAPTER, totalLines);
+    const chapterNum = Math.floor(startLine / LINES_PER_CHAPTER) + 1;
+    chapterIndices.push({
+      title: `第${chapterNum}章 第${startLine + 1}-${endLine}行`,
+      startLine,
+      endLine
+    });
+  }
+  
+  console.log(`   已生成 ${chapterIndices.length} 个章节`);
 
   if (existing) {
     await removeObsoleteAssets(existing.assets);
@@ -893,13 +883,12 @@ async function processBook(
   const bookDir = path.join(OUTPUT_DIR, meta.bookId);
   await fs.ensureDir(bookDir);
 
-  // 构建原始文本的行索引（字节位置）
-  const originalLines = originalText.split("\n");
-  const lineBytePositions: number[] = [0];
+  // 构建原始文本的行索引（每行起始字节位置）
+  const lineBytePositions: number[] = [];
   let currentBytePos = 0;
   for (let i = 0; i < originalLines.length; i++) {
+    lineBytePositions.push(currentBytePos); // 记录第 i 行的起始位置
     currentBytePos += Buffer.byteLength(originalLines[i], "utf-8") + 1; // +1 for \n
-    lineBytePositions.push(currentBytePos);
   }
   
   const totalSize = originalBuffer.length;
@@ -988,7 +977,6 @@ async function processBook(
   // 显式清理大对象，帮助GC回收内存
   originalLines.length = 0;
   lineBytePositions.length = 0;
-  normalizedLines.length = 0;
   chapterIndices.length = 0;
   chapterInfos.length = 0;
   
