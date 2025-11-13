@@ -4,8 +4,9 @@ import { useBook, useBookContent } from "../api/hooks_simple";
 import { siteConfig } from "../config/siteConfig";
 import { saveReadingProgress, getBookProgress } from "../utils/readingProgress";
 
-const CHUNK_SIZE = 50000; // 每次加载 50KB
-const BUFFER_SIZE = 5000; // 滚动缓冲区
+const CHUNK_SIZE = 100000; // 每次加载 100KB（约50页）
+const MAX_CHUNKS = 3;       // 最多保留3块内容
+const SAVE_INTERVAL = 100;  // 滚动100像素就保存一次（约5行）
 
 export const SimpleReaderPage: React.FC = () => {
   const { bookId } = useParams<{ bookId: string }>();
@@ -17,8 +18,10 @@ export const SimpleReaderPage: React.FC = () => {
   const [viewStart, setViewStart] = useState(0);
   const [viewEnd, setViewEnd] = useState(CHUNK_SIZE);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   
   const contentRef = useRef<HTMLDivElement>(null);
+  const lastScrollTop = useRef(0);
   
   // 从 localStorage 恢复阅读位置
   useEffect(() => {
@@ -27,9 +30,19 @@ export const SimpleReaderPage: React.FC = () => {
     const progress = getBookProgress(book.id);
     if (progress && progress.scrollPosition) {
       const savedByte = progress.scrollPosition;
-      setViewStart(Math.max(0, savedByte - CHUNK_SIZE / 2));
-      setViewEnd(savedByte + CHUNK_SIZE / 2);
+      // 居中加载：前后各一块，总共2块
+      // 例如：102KB → 加载 0-200KB，视口在 102KB
+      const idealStart = Math.max(0, savedByte - CHUNK_SIZE);
+      const idealEnd = Math.min(savedByte + CHUNK_SIZE, book.totalSize);
+      
+      setViewStart(idealStart);
+      setViewEnd(idealEnd);
+      
+      // 等内容加载后，滚动到保存的位置
+      // 这里不直接设置scrollTop，因为内容还没渲染
+      // 会在下面的 effect 中处理
     } else {
+      // 新书，从头开始
       setViewStart(0);
       setViewEnd(CHUNK_SIZE);
     }
@@ -43,56 +56,124 @@ export const SimpleReaderPage: React.FC = () => {
     viewEnd - viewStart
   );
   
-  // 保存阅读进度
+  // 内容加载完成后，恢复到保存的字节位置
   useEffect(() => {
-    if (!book) return;
+    if (!book || !contentData || !isInitialized || !contentRef.current) return;
     
-    const timer = setTimeout(() => {
-      const percent = ((viewStart / book.totalSize) * 100).toFixed(1);
-      saveReadingProgress({
-        bookId: book.id,
-        bookTitle: book.title,
-        author: book.author,
-        chapterId: book.id, // 无章节，用 bookId 作为路由参数
-        chapterTitle: `已读 ${percent}%`,
-        scrollPosition: viewStart,
-        bookHash: String(book.totalSize),
-        updatedAt: Date.now(),
-      });
-    }, 1000);
+    const progress = getBookProgress(book.id);
+    if (progress && progress.scrollPosition && progress.scrollPosition >= viewStart) {
+      // 计算相对位置：保存的字节在当前内容中的偏移百分比
+      const relativeBytes = progress.scrollPosition - viewStart;
+      const totalBytes = viewEnd - viewStart;
+      const relativePercent = relativeBytes / totalBytes;
+      
+      // 根据百分比设置滚动位置
+      const targetScrollTop = contentRef.current.scrollHeight * relativePercent;
+      contentRef.current.scrollTop = targetScrollTop;
+      
+      // 只恢复一次
+      // 清除标记，避免后续滚动时重复定位
+      // 这里不清除progress，只是不再自动定位
+    }
+  }, [contentData, book, isInitialized, viewStart, viewEnd]);
+  
+  // 保存阅读进度（高频保存）
+  const lastSavePosition = useRef(0);
+  
+  useEffect(() => {
+    if (!book || !contentRef.current || !contentData) return;
     
-    return () => clearTimeout(timer);
-  }, [book, viewStart]);
+    const handleScrollSave = () => {
+      const scrollTop = contentRef.current?.scrollTop || 0;
+      
+      // 每滚动 SAVE_INTERVAL 像素就保存一次
+      if (Math.abs(scrollTop - lastSavePosition.current) > SAVE_INTERVAL) {
+        lastSavePosition.current = scrollTop;
+        
+        // 计算当前的字节位置（根据滚动百分比）
+        const scrollHeight = contentRef.current?.scrollHeight || 1;
+        const scrollPercent = scrollTop / scrollHeight;
+        const currentByte = Math.floor(viewStart + (viewEnd - viewStart) * scrollPercent);
+        
+        // 获取当前可见的第一行文本作为预览
+        const firstVisibleLine = contentData.split('\n').find(line => line.trim());
+        const preview = firstVisibleLine ? firstVisibleLine.trim().substring(0, 20) : '';
+        
+        const percent = ((currentByte / book.totalSize) * 100).toFixed(1);
+        
+        saveReadingProgress({
+          bookId: book.id,
+          bookTitle: book.title,
+          author: book.author,
+          chapterId: book.id,
+          chapterTitle: preview ? `${percent}% · ${preview}...` : `已读 ${percent}%`,
+          scrollPosition: currentByte,
+          bookHash: String(book.totalSize),
+          updatedAt: Date.now(),
+        });
+      }
+    };
+    
+    const el = contentRef.current;
+    el.addEventListener('scroll', handleScrollSave);
+    return () => el.removeEventListener('scroll', handleScrollSave);
+  }, [book, viewStart, viewEnd, contentData]);
   
   // 滚动加载更多
   const handleScroll = useCallback(() => {
-    if (!contentRef.current || !book || isContentLoading) return;
+    if (!contentRef.current || !book || isLoadingMore) return;
     
     const { scrollTop, scrollHeight, clientHeight } = contentRef.current;
     const scrollBottom = scrollHeight - scrollTop - clientHeight;
+    const scrollDirection = scrollTop > lastScrollTop.current ? 'down' : 'up';
+    lastScrollTop.current = scrollTop;
     
-    // 距离底部小于 BUFFER_SIZE 时，向下扩展窗口
-    if (scrollBottom < BUFFER_SIZE) {
+    // 向下滚动：距离底部不到 2 屏时，加载下一块
+    if (scrollDirection === 'down' && scrollBottom < clientHeight * 2 && viewEnd < book.totalSize) {
       const newEnd = Math.min(viewEnd + CHUNK_SIZE, book.totalSize);
       if (newEnd > viewEnd) {
+        setIsLoadingMore(true);
         setViewEnd(newEnd);
-        // 如果窗口太大，缩小前面的部分
-        if (newEnd - viewStart > CHUNK_SIZE * 3) {
+        
+        // 如果超过 MAX_CHUNKS 块，移除最前面的块
+        const currentChunks = Math.ceil((viewEnd - viewStart) / CHUNK_SIZE);
+        if (currentChunks >= MAX_CHUNKS) {
           setViewStart(viewStart + CHUNK_SIZE);
         }
+        
+        setTimeout(() => setIsLoadingMore(false), 300);
       }
     }
     
-    // 距离顶部小于 BUFFER_SIZE 时，向上扩展窗口
-    if (scrollTop < BUFFER_SIZE && viewStart > 0) {
+    // 向上滚动：距离顶部不到 1 屏时，向前扩展
+    if (scrollDirection === 'up' && scrollTop < clientHeight && viewStart > 0) {
       const newStart = Math.max(0, viewStart - CHUNK_SIZE);
+      setIsLoadingMore(true);
+      
+      // 保存当前滚动位置（相对于文档顶部）
+      const oldScrollTop = scrollTop;
+      
       setViewStart(newStart);
-      // 如果窗口太大，缩小后面的部分
-      if (viewEnd - newStart > CHUNK_SIZE * 3) {
+      
+      // 如果超过 MAX_CHUNKS 块，移除最后面的块
+      const currentChunks = Math.ceil((viewEnd - viewStart) / CHUNK_SIZE);
+      if (currentChunks >= MAX_CHUNKS) {
         setViewEnd(viewEnd - CHUNK_SIZE);
       }
+      
+      // 内容加载后，恢复滚动位置
+      requestAnimationFrame(() => {
+        if (contentRef.current) {
+          // 新内容增加的高度 = 加载的字节数对应的渲染高度
+          // 简单方案：等内容渲染完，保持用户看到的内容不变
+          const newScrollHeight = contentRef.current.scrollHeight;
+          const addedHeight = newScrollHeight - scrollHeight;
+          contentRef.current.scrollTop = oldScrollTop + addedHeight;
+        }
+        setIsLoadingMore(false);
+      });
     }
-  }, [viewStart, viewEnd, book, isContentLoading]);
+  }, [viewStart, viewEnd, book, isLoadingMore]);
   
   useEffect(() => {
     const el = contentRef.current;

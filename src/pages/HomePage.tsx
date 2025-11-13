@@ -1,7 +1,7 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import FlexSearch from "flexsearch";
-import { useBooks } from "../api/hooks";
+import { useBooks } from "../api/hooks_simple";
 import { useDebounce } from "../hooks/useDebounce";
 import type { BookSummary } from "../api/types";
 import { useReadingHistory } from "../hooks/useReadingHistory";

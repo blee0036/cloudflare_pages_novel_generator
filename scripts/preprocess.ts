@@ -864,7 +864,15 @@ async function processBook(
 
   const totalSize = originalBuffer.length;
   
-  // 按固定大小切割 part 文件（简单按字节切，无需对齐行边界）
+  // 按固定大小切割 part 文件（在行边界切分，避免字符截断）
+  const originalLines = originalText.split("\n");
+  const lineStarts: number[] = [0];
+  let pos = 0;
+  for (const line of originalLines) {
+    pos += Buffer.byteLength(line + "\n", "utf-8");
+    lineStarts.push(pos);
+  }
+  
   const partInfos: PartInfo[] = [];
   let partIndex = 1;
   let partStartByte = 0;
@@ -874,7 +882,17 @@ async function processBook(
     const partPath = `/books/${meta.bookId}/${partFilename}`;
     const fullPath = path.join(bookDir, partFilename);
     
-    const partEndByte = Math.min(partStartByte + MAX_CHUNK_SIZE, totalSize);
+    let partEndByte = Math.min(partStartByte + MAX_CHUNK_SIZE, totalSize);
+    
+    // 如果不是文件末尾，找到最近的行边界
+    if (partEndByte < totalSize) {
+      // 找到第一个 >= partEndByte 的行开始位置
+      const lineIndex = lineStarts.findIndex(start => start >= partEndByte);
+      if (lineIndex > 0) {
+        partEndByte = lineStarts[lineIndex];
+      }
+    }
+    
     const partSize = partEndByte - partStartByte;
     const partBuffer = originalBuffer.slice(partStartByte, partEndByte);
     

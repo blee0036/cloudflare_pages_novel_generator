@@ -100,8 +100,11 @@ export function useBookContent(bookId: string | undefined, startByte: number, le
         offset += chunk.length;
       }
       
-      const decoder = new TextDecoder("utf-8");
+      // 使用非严格模式的 TextDecoder，允许不完整的 UTF-8 字符
+      // 如果末尾被截断，会显示 �，但下次加载会补全
+      const decoder = new TextDecoder("utf-8", { fatal: false });
       const text = decoder.decode(merged);
+      
       return text.replace(/^\uFEFF/, ""); // 移除 BOM
     },
   });
