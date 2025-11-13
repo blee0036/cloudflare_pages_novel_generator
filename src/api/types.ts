@@ -10,7 +10,13 @@ export type BookRow = [string, string, string, number];
 export interface BooksFile {
   generatedAt: string;
   columns: ["id", "title", "author", "totalChapters"];
-  books: BookRow[];
+  books: BookSummary[]; // 转换后的对象数组
+}
+
+export interface BooksFileRaw {
+  generatedAt: string;
+  columns: ["id", "title", "author", "totalChapters"];
+  books: BookRow[]; // 原始的数组格式
 }
 
 export interface PartInfo {

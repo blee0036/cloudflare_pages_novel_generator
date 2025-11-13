@@ -1,12 +1,25 @@
 import { useQuery } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "./client";
-import type { ChaptersFile, BooksFile } from "./types";
+import type { ChaptersFile, BooksFile, BooksFileRaw } from "./types";
 
 // 获取所有书籍列表
 export function useBooks() {
   return useQuery<BooksFile, ApiError>({
     queryKey: ["books"],
-    queryFn: () => apiFetch<BooksFile>("/data/books.json"),
+    queryFn: async () => {
+      const raw = await apiFetch<BooksFileRaw>("/data/books.json");
+      // 转换数组格式为对象数组
+      const books = raw.books.map(row => ({
+        id: row[0],
+        title: row[1],
+        author: row[2],
+        totalChapters: row[3],
+      }));
+      return {
+        ...raw,
+        books,
+      };
+    },
     staleTime: Infinity,
   });
 }
