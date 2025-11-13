@@ -121,15 +121,26 @@ export const SimpleReaderPage: React.FC = () => {
   
   // 滚动加载更多
   const handleScroll = useCallback(() => {
-    if (!contentRef.current || !book || isLoadingMore) return;
+    if (!contentRef.current || !book) return;
     
     const { scrollTop, scrollHeight, clientHeight } = contentRef.current;
     const scrollBottom = scrollHeight - scrollTop - clientHeight;
-    const scrollDirection = scrollTop > lastScrollTop.current ? 'down' : 'up';
+    
+    // 判断滚动方向（大幅度拖动也能检测）
+    const scrollDelta = scrollTop - lastScrollTop.current;
+    const scrollDirection = scrollDelta > 0 ? 'down' : scrollDelta < 0 ? 'up' : 'none';
     lastScrollTop.current = scrollTop;
     
     // 向下滚动：距离底部不到 2 屏时，加载下一块
-    if (scrollDirection === 'down' && scrollBottom < clientHeight * 2 && viewEnd < book.totalSize) {
+    // 或者直接检测：scrollBottom < 2 屏，无论方向
+    if (scrollBottom < clientHeight * 2 && viewEnd < book.totalSize && !isLoadingMore) {
+      console.log('[滚动加载] 向下', {
+        scrollBottom,
+        threshold: clientHeight * 2,
+        viewEnd,
+        totalSize: book.totalSize
+      });
+      
       const newEnd = Math.min(viewEnd + CHUNK_SIZE, book.totalSize);
       if (newEnd > viewEnd) {
         setIsLoadingMore(true);
@@ -146,7 +157,13 @@ export const SimpleReaderPage: React.FC = () => {
     }
     
     // 向上滚动：距离顶部不到 1 屏时，向前扩展
-    if (scrollDirection === 'up' && scrollTop < clientHeight && viewStart > 0) {
+    if (scrollTop < clientHeight && viewStart > 0 && !isLoadingMore) {
+      console.log('[滚动加载] 向上', {
+        scrollTop,
+        threshold: clientHeight,
+        viewStart
+      });
+      
       const newStart = Math.max(0, viewStart - CHUNK_SIZE);
       setIsLoadingMore(true);
       
