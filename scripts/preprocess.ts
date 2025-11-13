@@ -843,48 +843,17 @@ async function processBook(
     return existing ?? null;
   }
 
+  // 检查内容长度
+  const totalLines = originalText.split("\n").length;
+  if (totalLines < 10) {
+    const textPreview = originalText.slice(0, 500).replace(/\n/g, " ");
+    console.error(`❌ 失败: 《${meta.title}》内容过少（仅${totalLines}行）`);
+    console.error(`   文本预览: ${textPreview}...`);
+    return existing ?? null;
+  }
+
   // 保存原始文本的 Buffer，用于切片输出
   const originalBuffer = Buffer.from(originalText, "utf-8");
-  
-  // 在原始文本上识别章节（避免行数不匹配问题）
-  // 对每一行单独规范化空白（但保持行数一致）
-  const normalizedLines = originalText.split("\n").map(line => line.replace(/\r/g, "").replace(/\s+/g, " ").trim());
-  
-  let chapterIndices = parseChapterIndices(normalizedLines);
-  let usedFallbackRule = false; // 标记是否使用了保底规则
-  
-  // 保底规则：如果检测不到章节，按固定行数切分
-  if (chapterIndices.length === 0) {
-    const LINES_PER_CHAPTER = 300; // 每章行数
-    const totalLines = normalizedLines.length;
-    
-    if (totalLines < 10) {
-      // 文件太小，可能是无效内容
-      normalizedLines.length = 0;
-      const textPreview = originalText.slice(0, 500).replace(/\n/g, " ");
-      console.error(`❌ 失败: 《${meta.title}》内容过少（仅${totalLines}行）`);
-      console.error(`   文本预览: ${textPreview}...`);
-      return existing ?? null;
-    }
-    
-    console.warn(`⚠️  《${meta.title}》未检测到标准章节标题`);
-    console.warn(`   启用保底规则: 按 ${LINES_PER_CHAPTER} 行自动切分`);
-    console.warn(`   文件信息: ${originalText.length} 字符，${totalLines} 行`);
-    
-    usedFallbackRule = true;
-    chapterIndices = [];
-    for (let startLine = 0; startLine < totalLines; startLine += LINES_PER_CHAPTER) {
-      const endLine = Math.min(startLine + LINES_PER_CHAPTER, totalLines);
-      const chapterNum = Math.floor(startLine / LINES_PER_CHAPTER) + 1;
-      chapterIndices.push({
-        title: `第${chapterNum}章 第${startLine + 1}-${endLine}行`,
-        startLine,
-        endLine
-      });
-    }
-    
-    console.warn(`   已生成 ${chapterIndices.length} 个自动章节`);
-  }
 
   if (existing) {
     await removeObsoleteAssets(existing.assets);
@@ -893,43 +862,9 @@ async function processBook(
   const bookDir = path.join(OUTPUT_DIR, meta.bookId);
   await fs.ensureDir(bookDir);
 
-  // 构建原始文本的行索引（字节位置）
-  const originalLines = originalText.split("\n");
-  const lineBytePositions: number[] = [0];
-  let currentBytePos = 0;
-  for (let i = 0; i < originalLines.length; i++) {
-    currentBytePos += Buffer.byteLength(originalLines[i], "utf-8") + 1; // +1 for \n
-    lineBytePositions.push(currentBytePos);
-  }
-  
   const totalSize = originalBuffer.length;
   
-  // 计算每个章节的全局字节偏移
-  const chapterInfos: Array<{ id: string; title: string; byteOffset: number }> = [];
-  for (let idx = 0; idx < chapterIndices.length; idx += 1) {
-    const chapterIndex = chapterIndices[idx];
-    const chapterOrder = idx + 1;
-    const chapterId = `${meta.bookId}-${String(chapterOrder).padStart(5, "0")}`;
-    
-    // 边界检查，避免数组越界
-    const startLine = chapterIndex.startLine;
-    const byteOffset = startLine < lineBytePositions.length 
-      ? lineBytePositions[startLine] 
-      : totalSize; // 如果越界，使用文件末尾
-    
-    // 只保存有效的章节（byteOffset 在合理范围内）
-    if (byteOffset < totalSize) {
-      chapterInfos.push({
-        id: chapterId,
-        title: chapterIndex.title.trim() || `章节 ${chapterOrder}`,
-        byteOffset,
-      });
-    } else {
-      console.warn(`⚠️  章节 ${chapterOrder} "${chapterIndex.title}" 字节偏移超出范围，已跳过`);
-    }
-  }
-  
-  // 按固定大小切割 part 文件（在行边界切）
+  // 按固定大小切割 part 文件（简单按字节切，无需对齐行边界）
   const partInfos: PartInfo[] = [];
   let partIndex = 1;
   let partStartByte = 0;
@@ -939,18 +874,7 @@ async function processBook(
     const partPath = `/books/${meta.bookId}/${partFilename}`;
     const fullPath = path.join(bookDir, partFilename);
     
-    // 计算这个 part 的结束位置（不超过 MAX_CHUNK_SIZE，在行边界）
-    let partEndByte = Math.min(partStartByte + MAX_CHUNK_SIZE, totalSize);
-    
-    // 如果不是最后一个 part，找到最近的行边界
-    if (partEndByte < totalSize) {
-      // 找到 partEndByte 对应的行号
-      let lineIndex = lineBytePositions.findIndex(pos => pos > partEndByte);
-      if (lineIndex > 0) {
-        partEndByte = lineBytePositions[lineIndex - 1]; // 回退到上一行的结尾
-      }
-    }
-    
+    const partEndByte = Math.min(partStartByte + MAX_CHUNK_SIZE, totalSize);
     const partSize = partEndByte - partStartByte;
     const partBuffer = originalBuffer.slice(partStartByte, partEndByte);
     
@@ -964,40 +888,28 @@ async function processBook(
     partStartByte = partEndByte;
     partIndex += 1;
   }
-  // 生成紧凑的章节数组：[id, 标题, 全局字节偏移]
-  const compactChapters: ChapterCompactEntry[] = chapterInfos.map(ch => [
-    ch.id,
-    ch.title,
-    ch.byteOffset,
-  ]);
-
-  const chaptersPayload: ChaptersFile = {
+  // 保持旧的JSON结构，兼容已有数据
+  const chaptersPayload = {
     book: {
       id: meta.bookId,
       title: meta.title,
       author: meta.author,
-      totalChapters: compactChapters.length,
+      totalChapters: 0,
       parts: partInfos,
       totalSize,
     },
-    chapters: compactChapters,
+    chapters: [], // 空章节数组
   };
+  
   const chaptersPath = path.join(DATA_DIR, `${meta.bookId}_chapters.json`);
   await fs.writeJson(chaptersPath, chaptersPayload, { spaces: 2 });
-
-  // 显式清理大对象，帮助GC回收内存
-  originalLines.length = 0;
-  lineBytePositions.length = 0;
-  normalizedLines.length = 0;
-  chapterIndices.length = 0;
-  chapterInfos.length = 0;
   
   return {
     hash: await computeFileHash(rarPath),
     title: meta.title,
     author: meta.author,
-    totalChapters: compactChapters.length,
-    assets: partInfos.map(p => p.path),
+    totalChapters: 0,
+    assets: [chaptersPath, ...partInfos.map(p => path.join(bookDir, path.basename(p.path)))],
   };
 }
 
@@ -1115,9 +1027,9 @@ async function main(): Promise<void> {
       const processed = await processBook(rarPath, meta, manifest, existing);
       if (processed) {
         nextManifest.books[meta.bookId] = processed;
-        console.log(`${progress} ✓ 完成《${meta.title}》，共 ${processed.totalChapters} 章。`);
         processedCount += 1;
         processedFiles.push(file);
+        console.log(`${progress} ✓ 完成《${meta.title}》`);
       } else {
         console.log(`${progress} ✗ 失败: 《${meta.title}》（详见上方错误信息）`);
         processedFiles.push(file); // 即使失败也标记为已处理，避免重复尝试
