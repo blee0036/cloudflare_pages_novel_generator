@@ -2,6 +2,34 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch, ApiError } from "./client";
 import type { BookSummary, BooksFile, ChaptersFile, ChapterEntry } from "./types";
 
+// 浏览器内存缓存 part 内容，避免重复下载
+const partCache = new Map<string, Promise<Uint8Array>>();
+
+async function loadPart(path: string): Promise<Uint8Array> {
+  const cached = partCache.get(path);
+  if (cached) {
+    return cached;
+  }
+
+  const promise = fetch(path).then(async (response) => {
+    if (!response.ok) {
+      throw new ApiError(response.status, `Failed to load ${path}`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  });
+
+  // 只有成功的请求才留在缓存里，失败时清理
+  partCache.set(
+    path,
+    promise.catch((error) => {
+      partCache.delete(path);
+      throw error;
+    }),
+  );
+
+  return promise;
+}
+
 export interface BooksData {
   generatedAt: string;
   books: BookSummary[];
@@ -52,7 +80,22 @@ export function useBookDetail(bookId: string | undefined) {
     queryKey: ["book", bookId],
     queryFn: async () => {
       const payload = await apiFetch<ChaptersFile>(`/data/${bookId}_chapters.json`);
-      const chapters = payload.chapters.map(toChapterView);
+      
+      // 验证数据格式
+      if (!payload.book || !Array.isArray(payload.chapters)) {
+        throw new ApiError(500, "Invalid book data format");
+      }
+      
+      // 过滤并验证章节数据
+      const validChapters = payload.chapters.filter((entry) => {
+        return entry && Array.isArray(entry) && entry.length === 3;
+      });
+      
+      if (validChapters.length === 0 && payload.chapters.length > 0) {
+        throw new ApiError(500, "No valid chapters found in book data");
+      }
+      
+      const chapters = validChapters.map(toChapterView);
       return {
         book: payload.book,
         chapters,
@@ -74,7 +117,22 @@ export function useChapter(chapterId: string | undefined) {
       }
       const bookId = inferBookIdFromChapterId(chapterId);
       const data = await apiFetch<ChaptersFile>(`/data/${bookId}_chapters.json`);
-      const chapters = data.chapters.map(toChapterView);
+      
+      // 验证数据格式
+      if (!data.book || !Array.isArray(data.chapters)) {
+        throw new ApiError(500, "Invalid book data format");
+      }
+      
+      // 过滤并验证章节数据
+      const validChapters = data.chapters.filter((entry) => {
+        return entry && Array.isArray(entry) && entry.length === 3;
+      });
+      
+      if (validChapters.length === 0) {
+        throw new ApiError(500, "No valid chapters found in book data");
+      }
+      
+      const chapters = validChapters.map(toChapterView);
       const index = chapters.findIndex((chapter) => chapter.id === chapterId);
       if (index === -1) {
         throw new ApiError(404, "Chapter not found");
@@ -138,27 +196,9 @@ export function useBookContent(bookId: string | undefined, startByte: number, le
           const offsetInPart = Math.max(0, remainingStart - currentByte);
           const bytesToRead = Math.min(remainingLength, part.size - offsetInPart);
           
-          // 读取这个 part 的数据
-          const rangeStart = offsetInPart;
-          const rangeEnd = offsetInPart + bytesToRead - 1;
-          
-          const response = await fetch(part.path, {
-            headers: {
-              Range: `bytes=${rangeStart}-${rangeEnd}`,
-            },
-          });
-          
-          if (!response.ok) {
-            throw new ApiError(response.status, `Failed to load ${part.path}`);
-          }
-          
-          let buffer = new Uint8Array(await response.arrayBuffer());
-          // 如果服务器不支持 Range，手动切片
-          if (response.status !== 206 && response.status !== 416) {
-            buffer = buffer.slice(rangeStart, rangeStart + bytesToRead);
-          }
-          
-          chunks.push(buffer);
+          // 读取整个 part（支持 gzip 缓存），在浏览器内存中切片
+          const buffer = await loadPart(part.path);
+          chunks.push(buffer.subarray(offsetInPart, offsetInPart + bytesToRead));
           
           remainingStart = partEnd;
           remainingLength -= bytesToRead;
@@ -188,7 +228,17 @@ export function useBookContent(bookId: string | undefined, startByte: number, le
 }
 
 function toChapterView(entry: ChapterEntry, index: number): ChapterView {
+  // 添加额外的类型检查
+  if (!entry || !Array.isArray(entry) || entry.length < 3) {
+    throw new ApiError(500, "Invalid chapter entry format");
+  }
+  
   const [id, title, byteOffset] = entry;
+  
+  if (typeof id !== "string" || typeof title !== "string" || typeof byteOffset !== "number") {
+    throw new ApiError(500, "Invalid chapter entry data types");
+  }
+  
   return {
     id,
     title,

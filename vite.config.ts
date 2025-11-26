@@ -40,6 +40,22 @@ export default defineConfig({
         }
       },
     },
+    {
+      name: "copy-cloudflare-config",
+      closeBundle() {
+        // 复制 _headers 到 dist 目录
+        const publicDir = path.resolve(__dirname, "public");
+        const distDir = path.resolve(__dirname, "dist");
+        
+        const headersSource = path.join(publicDir, "_headers");
+        const headersDest = path.join(distDir, "_headers");
+        
+        if (fs.existsSync(headersSource)) {
+          fs.copyFileSync(headersSource, headersDest);
+          console.log("✔ 已复制 _headers 到 dist/");
+        }
+      },
+    },
   ],
   publicDir: false, // 禁用自动复制 public/，避免复制大量书籍数据
   server: {
