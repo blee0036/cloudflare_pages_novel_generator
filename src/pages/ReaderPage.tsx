@@ -6,6 +6,11 @@ import { siteConfig } from "../config/siteConfig";
 import { ReaderSettings as ReaderSettingsPanel } from "../components/ReaderSettings";
 import { loadSettings, saveSettings, applySettings, type ReaderSettings } from "../utils/readerSettings";
 
+// 防止浏览器自动恢复上一页的滚动位置
+if (typeof window !== "undefined" && "scrollRestoration" in window.history) {
+  window.history.scrollRestoration = "manual";
+}
+
 const ReaderPage: React.FC = () => {
   const { chapterId } = useParams();
   const navigate = useNavigate();
@@ -71,24 +76,31 @@ const ReaderPage: React.FC = () => {
 
   // 恢复滚动位置
   useEffect(() => {
-    if (!data?.book || !data.chapter || !content || restoredScroll) return;
-    
+    if (!data?.book || !data.chapter || restoredScroll) return;
+
     const progress = getBookProgress(data.book.id);
-    if (progress && progress.chapterId === data.chapter.id && progress.scrollPosition) {
-      // 检查文件是否变化（通过totalChapters判断）
-      if (progress.bookHash && progress.bookHash !== String(data.book.totalChapters)) {
-        console.warn('书籍文件已更新，跳过滚动位置恢复');
-      } else {
-        // 延迟恢复滚动位置，确保内容已渲染
-        setTimeout(() => {
-          window.scrollTo({ top: progress.scrollPosition!, behavior: 'smooth' });
-        }, 100);
-      }
-    } else {
-      // 新章节，滚动到顶部
+    // 没有记录或章节不匹配时，立即回到顶部
+    if (!progress || progress.chapterId !== data.chapter.id || !progress.scrollPosition) {
       window.scrollTo({ top: 0 });
+      setRestoredScroll(true);
+      return;
     }
-    setRestoredScroll(true);
+
+    if (!content) return;
+
+    // 检查文件是否变化（通过totalChapters判断）
+    if (progress.bookHash && progress.bookHash !== String(data.book.totalChapters)) {
+      console.warn('书籍文件已更新，跳过滚动位置恢复');
+      window.scrollTo({ top: 0 });
+      setRestoredScroll(true);
+      return;
+    }
+
+    // 延迟恢复滚动位置，确保内容已渲染
+    setTimeout(() => {
+      window.scrollTo({ top: progress.scrollPosition!, behavior: 'smooth' });
+      setRestoredScroll(true);
+    }, 100);
   }, [data, content, restoredScroll]);
 
   // 保存阅读进度（包含滚动位置）

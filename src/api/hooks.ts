@@ -4,6 +4,7 @@ import type { BookSummary, BooksFile, ChaptersFile, ChapterEntry } from "./types
 
 // 浏览器内存缓存 part 内容，避免重复下载
 const partCache = new Map<string, Promise<Uint8Array>>();
+const UTF8_GUARD_BYTES = 4; // 多读几个字节，避免截断 UTF-8 多字节字符
 
 async function loadPart(path: string): Promise<Uint8Array> {
   const cached = partCache.get(path);
@@ -28,6 +29,49 @@ async function loadPart(path: string): Promise<Uint8Array> {
   );
 
   return promise;
+}
+
+function trimIncompleteUtf8(buffer: Uint8Array): Uint8Array {
+  // 如果尾部是未完整的 UTF-8 多字节序列，裁掉它，避免出现 �
+  let end = buffer.length;
+  let i = end - 1;
+  let continuation = 0;
+
+  // 追溯最多 4 个字节，找到潜在的起始字节
+  while (i >= 0 && continuation < 4 && (buffer[i] & 0b1100_0000) === 0b1000_0000) {
+    continuation += 1;
+    i -= 1;
+  }
+
+  if (continuation === 0) {
+    return buffer;
+  }
+
+  if (i < 0) {
+    // 整个缓冲区都是不完整的 continuation bytes，直接清空
+    return new Uint8Array();
+  }
+
+  const lead = buffer[i];
+  let expected = 0;
+  if ((lead & 0b1000_0000) === 0) {
+    expected = 0;
+  } else if ((lead & 0b1110_0000) === 0b1100_0000) {
+    expected = 1;
+  } else if ((lead & 0b1111_0000) === 0b1110_0000) {
+    expected = 2;
+  } else if ((lead & 0b1111_1000) === 0b1111_0000) {
+    expected = 3;
+  } else {
+    return buffer;
+  }
+
+  const actual = continuation;
+  if (actual < expected) {
+    // 去掉不完整的序列（含起始字节）
+    return buffer.subarray(0, i);
+  }
+  return buffer;
 }
 
 export interface BooksData {
@@ -194,14 +238,16 @@ export function useBookContent(bookId: string | undefined, startByte: number, le
         if (remainingStart < partEnd && remainingLength > 0) {
           // 计算在这个 part 中的偏移和长度
           const offsetInPart = Math.max(0, remainingStart - currentByte);
-          const bytesToRead = Math.min(remainingLength, part.size - offsetInPart);
+          const bytesCore = Math.min(remainingLength, part.size - offsetInPart);
+          const guard = Math.min(UTF8_GUARD_BYTES, part.size - offsetInPart - bytesCore);
+          const bytesToRead = bytesCore + guard;
           
           // 读取整个 part（支持 gzip 缓存），在浏览器内存中切片
           const buffer = await loadPart(part.path);
           chunks.push(buffer.subarray(offsetInPart, offsetInPart + bytesToRead));
           
           remainingStart = partEnd;
-          remainingLength -= bytesToRead;
+          remainingLength -= bytesCore;
         }
         
         currentByte = partEnd;
@@ -221,8 +267,10 @@ export function useBookContent(bookId: string | undefined, startByte: number, le
       }
       
       const decoder = new TextDecoder("utf-8");
-      const text = decoder.decode(merged);
-      return text.replace(/^\uFEFF/, ""); // 移除 BOM
+      const safeBuffer = trimIncompleteUtf8(merged);
+      const text = decoder.decode(safeBuffer);
+      // 去掉 BOM，以及尾部可能的 �（不完整字符）
+      return text.replace(/^\uFEFF/, "").replace(/\uFFFD+$/, "");
     },
   });
 }
