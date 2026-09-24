@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+dist/
+public/books/
+public/data/
+
+# Reference repository
+koodo-reader/
+
+# Novel source archives
+zip-novel/*.rar
+!zip-novel/.gitkeep
+
+# Logs & temp
+*.log
+.DS_Store
+Thumbs.db
