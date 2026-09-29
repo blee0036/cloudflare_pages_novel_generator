@@ -1,0 +1,33 @@
+# 预处理管线的 Python 依赖（需求 7.7 / 7.9）
+#
+# 安装：python -m pip install -r scripts/requirements.txt
+#
+# 这些都是**必需**依赖，不是"有则用、无则降级"的可选项。
+# `scripts/preprocess.py` 在入口统一检查，缺任何一个都报错退出（非零码）。
+
+# 编码探测：BOM 之后的候选编码判定（lib/encoding.py）
+charset-normalizer==3.4.8
+
+# 书名/作者的拼音首字母缩写，写入 books.json（lib/pinyin.py）
+pypinyin==0.55.0
+
+# 解压 .7z 源文件（lib/archive.py）；zip/tar/tar.gz 走标准库
+py7zr==1.0.0
+
+# 源压缩包 > 10MB 的书用它压 .txt.gz（preprocess.compress_text，需求 10.7）。
+# 只用 `zopfli.gzip.compress`——输出标准 gzip 流，前端 DecompressionStream("gzip")
+# 零改动；同一个包输出 zlib 与裸 deflate 的接口一律不可用，误用会让前端**静默**
+# 解不开而构建期毫无征兆。
+# 版本钉死 0.2.3：实测《极品全能高手》gz9 产物 26,377,704 B（25 MiB 上限的 100.62%，
+# 越限），换它后 24,267,696 B（92.57%）。缺失时报错退出，**不回退 gz9**——回退等于
+# 对一本已知越限的书静默写出部署不上去的产物。
+zopfli==0.2.3
+
+# 另需的**非 Python** 依赖：
+# - 解压 .rar 需要一个外部工具。lib/archive.py 按此顺序在 PATH 上探测**一次**：
+#       unar / unrar / 7z / 7zz / 7za / bsdtar / tar
+#   选中的那个若解压失败就直接报错，不再换下一个（不做多级回退）。
+#   Windows 10/11 自带的 C:\Windows\System32\tar.exe 即 bsdtar，libarchive 可读 rar/rar5，
+#   无需额外安装；macOS 用 `brew install unar`，Linux 用 `apt install unar`。
+#   一个都没有时报错退出，并在信息里指出具体的源文件与修复方式，不静默跳过这本书。
+# - .zip / .tar / .tar.gz / .tgz 走标准库，无外部依赖；.7z 走上面的 py7zr。

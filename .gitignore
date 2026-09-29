@@ -3,13 +3,32 @@ node_modules/
 dist/
 public/books/
 public/data/
+.kiro/
 
-# Reference repository
+# Reference repositories (read-only, not part of this project)
 koodo-reader/
+legado/
 
-# Novel source archives
-zip-novel/*.rar
+# Novel source archives：整个目录的内容都是本机源文件（压缩包、排行榜.xls 之类），
+# 一律不进库。写成 `zip-novel/*` 而不是 `zip-novel/`——忽略目录本身时 git 不再下探，
+# 下面那条 `.gitkeep` 的反选就失效了
+zip-novel/*
 !zip-novel/.gitkeep
+wait-novel/
+
+
+# Python 预处理包的字节码缓存
+__pycache__/
+*.py[cod]
+
+# 预处理的增量清单：本机构建状态，描述的正是同样 gitignore 的 public/books 与
+# public/data。进版本库会让新 clone 以为 7000 本已经处理过（scripts/lib/manifest.py）
+.preprocess-manifest.json
+.preprocess-manifest.json.tmp*
+
+# site.config.json（站点名/简介/关键词/favicon）**刻意不在忽略列表里**：它是部署的一部分，
+# 构建期注入进 index.html 与产物（需求 9.2）。忽略掉会让 Pages 的 CI 构建读不到它，
+# 从而静默用内置默认值发布——本机看着没问题，线上标题却不对。样板见 site.config.example.json
 
 # Logs & temp
 *.log

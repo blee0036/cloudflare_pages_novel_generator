@@ -3,8 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>云端小说书架 - Web Reader</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📖</text></svg>">
+    <!-- %SITE_*% 由构建期注入（需求 9.2）：源为可选的 site.config.json，
+         缺失时用 src/utils/siteConfig.ts 的内置默认值。 -->
+    <title>%SITE_NAME%</title>
+    <meta name="description" content="%SITE_DESCRIPTION%" />
+    <meta name="keywords" content="%SITE_KEYWORDS%" />
+    <link rel="icon" href="%SITE_FAVICON%" />
   </head>
   <body>
     <div id="root"></div>

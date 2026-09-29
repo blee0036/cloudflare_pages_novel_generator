@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">云端小说书架</title>
+  <defs>
+    <!-- 底色取自默认主题的强调色 accent（#3b82f6）上下各延一档。注意 XML 注释里不能出现连续两个减号 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#60a5fa"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <!-- 书页靠书脊一侧略暗，给出翻开的弧度感 -->
+    <linearGradient id="pageL" x1="10" y1="0" x2="32" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e0ecff"/>
+    </linearGradient>
+    <linearGradient id="pageR" x1="54" y1="0" x2="32" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e0ecff"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角底板 -->
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+
+  <!-- 封皮 -->
+  <path d="M32 24C26 20 17 19 6 20V48C17 47 26 48 32 52C38 48 47 47 58 48V20C47 19 38 20 32 24Z" fill="#1e3a8a"/>
+  <!-- 书页厚度 -->
+  <path d="M32 22C26 18 18 17 8 18V46C18 45 26 46 32 50C38 46 46 45 56 46V18C46 17 38 18 32 22Z" fill="#bfdbfe"/>
+  <!-- 左右两页 -->
+  <path d="M32 19C26 15 18 14 10 15V43C18 42 26 43 32 47Z" fill="url(#pageL)"/>
+  <path d="M32 19C38 15 46 14 54 15V43C46 42 38 43 32 47Z" fill="url(#pageR)"/>
+  <!-- 书脊 -->
+  <path d="M32 19V47" stroke="#93c5fd" stroke-width="1.2"/>
+
+  <!-- 文字行 -->
+  <g fill="none" stroke="#93c5fd" stroke-width="2" stroke-linecap="round">
+    <path d="M14 23Q21 22 28 24.5"/>
+    <path d="M14 29Q21 28 28 30.5"/>
+    <path d="M14 35Q18 34.3 22 34.8"/>
+    <path d="M36 24.5Q43 22 50 23"/>
+    <path d="M36 30.5Q43 28 50 29"/>
+    <path d="M36 36.5Q40 35.3 44 35"/>
+  </g>
+
+  <!-- 书签丝带：压在右页上，从书底垂下，燕尾收口 -->
+  <path d="M45 14.6H50V55L47.5 51.5L45 55Z" fill="url(#ribbon)"/>
+</svg>
