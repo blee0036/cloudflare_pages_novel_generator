@@ -30,6 +30,26 @@ __pycache__/
 # 构建期注入进 index.html 与产物（需求 9.2）。忽略掉会让 Pages 的 CI 构建读不到它，
 # 从而静默用内置默认值发布——本机看着没问题，线上标题却不对。样板见 site.config.example.json
 
+# E2E 运行产物（e2e-visual-testing 需求 2.5）：App_Build、Fixture_Library 及其源压缩包、
+# trace、失败截图、HTML 报告、Run_Summary、Review_Shot/Review_Report、Perf_Metrics、
+# A11y_Scan 结果全部落在 e2e/.out/。Pixel_Baseline（e2e/baselines/）、Review_Catalog 与
+# 夹具源（e2e/fixture/）要进版本库，这里不能写成 e2e/ 或 *.png 之类的宽模式。
+# 后两条是 Playwright 在没有读到 playwright.config.ts 时的默认输出位置
+e2e/.out/
+e2e/**/__pycache__/
+/test-results/
+/playwright-report/
+
+# E2E 验收的本机记录（e2e-visual-testing D10：只存本机，不进版本库）。
+# 上方的 .kiro/ 已整体忽略它们；这里逐项写明，即使将来 .kiro/ 改为进库也不会带上
+.kiro/specs/e2e-visual-testing/findings.md
+.kiro/specs/e2e-visual-testing/findings/
+.kiro/specs/e2e-visual-testing/review-record*.md
+.kiro/specs/e2e-visual-testing/baseline-review.md
+.kiro/specs/e2e-visual-testing/acceptance.md
+.kiro/specs/e2e-visual-testing/acceptance-log.md
+.kiro/specs/e2e-visual-testing/acceptance/
+
 # Logs & temp
 *.log
 .DS_Store

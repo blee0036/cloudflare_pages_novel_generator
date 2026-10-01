@@ -15,14 +15,17 @@ r"""`scripts/preprocess.py` 编排层（任务 26，需求 7.1 / 7.2 / 7.9 / 5.1
    字段用可读全名、含秒级 `generatedAt`、**不生成 `.gz`**，且能通过 `validate.check_books`。
 4. **单本失败不终止整批**（需求 7.1 / 7.2）：坏书记账后继续，好书照样出产物，
    退出码为 1，坏书不进 `books.json`、不进清单。
-5. **增量与清理**（需求 7.3–7.5）：第二次运行全部跳过，但 `books.json` 仍是**全库**索引
-   而不是"本次处理了什么"的日志；源文件删掉后它的两个产物被清走。
+5. **增量**（需求 7.3–7.5）：第二次运行全部跳过，但 `books.json` 仍是**全库**索引
+   而不是"本次处理了什么"的日志；源文件删掉后书照样在索引里（第 9 组展开）。
 6. **两条输出流都是 UTF-8**：stdout **与 stderr**。只重设 stdout 时，cp936 控制台下
    `Report.fail()` 写 stderr 抛出的编码错误会从逐本 `except` 里飞出去，终止剩下的书。
 7. **流水线换版要重跑**（`manifest.PIPELINE_VERSION`）：源文件没变、但切分逻辑变了的书
    全部重做，且在输出里说清"为什么一次什么都没改的运行在重建全库"。
 8. **兜底日志说对原因**（`build_toc`）：择一落空时点名真正挡掉候选的门槛；规则已选定时
    分清"过滤后不足 2 个标题"与"命中够多、但过不了篇幅门槛"。
+9. **源文件删了，书还在；`--delete-source`**（需求 7.5 修订 / 7.12）：处理一本删一本、
+   失败与越限的不删；归档书在换版/缺目录时从 `.txt.gz` 重切，两个产物都删掉才算移除；
+   已分配的 id 不让给新来的同名书；改名不重做；清单丢失时点名孤儿产物。
 
 夹具是合成的小书（5 章、每章约 1400 字），不依赖真实的 2000 万字藏书：本任务要验的是
 编排顺序与产物形状，章节识别本身由 `test_toc*.py` 对着真书断言。
@@ -94,7 +97,7 @@ class Bench:
         path.write_bytes(b'this is definitely not a zip archive')
         return path
 
-    def run(self) -> int:
+    def run(self, delete_source: bool = False) -> int:
         """跑一批，两条输出流收进内存，返回退出码。"""
         self.rep = report_mod.Report(
             books_dir=self.books_dir,
@@ -109,7 +112,14 @@ class Bench:
             manifest_path=self.manifest_path,
             overrides_path=self.overrides_path,
             rep=self.rep,
+            delete_source=delete_source,
         )
+
+    def err(self) -> str:
+        return self.rep.err.getvalue() if self.rep else ''    # type: ignore[union-attr]
+
+    def sources(self) -> List[str]:
+        return sorted(path.name for path in self.source_dir.iterdir())
 
     # -- 产物 ---------------------------------------------------------------
 
@@ -414,19 +424,39 @@ def test_changed_source_is_reprocessed(bench: Bench) -> None:
     assert updated['测试书乙-某乙']['totalChapters'] == 6
 
 
-def test_deleted_source_gets_pruned(bench: Bench) -> None:
-    """源文件删掉 → 两个产物与清单条目一起清走（需求 7.5）。"""
+def test_deleted_source_keeps_the_book(bench: Bench) -> None:
+    """源文件删掉 → 书照样在索引里，产物与清单条目都不动（需求 7.5 修订）。"""
     bench.add('测试书甲', '某甲')
     source = bench.add('测试书乙', '某乙')
     assert bench.run() == report_mod.EXIT_OK
+    first = bench.index()
 
     source.unlink()
     assert bench.run() == report_mod.EXIT_OK
 
-    assert bench.ids() == ['测试书甲-某甲']
-    assert not (bench.books_dir / manifest_mod.gz_name('测试书乙-某乙')).exists()
-    assert not (bench.data_dir / manifest_mod.toc_name('测试书乙-某乙')).exists()
-    assert '《测试书乙》作者：某乙.zip' not in bench.manifest()
+    assert bench.index()['books'] == first['books'], '逐字段一致，含拼音与 gzSize'
+    assert (bench.books_dir / manifest_mod.gz_name('测试书乙-某乙')).is_file()
+    assert (bench.data_dir / manifest_mod.toc_name('测试书乙-某乙')).is_file()
+    assert '《测试书乙》作者：某乙.zip' in bench.manifest()
+    rep = bench.rep
+    assert rep is not None
+    assert (rep.n_ok, rep.n_skipped, rep.n_archived, rep.n_failed) == (0, 1, 1, 0)
+    assert '归档 1' in rep.out.getvalue()      # type: ignore[union-attr]
+
+
+def test_an_empty_source_dir_keeps_the_whole_library(bench: Bench) -> None:
+    """源目录整个清空（删源模式的常态）：索引一本不少，什么都不删。"""
+    bench.add('测试书甲', '某甲')
+    bench.add('测试书乙', '某乙')
+    assert bench.run() == report_mod.EXIT_OK
+    first = bench.index()
+
+    for path in bench.source_dir.iterdir():
+        path.unlink()
+    assert bench.run() == report_mod.EXIT_OK
+
+    assert bench.index()['books'] == first['books']
+    assert '[孤儿产物]' not in bench.err()
 
 
 def test_missing_artifact_forces_reprocess(bench: Bench) -> None:
@@ -701,3 +731,262 @@ def test_whole_book_fallback_tells_too_few_hits_from_not_a_toc(
     assert fallback is True
     assert '规则 标准章节' in line and expected in line, line
     assert absent not in line, line
+
+
+# ---------------------------------------------------------------------------
+# 9. 源文件删了，书还在；--delete-source（需求 7.5 修订 / 7.12）
+# ---------------------------------------------------------------------------
+
+SRC_A = '《测试书甲》作者：某甲.zip'
+ID_A = '测试书甲-某甲'
+
+
+def put_zip(bench: Bench, name: str, text: Optional[str] = None) -> Path:
+    """按给定文件名放一本 `.zip`（同名书的几个变体要自己起名）。"""
+    path = bench.source_dir / name
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('book.txt', (text if text is not None else novel_text()).encode('utf-8'))
+    return path
+
+
+def gz_bytes(bench: Bench, book_id: str) -> bytes:
+    return (bench.books_dir / manifest_mod.gz_name(book_id)).read_bytes()
+
+
+def archive_everything(bench: Bench) -> None:
+    """带 `--delete-source` 跑一遍：之后源目录是空的，书全是归档书。"""
+    assert bench.run(delete_source=True) == report_mod.EXIT_OK
+    assert bench.sources() == []
+
+
+def test_delete_source_consumes_each_finished_book(bench: Bench) -> None:
+    bench.add('测试书甲', '某甲')
+    bench.add('测试书乙', '某乙')
+
+    assert bench.run(delete_source=True) == report_mod.EXIT_OK
+
+    assert bench.sources() == [], '处理一本删一本'
+    assert bench.ids() == ['测试书乙-某乙', ID_A]
+    for book_id in bench.ids():
+        assert (bench.books_dir / manifest_mod.gz_name(book_id)).is_file()
+        assert (bench.data_dir / manifest_mod.toc_name(book_id)).is_file()
+    assert len(bench.manifest()) == 2
+
+    # 下一轮：源目录空了，书架一本不少
+    first = bench.index()
+    assert bench.run() == report_mod.EXIT_OK
+    assert bench.index()['books'] == first['books']
+    rep = bench.rep
+    assert rep is not None and rep.n_archived == 2
+
+
+def test_delete_source_also_consumes_books_done_by_an_earlier_run(bench: Bench) -> None:
+    """上一轮已处理好、这一轮被跳过的书同样删——存量源包就是这样腾出来的。"""
+    bench.add('测试书甲', '某甲')
+    bench.add('测试书乙', '某乙')
+    assert bench.run() == report_mod.EXIT_OK
+    assert len(bench.sources()) == 2
+
+    assert bench.run(delete_source=True) == report_mod.EXIT_OK
+
+    rep = bench.rep
+    assert rep is not None
+    assert (rep.n_ok, rep.n_skipped) == (0, 2)
+    assert bench.sources() == []
+
+
+def test_without_the_flag_no_source_is_deleted(bench: Bench) -> None:
+    bench.add('测试书甲', '某甲')
+    assert bench.run() == report_mod.EXIT_OK
+    assert bench.sources() == [SRC_A]
+
+
+def test_delete_source_keeps_failed_books(bench: Bench) -> None:
+    bench.add('测试书甲', '某甲')
+    bench.add_broken('坏书', '某丙')
+
+    assert bench.run(delete_source=True) == report_mod.EXIT_BOOK_FAILED
+    assert bench.sources() == ['《坏书》作者：某丙.zip']
+
+
+def test_delete_source_keeps_a_source_whose_gz_is_over_the_limit(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """越限的书护栏会让本批失败，而改判重压要用到源包：这本不删。"""
+    bench.add('测试书甲', '某甲')
+    monkeypatch.setattr(report_mod, 'FILE_MAX_BYTES', 64)
+
+    assert bench.run(delete_source=True) == report_mod.EXIT_GUARD_RAIL
+    assert bench.sources() == [SRC_A]
+    assert '[保留源文件]' in bench.err()
+
+
+def test_parse_args_defaults_to_keeping_sources() -> None:
+    assert preprocess.parse_args([]).delete_source is False
+    assert preprocess.parse_args(['--delete-source']).delete_source is True
+
+
+def test_archived_book_is_resplit_from_its_gz_after_a_pipeline_bump(
+    bench: Bench, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """源包没了，换版照样生效：从 `.txt.gz` 只重切章节，gz 一个字节不动。"""
+    bench.add('测试书甲', '某甲')
+    archive_everything(bench)
+    first = bench.index()
+    first_toc = bench.toc(ID_A)
+    gz_before = gz_bytes(bench, ID_A)
+
+    stale_the_manifest(bench)
+    toc_path = bench.data_dir / manifest_mod.toc_name(ID_A)
+    toc_path.write_text(
+        json.dumps({**first_toc, 'tocRule': '旧规则'}, ensure_ascii=False), encoding='utf-8'
+    )
+    capsys.readouterr()
+
+    assert bench.run() == report_mod.EXIT_OK
+
+    rep = bench.rep
+    assert rep is not None
+    assert (rep.n_ok, rep.n_archived, rep.n_failed) == (1, 0, 0)
+    assert bench.toc(ID_A) == first_toc, '按当前流水线重切，覆盖掉旧的那份'
+    assert gz_bytes(bench, ID_A) == gz_before
+    assert bench.index()['books'] == first['books']
+    entry = bench.manifest().entry_for(SRC_A)
+    assert entry is not None
+    assert entry.pipeline_version == manifest_mod.PIPELINE_VERSION
+    assert entry.compressor == report_mod.GZ9, '压缩器标签沿用清单记录'
+
+    text = capsys.readouterr().out
+    assert '按 .txt.gz 重切章节' in text
+    assert '[流水线版本变更] 本次有 1 本' in text
+
+    # 重切时盖上了当前版本：再跑一次回到"沿用"
+    assert bench.run() == report_mod.EXIT_OK
+    assert (bench.rep.n_ok, bench.rep.n_archived) == (0, 1)      # type: ignore[union-attr]
+
+
+def test_archived_book_with_a_missing_toc_is_resplit(bench: Bench) -> None:
+    bench.add('测试书甲', '某甲')
+    archive_everything(bench)
+    first_toc = bench.toc(ID_A)
+
+    (bench.data_dir / manifest_mod.toc_name(ID_A)).unlink()
+    assert bench.run() == report_mod.EXIT_OK
+
+    assert bench.toc(ID_A) == first_toc
+    assert bench.ids() == [ID_A]
+    assert bench.rep is not None and bench.rep.n_ok == 1
+
+
+def test_a_gz_that_does_not_match_the_record_is_not_resplit(bench: Bench) -> None:
+    """gz 解出的字符数与清单对不上：那不是这本书，失败且不进索引，而不是切一份错的目录。"""
+    bench.add('测试书甲', '某甲')
+    archive_everything(bench)
+
+    (bench.data_dir / manifest_mod.toc_name(ID_A)).unlink()
+    (bench.books_dir / manifest_mod.gz_name(ID_A)).write_bytes(
+        gzip.compress(novel_text(CHAPTER_TITLES[:2]).encode('utf-8'))
+    )
+
+    assert bench.run() == report_mod.EXIT_BOOK_FAILED
+    assert bench.ids() == []
+    assert '不是清单描述的那本书' in bench.err()
+    assert SRC_A in bench.manifest()
+
+
+def test_removing_an_archived_book_means_deleting_its_artifacts(bench: Bench) -> None:
+    """从书库移除一本书：删掉它的两个产物（源文件早已删掉），清单随之遗忘它。"""
+    bench.add('测试书甲', '某甲')
+    bench.add('测试书乙', '某乙')
+    archive_everything(bench)
+
+    (bench.books_dir / manifest_mod.gz_name(ID_A)).unlink()
+    (bench.data_dir / manifest_mod.toc_name(ID_A)).unlink()
+    assert bench.run() == report_mod.EXIT_OK
+
+    assert bench.ids() == ['测试书乙-某乙']
+    assert SRC_A not in bench.manifest()
+    assert '[孤儿产物]' not in bench.err()
+
+
+def test_archived_book_missing_its_gz_is_left_out_but_remembered(bench: Bench) -> None:
+    bench.add('测试书甲', '某甲')
+    archive_everything(bench)
+
+    (bench.books_dir / manifest_mod.gz_name(ID_A)).unlink()
+    assert bench.run() == report_mod.EXIT_OK
+
+    assert bench.ids() == [], '索引里不许有一本 404 的书'
+    assert SRC_A in bench.manifest(), '把源包放回来还能重建'
+    assert '[归档书缺正文]' in bench.err()
+    assert '[孤儿产物]' not in bench.err(), '已有更具体的告警，不重复报'
+
+    # 源包放回来：按原 id 重建
+    bench.add('测试书甲', '某甲')
+    assert bench.run() == report_mod.EXIT_OK
+    assert bench.ids() == [ID_A]
+    assert (bench.books_dir / manifest_mod.gz_name(ID_A)).is_file()
+
+
+def test_a_new_namesake_never_takes_an_archived_books_id(bench: Bench) -> None:
+    """源包已删除的书占着 id：新来的同名书拿后缀，不覆盖它的产物（需求 7.9）。"""
+    put_zip(bench, '《同名书》作者：某甲（上册）.zip')
+    archive_everything(bench)
+    gz_before = gz_bytes(bench, '同名书-某甲')
+
+    put_zip(bench, '《同名书》作者：某甲（下册）.zip', novel_text(CHAPTER_TITLES + ('第六章 新章',)))
+    assert bench.run() == report_mod.EXIT_OK
+
+    assert bench.ids() == ['同名书-某甲', '同名书-某甲_2']
+    assert gz_bytes(bench, '同名书-某甲') == gz_before, '归档书的产物不许被覆盖'
+
+
+def test_ids_stay_put_when_a_namesake_sorts_in_front(bench: Bench) -> None:
+    """id 一经分配就不变：排在前面新来的同名书，不会让已有的两本换名重建。"""
+    put_zip(bench, '《同名书》作者：某甲（下册）.zip')
+    put_zip(bench, '《同名书》作者：某甲（中册）.zip')
+    assert bench.run() == report_mod.EXIT_OK
+    before = {key: entry.book_id for key, entry in bench.manifest().entries.items()}
+    assert sorted(before.values()) == ['同名书-某甲', '同名书-某甲_2']
+
+    put_zip(bench, '《同名书》作者：某甲（上册）.zip')      # 文件名排序在最前
+    assert bench.run() == report_mod.EXIT_OK
+
+    rep = bench.rep
+    assert rep is not None
+    assert (rep.n_ok, rep.n_skipped) == (1, 2), '只处理新来的那本'
+    after = {key: entry.book_id for key, entry in bench.manifest().entries.items()}
+    assert {key: after[key] for key in before} == before
+    assert after['《同名书》作者：某甲（上册）.zip'] == '同名书-某甲_3'
+
+
+def test_renamed_source_keeps_its_id_and_is_not_rebuilt(bench: Bench) -> None:
+    """改名 = 摘要相同的新文件：接管旧记录，不重做、也不在书架上多出一本。"""
+    src = bench.add('测试书甲', '某甲')
+    assert bench.run() == report_mod.EXIT_OK
+
+    renamed = src.with_name('《测试书甲》（精校版）作者：某甲.zip')
+    src.rename(renamed)
+    assert bench.run() == report_mod.EXIT_OK
+
+    rep = bench.rep
+    assert rep is not None
+    assert (rep.n_ok, rep.n_skipped, rep.n_archived) == (0, 1, 0)
+    assert bench.ids() == [ID_A]
+    mf = bench.manifest()
+    assert renamed.name in mf and src.name not in mf
+
+
+def test_losing_the_manifest_is_reported_as_orphans(bench: Bench) -> None:
+    """源包已删、清单又丢了：书只能从索引里消失——但必须被点名，不能静默。"""
+    bench.add('测试书甲', '某甲')
+    bench.add('测试书乙', '某乙')
+    archive_everything(bench)
+
+    bench.manifest_path.unlink()
+    assert bench.run() == report_mod.EXIT_OK
+
+    assert bench.ids() == []
+    text = bench.err()
+    assert '[孤儿产物] 2 本' in text
+    assert ID_A in text and '测试书乙-某乙' in text

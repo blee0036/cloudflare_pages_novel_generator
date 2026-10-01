@@ -29,9 +29,7 @@ export type BookLoadSource =
   /** 网络取回原始 gz，前端 `DecompressionStream` 解压。 */
   | "network"
   /** 服务器带了 `Content-Encoding: gzip`，浏览器 HTTP 层已透明解压。 */
-  | "network-transparent"
-  /** `DecompressionStream` 抛错后的 `fetch().text()` 兜底。 */
-  | "network-fallback";
+  | "network-transparent";
 
 export interface BookLoadMetrics {
   bookId: string;

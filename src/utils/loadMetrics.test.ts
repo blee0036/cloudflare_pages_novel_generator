@@ -61,7 +61,6 @@ describe("formatBookLoadMetrics", () => {
       "indexeddb",
       "network",
       "network-transparent",
-      "network-fallback",
     ] as const;
 
     for (const source of sources) {

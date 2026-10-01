@@ -100,28 +100,32 @@ raise SystemExit(rep.exit_code)
 顺带一句这条为什么紧要：`fail()` 的行首 "❌"（U+274C）本身就不在 GBK 里，所以在
 stock cp936 控制台上，触发条件不是"某本书的书名恰好越界"，而是"第一本失败的书"。
 
-## `book_id` 消歧的后缀是"扫描顺序"的函数
+## `book_id` 一经分配就不变
 
-`unique_id()` 让先到的书拿裸 id，后来的拿 `_2` / `_3`（需求 7.9）。这条规则有一个
-必须说清的性质：**后缀不是内容的函数，而是扫描顺序的函数**。源文件改名、删掉先到的
-那本、新增一本同名书，都可能让谁拿裸 id 发生变化，届时这两本的产物名互换、清单里
-的 `bookId` 与磁盘文件对不上，表现为它们被整体重建一次（`manifest.should_skip`
-查的是 `entry.book_id` 的产物是否存在，对不上就重跑，不会读到别人的产物）。
+`unique_id()` 让先到的书拿裸 id，后来的拿 `_2` / `_3`（需求 7.9）。单看这一个函数，
+**后缀是扫描顺序的函数，不是内容的函数**：新增一本排在前面的同名书，谁拿裸 id 就会
+变，两本的产物名随之互换、整体重建一次。
 
-这个代价是清楚的，且换来的是"绝不静默覆盖"：不消歧的话两本书写同一组
-`<id>.txt.gz` / `<id>_toc.json`，后写的盖掉先写的，`books.json` 里出现重复 id，
-前端 `key={book.id}` 重复、点第一本打开第二本（A18）。当前 5 本命名规范没触发，
-7000 本里同名书（尤其大量"佚名"）概率不低。
+源文件可以删掉之后（需求 7.5 修订 / 7.12），这个性质就不能再放任：源包已删除的书
+没法重建，它的 id 一旦被新来的同名书拿走，产物就被覆盖、再也找不回来。所以编排层在
+逐本处理之前先用 `claim()` 把清单里已分配的 id 全部占住——源文件已删除的书一律占，
+源文件还在的书只要它的 id 仍能由文件名推出（裸 id 或 `<裸 id>_N`）也占——只有真正
+的新书才走 `unique_id()`，而且只会拿到没人用过的后缀。清单里 `book_id` 唯一
+（`manifest` 模块 docstring），占位之间不会互相冲突。
 
-`unique_id()` 要在**跳过判定之前**对每本书都调用一次，包括会被跳过的：id 命名空间
-的占用与这本书这次要不要重跑无关，漏掉跳过的那些会让本次处理的书拿到一个已经
-被磁盘上的产物占着的裸 id。
+消歧换来的是"绝不静默覆盖"：不消歧的话两本书写同一组 `<id>.txt.gz` / `<id>_toc.json`，
+后写的盖掉先写的，`books.json` 里出现重复 id，前端 `key={book.id}` 重复、点第一本
+打开第二本（A18）。7000 本里同名书（尤其大量"佚名"）概率不低。
+
+`claim()` / `unique_id()` 要在**跳过判定之前**对每本书都做一次，包括会被跳过的：
+id 命名空间的占用与这本书这次要不要重跑无关，漏掉跳过的那些会让本次处理的书拿到
+一个已经被磁盘上的产物占着的裸 id。
 """
 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import IO, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
 
@@ -301,6 +305,10 @@ class Book:
 
     skipped: bool = False
 
+    archived: bool = False
+    """源文件已不在源目录、产物沿用清单记录的书（需求 7.5 修订）。恒有 `skipped=True`，
+    但不计入"跳过"：跳过是"源文件查过、没变"，归档是"源文件已经没了"。"""
+
 
 @dataclass(frozen=True)
 class Failure:
@@ -353,10 +361,12 @@ class Summary:
     warnings: int
     lines: Tuple[str, ...]
     exit_code: int
+    n_archived: int = 0
+    """源文件已不在、产物沿用清单记录的书（需求 7.5 修订）。"""
 
     @property
     def n_total(self) -> int:
-        return self.n_ok + self.n_skipped + self.n_failed
+        return self.n_ok + self.n_skipped + self.n_archived + self.n_failed
 
 
 @dataclass(frozen=True)
@@ -439,8 +449,13 @@ class Report:
 
     @property
     def n_skipped(self) -> int:
-        """被增量判定跳过的书数（需求 7.4）。"""
-        return sum(1 for book in self.books if book.skipped)
+        """被增量判定跳过的书数（需求 7.4）。归档书不算，见 `n_archived`。"""
+        return sum(1 for book in self.books if book.skipped and not book.archived)
+
+    @property
+    def n_archived(self) -> int:
+        """源文件已不在、产物与索引条目沿用清单记录的书数（需求 7.5 修订）。"""
+        return sum(1 for book in self.books if book.archived)
 
     @property
     def n_failed(self) -> int:
@@ -501,6 +516,25 @@ class Report:
         self.books.append(book)
         label = f'《{book.title}》' if book.title else book.source
         _emit([f'  ⏭ 跳过 {label}：源文件与产物都没变（需求 7.4）'], self._out)
+        return book
+
+    def archived(
+        self,
+        src: Union[Path, str],
+        entry: Union[Mapping[str, object], object, None] = None,
+    ) -> Book:
+        """记下一本归档书：源文件已不在源目录，产物与索引条目沿用清单记录（需求 7.5 修订）。
+
+        **不逐本输出。**删源模式下归档书就是全库，7000 行"沿用"只会把真正的信号
+        压下去；汇总里给一个数（`summary()`）。规模与压缩器照旧进账——护栏扫到它的
+        产物时要能贴上压缩器标签。
+
+        Args:
+            src: 清单里的键（当初的源文件名）。
+            entry: 这本书的清单记录（`manifest.Entry`）。
+        """
+        book = replace(_as_book(src, entry, skipped=True), archived=True)
+        self.books.append(book)
         return book
 
     def fail(self, src: Union[Path, str], error: Union[BaseException, str]) -> Failure:
@@ -583,6 +617,22 @@ class Report:
 
     # -- book_id 消歧（需求 7.9）------------------------------------------
 
+    def claim(self, book_id: str, src: Union[Path, str, None] = None) -> bool:
+        """把一个**已经分配过**的 `book_id`（清单里记着的）原样占住，不加后缀、不告警。
+
+        Returns:
+            `True` = 占住了（或本来就是这个源文件占着）；`False` = 已被别的源文件占用，
+            调用方应改走 `unique_id()`。清单里 `book_id` 唯一，正常情况下不会是 `False`。
+
+        见模块 docstring"`book_id` 一经分配就不变"。
+        """
+        source = Path(src).name if src is not None else ''
+        owner = self.claimed.get(book_id)
+        if owner is None:
+            self.claimed[book_id] = source
+            return True
+        return owner == source
+
     def unique_id(self, book_id: str, src: Union[Path, str, None] = None) -> str:
         """占用一个 `book_id`；已被占用则追加数字后缀消歧并告警（需求 7.9）。
 
@@ -616,8 +666,7 @@ class Report:
                     f'{source or "本书"} 消歧为 "{candidate}"（需求 7.9）。',
                     '  不消歧就是两本书写同一组 <id>.txt.gz / <id>_toc.json：后写的静默盖掉'
                     '先写的，books.json 出现重复 id，前端 key 重复、点第一本会打开第二本。',
-                    '  后缀跟扫描顺序走：源文件改名或增删同名书时谁拿裸 id 可能变化，'
-                    '届时这两本会被整体重建一次。',
+                    '  这个 id 记进清单后就固定下来，此后的运行不会再让两本书换名。',
                 ]
             )
         )
@@ -633,11 +682,17 @@ class Report:
             的事，两者的合并值在 `Report.exit_code`。
         """
         counts = self.compressor_counts()
+        archived = f' · 归档 {self.n_archived}' if self.n_archived else ''
         lines: List[str] = [
             '=' * 60,
-            f'[汇总] 共 {self.n_total} 本：成功 {self.n_ok} · 跳过 {self.n_skipped}'
+            f'[汇总] 共 {self.n_total} 本：成功 {self.n_ok} · 跳过 {self.n_skipped}{archived}'
             f' · 失败 {self.n_failed}（需求 7.2）',
         ]
+        if self.n_archived:
+            lines.append(
+                f'  归档 {self.n_archived} 本：源文件已不在源目录，产物与索引条目沿用清单记录'
+                '（需求 7.5）。'
+            )
 
         if counts:
             spread = ' · '.join(f'{name} {number} 本' for name, number in sorted(counts.items()))
@@ -675,6 +730,7 @@ class Report:
         return Summary(
             n_ok=self.n_ok,
             n_skipped=self.n_skipped,
+            n_archived=self.n_archived,
             n_failed=self.n_failed,
             compressors=counts,
             failures=tuple(self.failures),
@@ -826,8 +882,9 @@ class Report:
                 f'[越限] 产物文件数 {file_count:,} 超过上限 {FILE_COUNT_MAX:,}（需求 10.1）。',
                 f'  每本书 2 个文件（<id>.txt.gz + <id>_toc.json），约 '
                 f'{(FILE_COUNT_MAX - 1) // 2:,} 本就是天花板。',
-                '  先清源目录里已删除的书留下的产物（manifest.prune，需求 7.5）与非书文件；'
-                '合并文件绕不过这条，前端要能按 id 直接取到单本。',
+                '  先删掉不再要的书的两个产物（源文件已不在的书，下次运行清单会自动遗忘它，'
+                '需求 7.5）、孤儿产物与非书文件；合并文件绕不过这条，前端要能按 id 直接'
+                '取到单本。',
             ]
 
         exit_code = EXIT_GUARD_RAIL if (oversize or count_exceeded) else EXIT_OK

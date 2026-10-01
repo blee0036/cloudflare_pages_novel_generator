@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""`scripts/lib/manifest.py` 增量清单与失效清理（任务 23，需求 7.3 / 7.4 / 7.5）。
+r"""`scripts/lib/manifest.py` 增量清单（任务 23 / 65，需求 7.3 / 7.4 / 7.5）。
 
 运行（仓库根目录）：`python -m pytest scripts/tests -q`
 
@@ -11,8 +11,9 @@ r"""`scripts/lib/manifest.py` 增量清单与失效清理（任务 23，需求 7
 3. **每本即落盘（需求 7.3）**：`update()` 之后立刻用一个**全新的 `load()`** 读回
    （这就是"中途中断"在单测里的形态），已完成的书必须还在；写入是原子的，
    不留临时文件；写不进去时抛 `ManifestError` 而不是沉默。
-4. **清理（需求 7.5）**：源已删除的书，`.txt.gz`、`_toc.json` 与条目一起消失。
-   连同三条护栏：空源列表拒绝执行、`book_id` 仍被占用时不删文件、删不掉就留条目。
+4. **源文件删了，书还在（需求 7.5 修订）**：源已删除的书是"归档书"，查询它不动任何
+   东西；清单**从不删产物**，`forget()` 只移除条目；改名用 `rekey()` 原样挪记录；
+   `book_id` 在整张表里唯一——`update()` 挤掉被覆盖的旧记录、`load()` 去重。
 5. **降级**：清单损坏/版本不符/条目字段缺失一律告警 + 重跑，不抛异常——它是可再生
    的缓存，不该把整批构建挡在门外。
 
@@ -317,135 +318,150 @@ def test_manifest_file_is_human_readable_and_stable(mf: Manifest, tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
-# 4. 清理（需求 7.5）
+# 4. 源文件删了，书还在（需求 7.5 修订）
 # ---------------------------------------------------------------------------
 
 
-def test_prune_removes_artifacts_and_entry(mf: Manifest, tmp_path: Path):
+def test_archived_lists_books_whose_source_is_gone(mf: Manifest, tmp_path: Path):
     gone = make_source(tmp_path, '删掉的书.zip')
     kept = make_source(tmp_path, '留着的书.zip')
     gone_files = make_artifacts(mf, '删掉的书-某人')
-    kept_files = make_artifacts(mf, '留着的书-某人')
+    make_artifacts(mf, '留着的书-某人')
     mf.update(gone, sha256_file(gone), meta('删掉的书-某人'))
     mf.update(kept, sha256_file(kept), meta('留着的书-某人'))
 
     gone.unlink()                                   # 源目录里这本被删了
-    result = mf.prune([kept])
+    archived = mf.archived([kept])
 
-    assert [item.source_name for item in result.pruned] == ['删掉的书.zip']
-    assert set(result.removed_files) == set(gone_files)
-    assert not any(path.exists() for path in gone_files)
-    assert all(path.exists() for path in kept_files), '活着的那本不许被碰'
-    assert sorted(mf.entries) == ['留着的书.zip']
-    assert sorted(reload(mf).entries) == ['留着的书.zip'], '条目的移除同样要落盘'
-    assert result.warnings == () and result.refused_empty is False
+    assert [(key, entry.book_id) for key, entry in archived] == [('删掉的书.zip', '删掉的书-某人')]
+    # 查询就是查询：条目与产物一个都不动
+    assert all(path.exists() for path in gone_files)
+    assert sorted(reload(mf).entries) == ['删掉的书.zip', '留着的书.zip']
 
 
-def test_prune_accepts_paths_or_names(mf: Manifest, tmp_path: Path):
+def test_archived_accepts_paths_or_names(mf: Manifest, tmp_path: Path):
     src = make_source(tmp_path)
-    make_artifacts(mf)
     mf.update(src, sha256_file(src), meta())
-    assert mf.prune([SOURCE_NAME]).pruned == ()
-    assert mf.prune([src]).pruned == ()
-    assert len(mf) == 1
+    assert mf.archived([SOURCE_NAME]) == []
+    assert mf.archived([src]) == []
 
 
-def test_prune_is_a_no_op_when_nothing_is_dead(mf: Manifest, tmp_path: Path):
+def test_an_empty_source_list_archives_everything_and_deletes_nothing(mf: Manifest, tmp_path: Path):
+    # 旧版 prune 在这里需要"拒绝执行"的护栏；现在的结果只是全库按归档处理
     src = make_source(tmp_path)
-    make_artifacts(mf)
+    files = make_artifacts(mf)
     mf.update(src, sha256_file(src), meta())
+    before = mf.path.read_text(encoding='utf-8')
 
+    archived = mf.archived([])
+
+    assert [key for key, _ in archived] == [SOURCE_NAME]
+    assert all(path.exists() for path in files)
+    assert mf.path.read_text(encoding='utf-8') == before
+
+
+def test_artifact_state_reports_each_half(mf: Manifest):
+    assert mf.artifact_state(BOOK_ID) == (False, False)
+    gz_path, toc_path = make_artifacts(mf)
+    assert mf.artifact_state(BOOK_ID) == (True, True)
+    toc_path.unlink()
+    assert mf.artifact_state(BOOK_ID) == (True, False)
+    gz_path.write_bytes(b'')                        # 零字节 = 不可用，与 artifacts_exist 同口径
+    assert mf.artifact_state(BOOK_ID) == (False, False)
+
+
+def test_forget_removes_the_entry_but_never_the_files(mf: Manifest, tmp_path: Path):
+    src = make_source(tmp_path)
+    files = make_artifacts(mf)
+    entry = mf.update(src, sha256_file(src), meta())
+
+    assert mf.forget(SOURCE_NAME) == entry
+    assert len(mf) == 0 and len(reload(mf)) == 0, '移除同样要落盘'
+    assert all(path.exists() for path in files), '清单从不删产物'
+
+
+def test_forgetting_an_unknown_key_does_not_rewrite_the_file(mf: Manifest, tmp_path: Path):
+    src = make_source(tmp_path)
+    mf.update(src, sha256_file(src), meta())
     sentinel = mf.path.read_text(encoding='utf-8') + '\n// 没被重写过\n'
     mf.path.write_text(sentinel, encoding='utf-8')
-    result = mf.prune([src])
 
-    assert (result.pruned, result.warnings, result.refused_empty) == ((), (), False)
-    assert mf.path.read_text(encoding='utf-8') == sentinel, '无事可做时不该重写文件'
+    assert mf.forget('没有这本.zip') is None
+    assert mf.path.read_text(encoding='utf-8') == sentinel
 
 
-def test_prune_refuses_an_empty_source_list(mf: Manifest, tmp_path: Path):
-    # 源目录没挂上/路径写错同样会得到空列表，而那意味着"全库都该删"
+def test_rekey_moves_the_record_untouched(mf: Manifest, tmp_path: Path):
     src = make_source(tmp_path)
-    files = make_artifacts(mf)
-    mf.update(src, sha256_file(src), meta())
+    entry = mf.update(src, sha256_file(src), meta())
 
-    result = mf.prune([])
+    moved = mf.rekey(SOURCE_NAME, tmp_path / 'zip-novel' / '改了名的书.rar')
 
-    assert result.refused_empty is True
-    assert result.pruned == ()
-    assert all(path.exists() for path in files)
-    assert len(mf) == 1 and len(reload(mf)) == 1
-    assert '源列表为空' in '\n'.join(result.warnings)
+    assert moved == entry, 'book_id、摘要、流水线版本全都不变'
+    assert sorted(reload(mf).entries) == ['改了名的书.rar']
 
 
-def test_prune_clears_everything_when_explicitly_allowed(mf: Manifest, tmp_path: Path):
-    src = make_source(tmp_path)
-    files = make_artifacts(mf)
-    mf.update(src, sha256_file(src), meta())
+def test_rekey_refuses_to_overwrite_another_book(mf: Manifest, tmp_path: Path):
+    first = make_source(tmp_path, '书甲.zip')
+    second = make_source(tmp_path, '书乙.zip')
+    mf.update(first, sha256_file(first), meta('书甲-某人'))
+    mf.update(second, sha256_file(second), meta('书乙-某人'))
 
-    result = mf.prune([], allow_empty=True)
-
-    assert result.refused_empty is False
-    assert [item.book_id for item in result.pruned] == [BOOK_ID]
-    assert not any(path.exists() for path in files)
-    assert len(reload(mf)) == 0
-
-
-def test_prune_tolerates_already_missing_artifacts(mf: Manifest, tmp_path: Path):
-    src = make_source(tmp_path, '早就清干净的书.zip')
-    keeper = make_source(tmp_path, '留着的书.zip')
-    mf.update(src, sha256_file(src), meta('早就清干净的书-某人'))
-    mf.update(keeper, sha256_file(keeper), meta('留着的书-某人'))
-
-    src.unlink()
-    result = mf.prune([keeper])
-
-    # 产物早已不存在不是失败，是已经清干净了
-    assert [item.removed for item in result.pruned] == [()]
-    assert result.kept_for_retry == ()
-    assert sorted(mf.entries) == ['留着的书.zip']
+    with pytest.raises(ManifestError, match='已有清单记录'):
+        mf.rekey('书甲.zip', '书乙.zip')
+    assert mf.entry_for('书甲.zip').book_id == '书甲-某人'
+    assert mf.entry_for('书乙.zip').book_id == '书乙-某人'
 
 
-def test_prune_keeps_artifacts_claimed_by_a_surviving_source(mf: Manifest, tmp_path: Path):
-    # id 冲突消歧（任务 25）之后两个源文件可能指向同一组产物名
-    gone = make_source(tmp_path, '同名书-旧包.zip')
-    kept = make_source(tmp_path, '同名书-新包.zip')
-    files = make_artifacts(mf, '同名书-某人')
-    mf.update(gone, sha256_file(gone), meta('同名书-某人'))
-    mf.update(kept, sha256_file(kept), meta('同名书-某人'))
+def test_rekey_is_undone_when_the_save_fails(tmp_path: Path):
+    blocker = tmp_path / 'blocker'
+    blocker.write_text('not a directory', encoding='utf-8')
+    broken = load(blocker / '.preprocess-manifest.json', tmp_path / 'books', tmp_path / 'data')
+    broken.entries[SOURCE_NAME] = Entry(book_id=BOOK_ID, digest='d')
 
-    gone.unlink()
-    result = mf.prune([kept])
+    with pytest.raises(ManifestError):
+        broken.rekey(SOURCE_NAME, '新名字.rar')
+    assert sorted(broken.entries) == [SOURCE_NAME], '没落盘就当没挪过'
 
-    assert [item.source_name for item in result.pruned] == ['同名书-旧包.zip']
-    assert result.removed_files == ()
-    assert set(result.pruned[0].kept) == set(files)
-    assert all(path.exists() for path in files), '活着的那本的产物不许被带走'
+
+def test_update_evicts_other_records_of_the_same_book_id(mf: Manifest, tmp_path: Path):
+    # 那组产物刚被新写的这本覆盖：旧记录描述的已经是不存在的文件
+    old = make_source(tmp_path, '同名书-旧包.zip')
+    new = make_source(tmp_path, '同名书-新包.zip')
+    mf.update(old, sha256_file(old), meta('同名书-某人'))
+    assert mf.drain_warnings() == []
+
+    mf.update(new, sha256_file(new), meta('同名书-某人'))
+
     assert sorted(mf.entries) == ['同名书-新包.zip']
-    assert 'book_id' in '\n'.join(result.warnings)
+    assert sorted(reload(mf).entries) == ['同名书-新包.zip']
+    notices = mf.drain_warnings()
+    assert len(notices) == 1 and '同名书-旧包.zip' in notices[0]
+    assert mf.warnings == [], 'drain 之后清空'
 
 
-def test_prune_keeps_the_entry_when_deletion_fails(mf: Manifest, tmp_path: Path):
-    # 条目一删，那两个文件就再没有任何记录指向它们，永远成为孤儿
+def test_rewriting_the_same_book_is_not_an_eviction(mf: Manifest, tmp_path: Path):
     src = make_source(tmp_path)
-    keeper = make_source(tmp_path, '留着的书.zip')
-    mf.update(src, sha256_file(src), meta())
-    mf.update(keeper, sha256_file(keeper), meta('留着的书-某人'))
+    mf.update(src, 'v1', meta())
+    mf.update(src, 'v2', meta())
+    assert mf.drain_warnings() == []
 
-    gz_path, toc_path = mf.artifacts_for(BOOK_ID)
-    gz_path.parent.mkdir(parents=True, exist_ok=True)
-    gz_path.write_bytes(GZ_BYTES)
-    toc_path.mkdir(parents=True)                      # 删不掉：它是个目录
-    (toc_path / 'occupied').write_text('x', encoding='utf-8')
 
-    src.unlink()
-    result = mf.prune([keeper])
+def test_load_keeps_the_latest_writer_of_a_duplicated_book_id(tmp_path: Path):
+    path = tmp_path / '.preprocess-manifest.json'
+    path.write_text(
+        json.dumps({'version': MANIFEST_VERSION, 'books': {
+            '早写的.zip': {'bookId': BOOK_ID, 'digest': 'a', 'processedAt': '2026-09-01T00:00:00Z'},
+            '晚写的.zip': {'bookId': BOOK_ID, 'digest': 'b', 'processedAt': '2026-09-02T00:00:00Z'},
+            '别的书.zip': {'bookId': '别的书-某人', 'digest': 'c'},
+        }}, ensure_ascii=False),
+        encoding='utf-8',
+    )
 
-    assert result.kept_for_retry == (SOURCE_NAME,)
-    assert result.pruned == ()
-    assert SOURCE_NAME in mf and SOURCE_NAME in reload(mf)
-    assert toc_path.exists()
-    assert '删不掉' in '\n'.join(result.warnings)
+    mf = load(path, tmp_path / 'books', tmp_path / 'data')
+
+    assert sorted(mf.entries) == ['别的书.zip', '晚写的.zip']
+    listed = [line for line in mf.warnings if 'id 重复' in line]
+    assert len(listed) == 1 and '早写的.zip' in listed[0]
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +494,8 @@ def test_broken_manifest_degrades_with_a_warning(tmp_path: Path, text: str, frag
 
 def test_unknown_version_invalidates_the_whole_table(tmp_path: Path):
     # 这个是**文件格式**版本：不认识就整张表作废。产物形态变了不走这条路，
-    # 走 PIPELINE_VERSION（见下面第 7 节）——作废整张表会把 prune 要用的
-    # bookId 一起丢掉，源文件已删除的书从此没人清得掉它的产物。
+    # 走 PIPELINE_VERSION（见下面第 7 节）——作废整张表会让源文件已删除的书
+    # 从索引里消失，告警必须把这一点说出来。
     path = tmp_path / '.preprocess-manifest.json'
     path.write_text(
         json.dumps({'version': MANIFEST_VERSION + 99, 'books': {
@@ -491,6 +507,7 @@ def test_unknown_version_invalidates_the_whole_table(tmp_path: Path):
 
     assert len(mf) == 0
     assert '版本不符' in '\n'.join(mf.warnings)
+    assert '源文件已删除的书' in '\n'.join(mf.warnings)
     assert mf.should_skip(SOURCE_NAME, 'd') is False
 
 
@@ -552,7 +569,7 @@ def test_warnings_go_to_stderr(tmp_path: Path, capsys: pytest.CaptureFixture):
 
 
 def test_artifact_names_match_preprocess():
-    # 与 preprocess.process_book 写出的名字逐字相同，否则 prune 会删错文件
+    # 与 preprocess.process_book 写出的名字逐字相同，否则跳过判定与归档书查的都是别的文件
     assert gz_name(BOOK_ID) == f'{BOOK_ID}.txt.gz'
     assert toc_name(BOOK_ID) == f'{BOOK_ID}_toc.json'
 
@@ -716,7 +733,7 @@ def test_load_warns_once_about_stale_records(tmp_path: Path):
 
     mf = load(path, tmp_path / 'books', tmp_path / 'data')
 
-    assert len(mf) == 4, '条目全部保留：prune 还要用它们'
+    assert len(mf) == 4, '条目全部保留：源文件已删除的书只剩这份记录'
     listed = [line for line in mf.warnings if '流水线版本变更' in line]
     assert len(listed) == 1
     assert '3/4' in listed[0]

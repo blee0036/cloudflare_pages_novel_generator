@@ -303,6 +303,52 @@ def test_unique_id_works_without_a_source(rep: Report):
     assert rep.unique_id('甲-佚名') == '甲-佚名_2'
 
 
+def test_claim_keeps_a_recorded_id_as_is_and_quietly(rep: Report):
+    """清单里已分配的 id 原样占住：不加后缀、不告警（report.py"一经分配就不变"）。"""
+    assert rep.claim('甲-佚名_2', 'b.rar') is True
+    assert rep.claim('甲-佚名_2', 'b.rar') is True, '同一个源文件再占一次不算冲突'
+    assert rep.warnings == []
+    # 裸 id 空着，新书拿裸 id；`_2` 被占着，再下一本跳到 `_3`
+    assert rep.unique_id('甲-佚名', 'a.rar') == '甲-佚名'
+    assert rep.unique_id('甲-佚名', 'c.rar') == '甲-佚名_3'
+
+
+def test_claim_refuses_an_id_held_by_another_source(rep: Report):
+    rep.claim('甲-佚名', 'old.rar')
+    assert rep.claim('甲-佚名', 'new.rar') is False
+    assert rep.claimed['甲-佚名'] == 'old.rar'
+
+
+def test_a_new_book_never_takes_an_archived_books_id(rep: Report):
+    """源包已删除的书占着裸 id 时，新来的同名书只能拿后缀——否则会覆盖它的产物。"""
+    rep.claim('同名书-某甲', '《同名书》作者：某甲（上册）.zip')
+    assert rep.unique_id('同名书-某甲', '《同名书》作者：某甲（下册）.zip') == '同名书-某甲_2'
+    assert '上册' in rep.warnings[0], '告警指出是被谁占着'
+
+
+def test_archived_books_have_their_own_count(rep: Report):
+    """归档书（源文件已不在）不算"跳过"，也不逐本输出，但进汇总与护栏的账。"""
+    rep.ok('a.rar', meta('甲-作者'))
+    rep.skipped('b.rar', entry('乙-作者'))
+    before = out(rep)
+    rep.archived('c.rar', entry('丙-作者', compressor=GZ9))
+    assert out(rep) == before, '归档书不逐本输出'
+
+    summary = rep.summary()
+
+    assert (summary.n_ok, summary.n_skipped, summary.n_archived, summary.n_failed) == (1, 1, 1, 0)
+    assert summary.n_total == 3
+    assert '成功 1 · 跳过 1 · 归档 1 · 失败 0' in out(rep)
+    assert rep.books[-1].archived and rep.books[-1].compressor == GZ9
+
+
+def test_summary_header_is_unchanged_without_archived_books(rep: Report):
+    rep.ok('a.rar', meta('甲-作者'))
+    rep.summary()
+    assert '成功 1 · 跳过 0 · 失败 0' in out(rep)
+    assert '归档' not in out(rep)
+
+
 # ---------------------------------------------------------------------------
 # 4. 源文件预警（需求 7.11）
 # ---------------------------------------------------------------------------

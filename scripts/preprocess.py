@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-r"""预处理编排层（design §1 / §4.8 / §4.9，需求 7.1 / 7.2 / 7.9 / 5.1 / 5.2a / 5.2b / 10.7，任务 26）。
+r"""预处理编排层（design §1 / §4.8 / §4.9，需求 7.1 / 7.2 / 7.5 / 7.9 / 7.12 / 5.1 / 5.2a / 5.2b / 10.7，任务 26 / 65）。
 
-    python scripts/preprocess.py        # 或 python -m scripts.preprocess
+    python scripts/preprocess.py                  # 或 python -m scripts.preprocess
+    python scripts/preprocess.py --delete-source  # 处理完一本就删它的源包（需求 7.12）
 
 一条流水线，每个环节都在 `scripts/lib/` 里（design §4.1），本文件只负责串起来：
 
-    扫描源目录 → 增量判定（摘要 + 流水线版本）→ 解压 → 解码 → 择一规则 → 切分 → 卷标记 → 兜底
-              → 拼音 → 压缩（源包 ≤10MB: gz9 / >10MB: zopfli）→ 自校验 → 更新清单
-              → 清理失效产物 → 写 books.json → 汇总 → 容量护栏 → 退出码
+    扫描源目录 → 改名识别 → 占住已分配的 id → 增量判定（摘要 + 流水线版本）
+              → 解压 → 解码 → 择一规则 → 切分 → 卷标记 → 兜底 → 拼音
+              → 压缩（源包 ≤10MB: gz9 / >10MB: zopfli）→ 自校验 → 更新清单 →（删源包）
+              → 归档书（沿用 / 按 .txt.gz 重切 / 遗忘）→ 写 books.json → 孤儿产物
+              → 汇总 → 容量护栏 → 退出码
 
 ## 逐本 try/except 是这一层存在的主要理由（需求 7.1 / 7.2）
 
@@ -50,11 +53,45 @@ r"""预处理编排层（design §1 / §4.8 / §4.9，需求 7.1 / 7.2 / 7.9 / 5
 的退出码本来就是非零，构建红着、部署不该发生；反过来"把没验过的条目留在索引里"才是
 旧版那种"页面在、资源 404"的来源。源文件没变的话，下一轮它会走跳过路径重新进索引。
 
-**被跳过的书也必须出现在 `books.json` 里。**它是全库索引而不是"本次处理了什么"的日志：
-只写本次处理的书，等于第二次运行之后书架上只剩改动过的那几本。跳过的书的规模数字取自
-清单记录（`manifest.Entry`），不回头解析 7000 个 `_toc.json`（report.py 的同一条理由）。
-清单记录不足以重建条目时（字段为 0、`bookId` 与本次消歧结果不一致）不硬撑，
-改为**重新处理这一本**——宁可多跑一本，也不写出一条数字可疑的索引。
+**被跳过的书也必须出现在 `books.json` 里**，源文件已删除的书（归档书）同理。它是全库
+索引而不是"本次处理了什么"的日志：只写本次处理的书，等于第二次运行之后书架上只剩改动过
+的那几本。这两类书的规模数字取自清单记录（`manifest.Entry`），不回头解析 7000 个
+`_toc.json`（report.py 的同一条理由）。清单记录不足以重建条目时（字段为 0、`bookId` 与
+本次分配的 id 不一致）不硬撑，改为**重新处理这一本**（归档书则从 `.txt.gz` 重切）——宁可
+多跑一本，也不写出一条数字可疑的索引。条目按源文件名排序，与源文件在不在无关。
+
+## 源文件删了，书还在（需求 7.5 修订）
+
+`zip-novel/` 只是输入，不是书库的名单。清单里有、源目录里没有的书是**归档书**：产物与
+`books.json` 条目都沿用清单记录——源包可以删，站点不受影响。归档书同样走增量：
+
+- 两个产物都在、记录完整、流水线版本是当前的 → 原样进索引（不逐本输出，汇总里记
+  "归档 N"）；
+- 流水线换版、`_toc.json` 缺失、或清单数字不可用 → 从 `.txt.gz` 解出全文**只重切章节**
+  （`resplit_book`）。`.txt.gz` 就是当初解码后的全文、逐字符相同，重切不需要源包，
+  `PIPELINE_VERSION` 也就不会在删源之后悄悄失效；
+- 只缺 `.txt.gz` → 正文无从恢复：告警、不进索引、清单条目保留，把源包放回来即可重建；
+- 两个产物都不在 → 这本书被人删掉了，清单遗忘它。**从书库移除一本书就是这样做的**：
+  删掉它的源文件（如果还在）和两个产物。
+
+另外两条配套：
+
+- **改名识别**：新出现的源文件与某本归档书摘要相同 → 只是改了名，接管那条记录，
+  `book_id` 不变、不重做（旧版靠 `prune` + 重跑做到同样的结果，现在不删东西了）。
+- **已分配的 id 先占住**（`claim_recorded_ids`）：源包已删除的书没法重建，它的 id 一旦
+  被新来的同名书拿走，产物就被覆盖、再也找不回来。见 report.py"`book_id` 一经分配就不变"。
+
+批次末尾扫一遍产物目录，点名**孤儿产物**——磁盘上有、清单与本次索引里都没有的 id。
+清单丢失/重置时源文件已删除的书只能从索引里消失，这条告警让它不再静默。
+
+## `--delete-source`：处理一本删一本（需求 7.12）
+
+一本书的产物写完、自校验通过、清单落盘之后，删掉它在 `zip-novel/` 里的源包；被增量判定
+跳过的书（上一轮已经处理好的）同样删。三种情况**不删**：这本失败了；产物 gz 超过 25 MiB
+（护栏会让本批失败，改判 zopfli 重压要用到源包）；删除本身出错（只告警，下次按跳过处理）。
+
+删源之后，清单是这本书在产物之外唯一的记录——**不要把 `.preprocess-manifest.json` 当缓存
+删掉**。`MANIFEST_VERSION` 同理，改它必须写迁移（manifest.py 模块 docstring）。
 
 ## 压缩器按源包体积二选一（需求 10.7，design §4.8）
 
@@ -74,21 +111,23 @@ API 钉死在 `zopfli.gzip.compress`。同一个包另有输出 zlib 与裸 defl
 旧写法用 `gzip.open(..., 'wt')` 依赖"读时把 CRLF 归一成 LF、写时再换回 CRLF"两次翻译
 互相抵消，代价是 `charCount` 与章节偏移按归一后的文本算、产物里却是 CRLF——实测现有
 产物 gz 字符数 4,814,326 对 `_toc.json` 的 4,762,018，每行差 1 个字符。INV-1 只有一个
-坐标系，就是这里压进去的那串字符。
+坐标系，就是这里压进去的那串字符。反过来这也是归档书能从 `.txt.gz` 重切的前提：解压
+出来的就是当初切章用的那串字符，`charCount` 一个都不差（`resplit_book` 会核对）。
 """
 
 from __future__ import annotations
 
+import argparse
 import gzip
 import importlib.util
 import json
 import re
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, IO, List, Optional, Sequence, Tuple
+from typing import Dict, IO, List, Optional, Sequence, Set, Tuple
 
 # ---------------------------------------------------------------------------
 # 输出流一律重设为 UTF-8（stdout **与** stderr）
@@ -199,7 +238,7 @@ from zopfli import gzip as zopfli_gzip  # noqa: E402  只用 .gzip.compress，�
 
 from scripts.lib import archive  # noqa: E402  解压与源目录扫描（需求 7.6 / 7.7）
 from scripts.lib import encoding  # noqa: E402  BOM → 探测 → 全文 strict 试解（需求 7.8）
-from scripts.lib import manifest  # noqa: E402  SHA-256 增量清单与失效清理（需求 7.3–7.5）
+from scripts.lib import manifest  # noqa: E402  SHA-256 增量清单与归档书（需求 7.3–7.5）
 from scripts.lib import pinyin  # noqa: E402  书名/作者拼音首字母（需求 5.6）
 from scripts.lib import report  # noqa: E402  逐本记账、id 消歧、汇总与护栏（需求 7.1/7.2/10.1）
 from scripts.lib import toc  # noqa: E402  规则择一 + 全文切分 + 卷标记（需求 8.1–8.7a / 8.14）
@@ -230,14 +269,20 @@ __all__ = [
     'REQUIRED_DEPENDENCIES',
     'SOURCE_DIR',
     'ZOPFLI_SRC_BYTES',
+    'adopt_renamed',
     'build_index',
     'build_toc',
+    'claim_recorded_ids',
     'compress_text',
+    'consume_source',
+    'find_orphans',
     'main',
+    'parse_args',
     'parse_filename_meta',
     'pick_compressor',
     'process_book',
     'require_dependencies',
+    'resplit_book',
     'run',
     'skipped_meta',
     'write_index',
@@ -446,8 +491,8 @@ class Processed:
     toc_data: Dict[str, object]
     """已写出的 `_toc.json` 内容（design §2.1）。"""
 
-    compressor: str
-    """`gz9` / `zopfli`（需求 10.7）。"""
+    compressor: Optional[str]
+    """`gz9` / `zopfli`（需求 10.7）。归档书重切时沿用清单记录，旧清单没记就是 `None`。"""
 
     def tagged(self) -> Dict[str, object]:
         """给 `manifest` / `report` 用的形态：`meta` + 压缩器标签。
@@ -475,7 +520,7 @@ def process_book(
 
     Args:
         source_path: 源压缩包。
-        book_id: **已消歧**的 id（`report.Report.unique_id` 的结果）。
+        book_id: 本批分配到的 id（`claim_recorded_ids` 沿用的，或 `unique_id` 新分配的）。
         title: 书名。
         author: 作者。
         books_dir: `.txt.gz` 的输出目录。
@@ -520,11 +565,7 @@ def process_book(
     print(f"  读取字符数: {char_count:,} 字")
 
     # 章节识别：覆盖表/采样择一规则 → 全文切分（range 含自身标题行）→ 卷标记 → 两级兜底
-    chapters, toc_rule, fallback = build_toc(text, book_id, overrides)
-    # totalChapters 只数非卷节点（design §2.1 不变量 4）
-    total_chapters = toc.count_content_chapters(chapters)
-    volume_count = len(chapters) - total_chapters
-    print(f"  章节提取完成: 正文 {total_chapters} 章 + 卷节点 {volume_count} 个")
+    toc_data = _toc_data(text, book_id, title, author, overrides)
 
     # 压缩（需求 10.7）：按源包体积二选一，写入的字节即解码结果的 UTF-8 编码，
     # 不经任何文本模式翻译（模块 docstring 末节）。
@@ -538,50 +579,132 @@ def process_book(
         f"（压缩比: {gz_size / raw_size * 100:.1f}%）"
     )
 
-    # 写入章节目录 JSON: data_dir / f"{book_id}_toc.json"
-    #
-    # 字段顺序即 design §2.1 的顺序。`fallback` 与 `isVolume` 同一约定
-    # ——"真时才输出"，避免 7000 本 × 冗余 false 的体积浪费（前端按 `!!c.isVolume`
-    # 与 `!!toc.fallback` 读取）。`tocRule` 在兜底且无规则可用时是 null：
-    # "选中了哪条规则"与"是否兜底"是两件独立的事，各自记各自的。
-    #
-    # 这份保留 `indent=2`：它是 INV-2 要求"可直接打开审查"的那个产物，单书最大
-    # 494 KB、压缩后 89 KB（附录 M2），代价可接受。需求 5.1 的去缩进只针对
-    # `books.json`——那份是**每次开书架都要 parse** 的全库索引。
+    _write_toc(toc_data, data_dir)
+    return Processed(meta=_index_meta(toc_data, gz_size), toc_data=toc_data, compressor=compressor)
+
+
+def resplit_book(
+    entry: manifest.Entry,
+    title: str,
+    author: str,
+    *,
+    books_dir: Path,
+    data_dir: Path,
+    overrides: Optional[toc_overrides.Overrides] = None,
+) -> Processed:
+    """源文件已删除的书：从现有 `.txt.gz` 解出全文，**只重切章节**、重写 `_toc.json`。
+
+    `.txt.gz` 一个字节都不动：正文没变，压缩器也就不必重选（源包都没了，本来也无从按
+    源包体积选），压缩器标签沿用清单记录。能这样做的前提见模块 docstring 末节——gz 里
+    就是当初切章用的那串字符。
+
+    Args:
+        entry: 这本书的清单记录，`book_id` 与规模数字取自它。
+        title: 书名（由清单键即当初的源文件名推出）。
+        author: 作者。
+        books_dir: `.txt.gz` 所在目录。
+        data_dir: `_toc.json` 的输出目录。
+        overrides: 规则覆盖表——点名规则对归档书同样生效。
+
+    Raises:
+        OSError / EOFError / gzip.BadGzipFile / UnicodeDecodeError: gz 读不了或坏了。
+        ValueError: 解出的文本为空，或字符数与清单记录不符（这份 gz 不是清单描述的那本书）。
+        以上都由编排层记成这一本的失败（需求 7.1）。
+    """
+    book_id = entry.book_id
+    print(f"\n正在重切: 《{title}》 (作者: {author}) → {book_id}（源文件已不在，按 .txt.gz 重切章节）")
+    gz_path = books_dir / manifest.gz_name(book_id)
+    payload = gz_path.read_bytes()
+    text = gzip.decompress(payload).decode('utf-8')
+    char_count = len(text)
+    if not text.strip():
+        raise ValueError(f'{gz_path.name} 解出的文本为空（{char_count} 字符），无从重切。')
+    if entry.char_count > 0 and char_count != entry.char_count:
+        # 清单数字为 0（不可用）时没有可比的对象，那正是要靠重切来修的情形。
+        raise ValueError(
+            f'{gz_path.name} 解出 {char_count:,} 字符，清单记的是 {entry.char_count:,}：'
+            '这份 gz 不是清单描述的那本书，不拿它重切。'
+        )
+    print(f"  读取字符数: {char_count:,} 字（自 {gz_path.name}）")
+
+    toc_data = _toc_data(text, book_id, title, author, overrides)
+    _write_toc(toc_data, data_dir)
+    return Processed(
+        meta=_index_meta(toc_data, len(payload)),
+        toc_data=toc_data,
+        compressor=entry.compressor,
+    )
+
+
+def _toc_data(
+    text: str,
+    book_id: str,
+    title: str,
+    author: str,
+    overrides: Optional[toc_overrides.Overrides],
+) -> Dict[str, object]:
+    """切章并组装 `_toc.json` 的内容（design §2.1）。`process_book` 与 `resplit_book` 共用。
+
+    字段顺序即 design §2.1 的顺序。`fallback` 与 `isVolume` 同一约定——"真时才输出"，
+    避免 7000 本 × 冗余 false 的体积浪费（前端按 `!!c.isVolume` 与 `!!toc.fallback`
+    读取）。`tocRule` 在兜底且无规则可用时是 null："选中了哪条规则"与"是否兜底"是两件
+    独立的事，各自记各自的。
+    """
+    chapters, toc_rule, fallback = build_toc(text, book_id, overrides)
+    # totalChapters 只数非卷节点（design §2.1 不变量 4）
+    total_chapters = toc.count_content_chapters(chapters)
+    volume_count = len(chapters) - total_chapters
+    print(f"  章节提取完成: 正文 {total_chapters} 章 + 卷节点 {volume_count} 个")
+
     toc_data: Dict[str, object] = {
         'id': book_id,
         'title': title,
         'author': author,
-        'charCount': char_count,
+        'charCount': len(text),
         'totalChapters': total_chapters,
         'tocRule': toc_rule,
     }
     if fallback:
         toc_data['fallback'] = True
     toc_data['chapters'] = chapters
+    return toc_data
 
+
+def _write_toc(toc_data: Dict[str, object], data_dir: Path) -> Path:
+    """写出 `<data_dir>/<id>_toc.json`。
+
+    这份保留 `indent=2`：它是 INV-2 要求"可直接打开审查"的那个产物，单书最大
+    494 KB、压缩后 89 KB（附录 M2），代价可接受。需求 5.1 的去缩进只针对
+    `books.json`——那份是**每次开书架都要 parse** 的全库索引。
+    """
     data_dir.mkdir(parents=True, exist_ok=True)
-    toc_path = data_dir / manifest.toc_name(book_id)
+    toc_path = data_dir / manifest.toc_name(str(toc_data['id']))
     with open(toc_path, 'w', encoding='utf-8', newline='\n') as f:
         json.dump(toc_data, f, ensure_ascii=False, indent=2)
+    return toc_path
 
-    # 字段顺序即 design §2.2 的顺序：拼音首字母紧跟 author。
-    # `abbr_fields` 只返回该写出的键——纯 ASCII 书名（如《NB》）的缩写与书名
-    # 小写相同，写出来是把检索串里已有的内容抄第二遍（需求 5.6）。
+
+def _index_meta(toc_data: Dict[str, object], gz_size: int) -> Dict[str, object]:
+    """这本书在 `books.json` 里的条目（design §2.2），与 `_toc.json` 的共享字段同源。
+
+    字段顺序即 design §2.2 的顺序：拼音首字母紧跟 author。`abbr_fields` 只返回该写出的
+    键——纯 ASCII 书名（如《NB》）的缩写与书名小写相同，写出来是把检索串里已有的内容
+    抄第二遍（需求 5.6）。
+    """
+    title = str(toc_data['title'])
+    author = str(toc_data['author'])
     abbrs = pinyin.abbr_fields(title, author)
     if abbrs:
         print(f"  拼音首字母: {', '.join(f'{k}={v}' for k, v in abbrs.items())}")
-
-    meta: Dict[str, object] = {
-        'id': book_id,
+    return {
+        'id': toc_data['id'],
         'title': title,
         'author': author,
         **abbrs,
-        'charCount': char_count,
-        'totalChapters': total_chapters,
+        'charCount': toc_data['charCount'],
+        'totalChapters': toc_data['totalChapters'],
         'gzSize': gz_size,
     }
-    return Processed(meta=meta, toc_data=toc_data, compressor=compressor)
 
 
 def skipped_meta(
@@ -590,20 +713,20 @@ def skipped_meta(
     title: str,
     author: str,
 ) -> Optional[Dict[str, object]]:
-    """用清单记录重建**被跳过**那本书在 `books.json` 里的条目。
+    """用清单记录重建**被跳过**那本书（或归档书）在 `books.json` 里的条目。
 
-    `books.json` 是全库索引，跳过的书同样要在里面（见模块 docstring）。规模数字取自
-    清单而不是回头解析 `_toc.json`：7000 本那是几 GB 的额外 IO，换不到任何新信息。
+    `books.json` 是全库索引，跳过的书与归档书同样要在里面（见模块 docstring）。规模数字
+    取自清单而不是回头解析 `_toc.json`：7000 本那是几 GB 的额外 IO，换不到任何新信息。
 
     Returns:
-        条目；`None` 表示**这条记录不足以重建索引，应当改为重新处理这一本**。
-        两种情形：
+        条目；`None` 表示**这条记录不足以重建索引，应当改为重新处理这一本**
+        （归档书没有源包，改为从 `.txt.gz` 重切）。两种情形：
 
         - 数字字段为 0/负（清单是手工改过的、或上一次写入被打断）：写进 `books.json`
           会当场被 `validate.check_books` 判死，整批索引作废。宁可多跑一本。
-        - `bookId` 与本次消歧出的 `book_id` 不一致：同名书的后缀跟扫描顺序走
-          （report.py），源文件改名/增删会让谁拿裸 id 发生变化。此时磁盘上那组产物
-          属于"上一轮的命名"，按新 id 重建一次才对得上。
+        - `bookId` 与本次分配的 `book_id` 不一致：清单里的 id 已经不能由文件名推出
+          （`claim_recorded_ids` 没有沿用它），磁盘上那组产物属于"上一轮的命名"，
+          按新 id 重建一次才对得上。
     """
     if entry is None or entry.book_id != book_id:
         return None
@@ -650,6 +773,257 @@ def write_index(payload: Dict[str, object], data_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# 编排的几个环节（design §4.9，需求 7.5 修订 / 7.12）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Batch:
+    """一批里跨环节的账。"""
+
+    books: Dict[str, Dict[str, object]] = field(default_factory=dict)
+    """源文件名（清单键）→ `books.json` 条目。按键排序写出，与源文件在不在无关。"""
+
+    unindexed: Set[str] = field(default_factory=set)
+    """产物可能还在磁盘上、但本批**故意**不进索引的 id（失败的书、缺正文的归档书）。
+    孤儿产物扫描把它们排除在外——它们各自已经有一条更具体的报错。"""
+
+    pipeline_redone: List[str] = field(default_factory=list)
+    """只因流水线版本变更而重做的书（`manifest.PIPELINE_VERSION`），含按 `.txt.gz` 重切的归档书。"""
+
+    deleted: int = 0
+    """`--delete-source` 删掉的源文件数。"""
+
+    freed: int = 0
+    """`--delete-source` 释放的字节数。"""
+
+
+def _id_derivable(raw_id: str, book_id: str) -> bool:
+    """`book_id` 能否由这个文件名推出：就是裸 id，或它的消歧形态 `<裸 id>_N`。"""
+    if book_id == raw_id:
+        return True
+    prefix = f'{raw_id}_'
+    suffix = book_id[len(prefix):]
+    return book_id.startswith(prefix) and suffix.isascii() and suffix.isdigit()
+
+
+def adopt_renamed(
+    mf: manifest.Manifest,
+    sources: Sequence[Path],
+    rep: report.Report,
+) -> Dict[str, str]:
+    """源文件改了名：摘要与某本归档书相同的**新**源文件，接管那条清单记录。
+
+    内容一个字节没变，`book_id` 与产物原样沿用、不重做。旧版靠 `prune` 删掉旧名那组产物、
+    再按新名重跑达到同样的结果；现在源文件消失不再删任何东西（需求 7.5 修订），不做这一步
+    的话，改名会在书架上多出一本同名书。
+
+    Returns:
+        本步算过的摘要（源文件名 → SHA-256），主循环直接复用、不读第二遍。没有归档书、
+        或没有新源文件时什么都不算，返回空表。
+    """
+    fresh = [src for src in sources if src not in mf]
+    by_digest = {entry.digest: key for key, entry in mf.archived(sources)}
+    digests: Dict[str, str] = {}
+    if not fresh or not by_digest:
+        return digests
+
+    for src in fresh:
+        try:
+            digest = manifest.sha256_file(src)
+        except OSError:
+            continue              # 主循环会再读一次，把它记成这一本的失败（需求 7.1）
+        digests[src.name] = digest
+        old = by_digest.pop(digest, None)
+        if old is None:
+            continue
+        try:
+            entry = mf.rekey(old, src)
+        except manifest.ManifestError as exc:
+            rep.warn(f'[改名] {old} → {src.name}：清单记录没能挪过去（{exc}），这本按新书处理。')
+            continue
+        print(f'  [改名] {old} → {src.name}：摘要一致，沿用 book_id "{entry.book_id}"')
+    return digests
+
+
+def claim_recorded_ids(
+    mf: manifest.Manifest,
+    parsed: Sequence[Tuple[Path, Tuple[str, str, str]]],
+    rep: report.Report,
+) -> Dict[str, str]:
+    """逐本处理之前，把清单里已分配的 `book_id` 先占住（report.py"一经分配就不变"）。
+
+    - 归档书的 id 一律占：它没有源包可重建，被新来的同名书拿走就是产物被覆盖、找不回来。
+    - 源文件还在的书，id 仍能由文件名推出时占（`_id_derivable`）；推不出（文件名里的
+      书名/作者变了）就不沿用，让它按新 id 重做。
+
+    清单里 `book_id` 唯一（manifest.py），所以这些占位之间不会互相冲突。
+
+    Returns:
+        源文件名 → 沿用的 id。不在表里的书走 `rep.unique_id()`。
+    """
+    for key, entry in mf.archived(src for src, _meta in parsed):
+        rep.claim(entry.book_id, key)
+
+    sticky: Dict[str, str] = {}
+    for src, (raw_id, _title, _author) in parsed:
+        entry = mf.entry_for(src)
+        if entry is None or not _id_derivable(raw_id, entry.book_id):
+            continue
+        if rep.claim(entry.book_id, src):
+            sticky[src.name] = entry.book_id
+    return sticky
+
+
+def consume_source(src: Path, gz_size: int, rep: report.Report, batch: Batch) -> bool:
+    """`--delete-source`（需求 7.12）：这本书的产物与清单记录都已落盘，删掉它的源包。
+
+    只在两处调用：处理成功且清单写完之后，以及增量判定跳过之后。失败的书走不到这里。
+
+    Returns:
+        是否删掉了。产物 gz 超过 25 MiB 时**故意不删**：护栏会让本批失败，而改判 zopfli
+        重压要用到源包（report.py"越限的两种情形"）。删除出错只告警——产物与清单都已
+        写好，这本书下次按跳过处理，届时再删。
+    """
+    if gz_size > report.FILE_MAX_BYTES:
+        rep.warn(
+            f'[保留源文件] {src.name}：产物 gz {gz_size:,} B 超过单文件上限 '
+            f'{report.FILE_MAX_BYTES:,} B，本批护栏会失败；改判重压要用到源包，这本不删。'
+        )
+        return False
+    try:
+        size = src.stat().st_size
+        src.unlink()
+    except OSError as exc:
+        rep.warn(
+            f'[删源失败] {src.name}（{exc}）：产物与清单都已写好，源包留在原处，'
+            '下次运行按跳过处理时再删。'
+        )
+        return False
+    batch.deleted += 1
+    batch.freed += size
+    print(f'  [删源] 已删除源文件，释放 {size / 1024 / 1024:.2f} MB')
+    return True
+
+
+def process_archived(
+    key: str,
+    entry: manifest.Entry,
+    batch: Batch,
+    *,
+    mf: manifest.Manifest,
+    rep: report.Report,
+    books_dir: Path,
+    data_dir: Path,
+    overrides: Optional[toc_overrides.Overrides],
+) -> None:
+    """一本归档书（源文件已不在）：沿用、按 `.txt.gz` 重切、遗忘，或告警不进索引。
+
+    决策表见模块 docstring"源文件删了，书还在"。异常只可能来自重切那一支，与主循环
+    一样逐本记账、继续下一本（需求 7.1）。
+    """
+    _raw_id, title, author = parse_filename_meta(key)
+    book_id = entry.book_id
+    gz_ok, toc_ok = mf.artifact_state(book_id)
+
+    if not gz_ok and not toc_ok:
+        try:
+            mf.forget(key)
+        except manifest.ManifestError as exc:
+            rep.warn(f'[移除] {key} → {book_id}：{exc}')
+            return
+        print(f'\n[移除] {key} → {book_id}：源文件与两个产物都已不在，清单遗忘这本书')
+        return
+
+    if not gz_ok:
+        batch.unindexed.add(book_id)
+        rep.warn(
+            '\n'.join(
+                [
+                    f'[归档书缺正文] {key} → {book_id}：源文件已不在，'
+                    f'{manifest.gz_name(book_id)} 也缺失或为空，正文无从恢复；'
+                    f'本次不进 {INDEX_NAME}。',
+                    '  把源包放回 zip-novel/ 重跑即可重建；确实不要这本书，就把剩下的 '
+                    f'{manifest.toc_name(book_id)} 也删掉，下次运行清单会遗忘它。',
+                ]
+            )
+        )
+        return
+
+    if entry.current and toc_ok:
+        cached = skipped_meta(entry, book_id, title, author)
+        if cached is not None:
+            batch.books[key] = cached
+            rep.archived(key, entry)
+            return
+
+    print(f'\n[归档] {key}')
+    if not entry.current:
+        batch.pipeline_redone.append(key)
+        recorded = entry.pipeline_version
+        print(
+            f'  [流水线版本] 清单记的是 {recorded if recorded is not None else "未记录"}'
+            f'、当前 {manifest.PIPELINE_VERSION}：源文件已不在，按 .txt.gz 重切章节'
+        )
+    elif not toc_ok:
+        print(f'  [补切] {manifest.toc_name(book_id)} 缺失或为空，按 .txt.gz 重切章节')
+    else:
+        rep.warn(
+            f'[清单记录不足] {key}（bookId={book_id!r}）凑不出一条完整的 {INDEX_NAME} 条目；'
+            '源文件已不在，改为按 .txt.gz 重切。'
+        )
+
+    try:
+        processed = resplit_book(
+            entry, title, author,
+            books_dir=books_dir,
+            data_dir=data_dir,
+            overrides=overrides,
+        )
+        # 与主循环同一个顺序：自校验在写清单之前（需求 7.10）。
+        rep.warn_all(validate.check(processed.meta, processed.toc_data).warnings)
+        mf.update(key, entry.digest, processed.tagged())
+        rep.warn_all(mf.drain_warnings())
+        rep.ok(key, processed.tagged())
+        batch.books[key] = processed.meta
+    except Exception as e:                          # 需求 7.1：记原因，继续下一本
+        batch.unindexed.add(book_id)
+        rep.fail(key, e)
+
+
+def find_orphans(books_dir: Path, data_dir: Path, known: Set[str]) -> List[str]:
+    """产物目录里 `known` 之外的 book_id（两种产物按后缀截出 id），排序返回。
+
+    只报、不删：删除从未记录过的文件是数据丢失的常见来源，而这里最可能的成因恰恰是
+    "清单丢了"——那些产物是源文件已删除的书仅剩的正文。
+    """
+    found: Set[str] = set()
+    for directory, suffix in ((books_dir, manifest.GZ_SUFFIX), (data_dir, manifest.TOC_SUFFIX)):
+        if not directory.is_dir():
+            continue
+        for path in directory.glob(f'*{suffix}'):
+            if path.is_file():
+                found.add(path.name[: -len(suffix)])
+    return sorted(found - known)
+
+
+def _warn_orphans(orphans: Sequence[str], rep: report.Report) -> None:
+    listed = list(orphans[: report.MAX_LISTED])
+    lines = [
+        f'[孤儿产物] {len(orphans)} 本书的产物在磁盘上，但清单与本次 {INDEX_NAME} 里都没有它们：',
+        *(f'    - {book_id}' for book_id in listed),
+    ]
+    if len(orphans) > len(listed):
+        lines.append(f'    … 另有 {len(orphans) - len(listed)} 本，未逐条列出。')
+    lines += [
+        '  清单丢过或被重置（损坏、MANIFEST_VERSION 变更）时这个数字会突然变大：源文件已删除'
+        '的书只能靠清单进索引，把 .preprocess-manifest.json 从备份恢复后重跑即可。',
+        '  确实不要的就把这些文件删掉——它们照样占 20000 文件配额（需求 10.1）。',
+    ]
+    rep.warn('\n'.join(lines))
+
+
+# ---------------------------------------------------------------------------
 # 编排（design §4.9）
 # ---------------------------------------------------------------------------
 
@@ -661,6 +1035,7 @@ def run(
     manifest_path: Optional[Path] = None,
     overrides_path: Optional[Path] = None,
     rep: Optional[report.Report] = None,
+    delete_source: bool = False,
 ) -> int:
     """跑一整批，返回退出码（**不抛 `SystemExit`**，由 `main()` 负责）。
 
@@ -671,6 +1046,8 @@ def run(
         manifest_path: 增量清单路径，默认 `manifest.DEFAULT_PATH`。
         overrides_path: 规则覆盖表路径，默认 `toc_overrides.DEFAULT_PATH`。
         rep: 现成的账本（测试注入输出流用）；`None` 时按上面的目录新建一个。
+        delete_source: `--delete-source`：每本书完成后删掉它的源包（需求 7.12，
+            见 `consume_source`）。
 
     Returns:
         退出码：`0` 干净 / `1` 有书失败或配置错误 / `2` 产物不合规（越限、索引自校验
@@ -708,6 +1085,8 @@ def run(
         )
         for path in ignored:
             print(f"    - {path.name}")
+    if delete_source:
+        print('  [删源] --delete-source：每本书的产物与清单落盘之后，删掉它的源文件（需求 7.12）')
 
     # 规则人工覆盖表（需求 8.10）。每次运行重读，所以覆盖在重跑后自然仍然生效。
     # 表里的规则名在这里就全部校验完毕：写错了当场退出，不拖到第 N 本才发现，
@@ -721,11 +1100,26 @@ def run(
     # 文件名解析一次用到底：`overrides.unused()` 与逐本处理要的是同一份 id。
     parsed = [(src, parse_filename_meta(src.name)) for src in sources]
 
+    # 增量清单（需求 7.3–7.5）。读取问题一律降级为告警：挡住整批也找不回丢掉的记录
+    # （源文件已删除的书），而源文件还在的书丢了记录只是退化成重跑。
+    mf = manifest.load(manifest_path, books_dir=books_dir, data_dir=data_dir)
+    rep.warn_all(mf.drain_warnings())
+
+    # 改名识别要在归档名单之前：接管了记录的书就不再是归档书。
+    known_digests = adopt_renamed(mf, sources, rep)
+    archived = mf.archived(sources)
+    if archived:
+        print(
+            f"  [归档] 清单里另有 {len(archived)} 本书的源文件已不在源目录："
+            "产物与索引条目沿用清单记录（需求 7.5）"
+        )
+
     if len(overrides):
         print(f"  [覆盖] {overrides.path.name} 指定了 {len(overrides)} 本书的规则")
         # 键写错是这张表唯一无法在加载期校验的部分（那时还不知道有哪些书）。
-        # 告警而非失败：书被合法删掉时批次不该停。
-        unused = overrides.unused([meta[0] for _, meta in parsed])
+        # 告警而非失败：书被合法删掉时批次不该停。归档书的 id 同样算"有这本书"。
+        known_ids = [meta[0] for _, meta in parsed] + [entry.book_id for _, entry in archived]
+        unused = overrides.unused(known_ids)
         if unused:
             rep.warn(
                 '\n'.join(
@@ -737,33 +1131,26 @@ def run(
                 )
             )
 
-    # 增量清单（需求 7.3–7.5）。读取问题一律降级为告警：清单是可再生的缓存，
-    # 丢了只是退化成全量重跑，不该把整批挡在门外。
-    mf = manifest.load(manifest_path, books_dir=books_dir, data_dir=data_dir)
-    rep.warn_all(mf.warnings)
-
-    books: List[Dict[str, object]] = []
-
-    #: 源文件与产物都没变、**只因流水线版本变更**而重做的书（`manifest.PIPELINE_VERSION`）。
-    #: 单独记一笔是为了让"一次什么都没改的运行为何重建了全库"在输出里有答案。
-    pipeline_redone: List[str] = []
+    # id 分配必须在跳过判定**之前**对每本书都做一次（report.py）：id 命名空间的占用
+    # 与这本要不要重跑无关。清单里已分配的先整体占住，新书才从剩下的里挑。
+    sticky = claim_recorded_ids(mf, parsed, rep)
+    batch = Batch()
 
     for index, (src, (raw_id, title, author)) in enumerate(parsed, 1):
         print(f"\n[{index}/{len(parsed)}] {src.name}")
-        # 消歧必须在跳过判定**之前**对每本书都做一次（report.py）：id 命名空间的占用
-        # 与这本要不要重跑无关，漏掉跳过的那些会让本次处理的书拿到一个已经被磁盘上
-        # 的产物占着的裸 id（需求 7.9）。
-        book_id = rep.unique_id(raw_id, src)
+        book_id = sticky.get(src.name) or rep.unique_id(raw_id, src)   # 需求 7.9
         rep.check_source(src)                      # 需求 7.11：源包 > 30MB 预警
 
         try:
-            digest = manifest.sha256_file(src)
+            digest = known_digests.get(src.name) or manifest.sha256_file(src)
             if mf.should_skip(src, digest):         # 需求 7.4：摘要一致且产物完整存在
                 entry = mf.entry_for(src)
                 cached = skipped_meta(entry, book_id, title, author)
-                if cached is not None:
-                    books.append(cached)
+                if cached is not None and entry is not None:
+                    batch.books[src.name] = cached
                     rep.skipped(src, entry)
+                    if delete_source:               # 需求 7.12：上一轮已处理好的同样删
+                        consume_source(src, entry.gz_size, rep, batch)
                     continue
                 recorded_id = entry.book_id if entry is not None else None
                 rep.warn(
@@ -777,7 +1164,7 @@ def run(
                 # 真正的信号全被压掉。整批的那一笔在循环之后统一报。
                 entry = mf.entry_for(src)
                 recorded = entry.pipeline_version if entry is not None else None
-                pipeline_redone.append(src.name)
+                batch.pipeline_redone.append(src.name)
                 print(
                     f'  [流水线版本] 清单记的是 {recorded if recorded is not None else "未记录"}'
                     f'、当前 {manifest.PIPELINE_VERSION}：源文件没变，但切分逻辑变了，'
@@ -795,8 +1182,11 @@ def run(
             # 否则它此后每次运行都被跳过。
             rep.warn_all(validate.check(processed.meta, processed.toc_data).warnings)
             mf.update(src, digest, processed.tagged())    # 需求 7.3：每本成功即落盘
+            rep.warn_all(mf.drain_warnings())
             rep.ok(src, processed.tagged())
-            books.append(processed.meta)
+            batch.books[src.name] = processed.meta
+            if delete_source:                       # 需求 7.12：产物与清单都已落盘
+                consume_source(src, int(processed.meta['gzSize']), rep, batch)
 
         except archive.MissingExtractorError as e:
             # 解压依赖缺失是环境问题，继续跑下去只会把整批都判成失败（需求 7.7）。
@@ -810,34 +1200,59 @@ def run(
             return EXIT_CONFIG
 
         except Exception as e:                      # 需求 7.1：记原因，继续下一本
+            batch.unindexed.add(book_id)
             rep.fail(src, e)
             continue
+
+    # 需求 7.5（修订）：源文件已删除的书，产物与索引条目照旧；换版/缺目录时按 .txt.gz 重切。
+    for key, _entry in archived:
+        entry = mf.entry_for(key)
+        if entry is None:
+            continue          # 主循环里被别的书挤掉了（`manifest.update` 的去重），已告警
+        process_archived(
+            key, entry, batch,
+            mf=mf,
+            rep=rep,
+            books_dir=books_dir,
+            data_dir=data_dir,
+            overrides=overrides,
+        )
 
     # 流水线换版的整批账（`manifest.PIPELINE_VERSION`）。没有这一笔，一次"什么都没改"
     # 的运行突然重建 7,681 本就没有任何解释——而"跳过 0 本"恰恰是清单失效时的表现，
     # 两者在日志里长得一模一样。
-    if pipeline_redone:
+    if batch.pipeline_redone:
         print(
-            f'\n[流水线版本变更] 本次有 {len(pipeline_redone)} 本书的源文件与产物都没变，'
-            f'只因清单记录的流水线版本不是 {manifest.PIPELINE_VERSION} 而重做。\n'
+            f'\n[流水线版本变更] 本次有 {len(batch.pipeline_redone)} 本书的源文件与产物都没变，'
+            f'只因清单记录的流水线版本不是 {manifest.PIPELINE_VERSION} 而重做'
+            '（源文件已删除的书按 .txt.gz 重切）。\n'
             '    改了 scripts/lib/toc_rules.py 的规则表或 scripts/lib/toc.py 的择一/切分'
             '逻辑就必须把 manifest.PIPELINE_VERSION +1，\n'
             '    否则重跑会把它们全部跳过、静默发布上一版的切分结果。这条输出就是那次'
             '+1 的回声。'
         )
 
-    # 需求 7.5：源已删除的书，清产物 + 清条目。空源列表会被拒绝执行（差集语义下
-    # 那意味着"全库都该删"，而路径写错同样得到空列表）。
-    prune_result = mf.prune(sources)
-    rep.warn_all(prune_result.warnings)
-    if prune_result.pruned:
-        print(f"\n[清理] 源文件已删除的书 {len(prune_result.pruned)} 本：")
-        for item in prune_result.pruned:
-            print(f"    - {item.source_name} → {item.book_id}（移除 {len(item.removed)} 个产物）")
-
+    books = [batch.books[key] for key in sorted(batch.books)]
     payload = build_index(books)
     index_path = write_index(payload, data_dir)
     print(f"\n全局索引已写出: {index_path}（{len(books)} 本，无缩进、不预压缩）")
+
+    # 需求 7.13：清单丢失/重置时，源文件已删除的书只能从索引里消失——点名它们，
+    # 别让这件事静默发生。
+    known = (
+        {str(book['id']) for book in books}
+        | batch.unindexed
+        | {entry.book_id for entry in mf.entries.values()}
+    )
+    orphans = find_orphans(books_dir, data_dir, known)
+    if orphans:
+        _warn_orphans(orphans, rep)
+
+    if delete_source:
+        print(
+            f'\n[删源] 本次删除 {batch.deleted} 个源文件，'
+            f'释放 {batch.freed / 1024 / 1024 / 1024:.2f} GB（--delete-source）。'
+        )
 
     # 需求 7.10：写完就校验。失败不是"某一本的问题"——书架读的是这一份，
     # 它不合 schema 整站就是坏的，所以按产物护栏那一档退出（部署不上去）。
@@ -857,9 +1272,33 @@ def run(
     return code
 
 
-def main() -> int:
-    """入口：跑一批并返回退出码。非零退出由 `raise SystemExit(...)` 在模块末尾给出。"""
-    return run()
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """命令行参数。只有一个开关，默认行为与不带参数时完全相同。"""
+    parser = argparse.ArgumentParser(
+        prog='preprocess.py',
+        description=(
+            '把 zip-novel/ 里的小说压缩包切章、压缩成 public/books/<id>.txt.gz 与 '
+            'public/data/<id>_toc.json，并写出全库索引 public/data/books.json。'
+            '增量运行：没变的书跳过；源文件已删除的书，产物与索引照旧。'
+        ),
+    )
+    parser.add_argument(
+        '--delete-source',
+        action='store_true',
+        help=(
+            '每本书的产物写完、自校验通过、清单落盘之后，删掉它在 zip-novel/ 里的源压缩包'
+            '（被跳过的、上次已处理好的书同样删）。失败的书与产物超过 25 MiB 的书不删。'
+            '删源之后书照样留在书库里，但 .preprocess-manifest.json 就成了它在产物之外'
+            '唯一的记录，不要删它。'
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """入口：解析参数、跑一批并返回退出码。非零退出由 `raise SystemExit(...)` 在模块末尾给出。"""
+    args = parse_args(argv)
+    return run(delete_source=args.delete_source)
 
 
 if __name__ == '__main__':

@@ -1,20 +1,23 @@
 import { putCachedBook } from "./bookCache";
-import { readCachedBook, touchCachedBook } from "./indexedDB";
-import { BookLoadSource, nowMs, reportBookLoad } from "./loadMetrics";
+import {
+  BookTextInvalidError,
+  countCodePoints,
+  hasGzipMagic,
+  normalizeCharCount,
+} from "./bookTextCheck";
+import { deleteCachedBook, readCachedBook, touchCachedBook } from "./indexedDB";
+import { BookLoadMetrics, BookLoadSource, nowMs, reportBookLoad } from "./loadMetrics";
 import {
   INDETERMINATE,
   ProgressReporter,
   deriveLoadProgress,
 } from "./loadProgress";
-
-// In-memory cache for loaded books
-const memoryBookCache = new Map<string, string>();
+import { loadToc } from "./tocCache";
 
 /**
  * 一次加载的产物 + 该分支能观测到的指标槽位（需求 3.5）。
  *
- * 取文本与上报指标分开：每个分支只负责填自己知道的字段，`loadGzipBookText` 末尾统一上报
- * 一次。
+ * 取文本与上报指标分开：每个分支只负责填自己知道的字段，loader 末尾统一上报一次。
  */
 interface BookTextOutcome {
   text: string;
@@ -26,137 +29,301 @@ interface BookTextOutcome {
 /**
  * 网络分支的产物，额外带出原始 gz 以便落库（需求 4.1）。
  *
- * `gz` 为 `null` 的两个分支**无法**缓存，这是事实限制而不是取舍：
- * - `Content-Encoding: gzip` 透明解压——HTTP 层在 `fetch` 返回之前就把 gz 解掉了，响应体
- *   里只剩明文，压缩前的字节根本没有进过 JS。为了缓存而再发一次请求拿原始 gz 也不可行：
- *   没有任何请求头能要求服务器"别压"，同一个 URL 拿回来的还是透明解压后的结果。
- * - `DecompressionStream` 抛错后的 `fetch().text()` 兜底——手上的 gz 已经证明解不开，
- *   存进去只会让下次打开从缓存里读出同一份坏数据，比不缓存更糟。
+ * `gz` 为 `null` 的是 `Content-Encoding: gzip` 透明解压分支，它**无法**缓存，这是事实限制
+ * 而不是取舍：HTTP 层在 `fetch` 返回之前就把 gz 解掉了，响应体里只剩明文，压缩前的字节
+ * 根本没有进过 JS。为了缓存而再发一次请求拿原始 gz 也不可行：没有任何请求头能要求服务器
+ * "别压"，同一个 URL 拿回来的还是透明解压后的结果。
  *
- * 两个分支都仍有内存缓存（本次会话内二次打开是 0ms），代价只是跨会话要重新下载。
+ * 该分支仍有内存缓存（本次会话内二次打开是 0ms），代价只是跨会话要重新下载。
  */
 interface FetchedBookText extends BookTextOutcome {
   gz: ArrayBuffer | null;
 }
 
+/** `loadGzipBookText` 的形状；`createBookLoader` 产出的每个实例都是它。 */
+export type BookLoader = (
+  url: string,
+  bookId: string,
+  onProgress?: ProgressReporter
+) => Promise<string>;
+
 /**
- * 加载并解压 gzip 压缩的小说文本文件
+ * loader 的全部外部依赖（e2e-visual-testing 需求 19，design "F-001 修复"）。
+ *
+ * 做法同 `bookCache.ts` 的 `CacheStore`：生产路径永远走 `defaultDeps`，抽成接口只为让
+ * 缓存命中、坏记录删除、单轮重取、码点检查这几段流程能在 Node 下直接单测——Node 里没有
+ * IndexedDB，也没有 `_toc.json` 可取。
+ *
+ * 三个写缓存的副作用（`deleteCached`、`touchCached`、`putCached`）失败时一律被吞掉：
+ * 缓存是可再生数据，它的失败不能成为打不开书的原因。
+ */
+export interface BookLoaderDeps {
+  /** 取 `.txt.gz`。只以 URL 一个参数调用。 */
+  fetch: typeof fetch;
+  /** 单调时钟读数（ms），用于 `decompressMs` 与 `totalMs`。 */
+  now(): number;
+  /** 上报一次加载指标。只在成功返回全文之前调用，每次加载恰好一次。 */
+  report(m: BookLoadMetrics): void;
+  /** 读该书的 IndexedDB 记录；没有、或缓存不可用时为 `null`。 */
+  readCached(bookId: string): Promise<{ gz: ArrayBuffer; bytes: number } | null>;
+  /** 删除该书的记录（19.9：读到坏记录时）。会被等待，失败被吞掉。 */
+  deleteCached(bookId: string): Promise<void>;
+  /** 推进该书的 `lastAccess`（缓存命中时）。fire-and-forget。 */
+  touchCached(bookId: string): Promise<void>;
+  /** 写入网络取回的原始 gz。fire-and-forget。 */
+  putCached(bookId: string, gz: ArrayBuffer): Promise<unknown>;
+  /**
+   * 该书 `_toc.json` 里的 `charCount`，原样返回、不必校验：loader 用 `normalizeCharCount`
+   * 规范，不可用（含本函数 reject）时跳过码点检查（19.10）。
+   */
+  expectedCharCount(bookId: string): Promise<unknown>;
+}
+
+/**
+ * 生产依赖。
+ *
+ * `charCount` 取自 `loadToc(bookId)`：`ReaderPage` 在调用 `loadGzipBookText` 之前已经
+ * `await loadToc(bookId)`，而 `tocCache` 按 bookId 缓存的是 **Promise**、只在失败时摘除
+ * 条目，所以这里拿到的是同一个已完成的 Promise，不多发 `_toc.json` 请求（需求 19.4、11.3
+ * 的"恰好 1 次"）。这也是 `ReaderPage.tsx` 不必改动的原因（design K4）。
+ */
+const defaultDeps: BookLoaderDeps = {
+  // 包一层而不是直接写 `fetch`：以 `deps.fetch(url)` 调用时 `this` 是 deps 对象，浏览器的
+  // 原生 fetch 要求 `this` 为 Window 或 undefined，否则抛 "Illegal invocation"。
+  fetch: (input, init) => fetch(input, init),
+  now: nowMs,
+  report: reportBookLoad,
+  readCached: readCachedBook,
+  deleteCached: deleteCachedBook,
+  // 只传 bookId：`touchCachedBook` 的第二参是访问时刻，缺省取 `Date.now()`。
+  touchCached: (bookId) => touchCachedBook(bookId),
+  putCached: (bookId, gz) => putCachedBook(bookId, gz),
+  expectedCharCount: (bookId) =>
+    loadToc(bookId).then(
+      (toc) => toc.charCount,
+      () => undefined
+    ),
+};
+
+/**
+ * 造一个书籍正文 loader。每个实例各有一份内存缓存；生产代码只用 `loadGzipBookText`
+ * 这一个实例，单测各自新建以免互相污染。
+ *
  * 缓存层级：
  * 1. 内存一级缓存 (0ms 切换)
  * 2. IndexedDB 二级缓存（存**原始 gz 二进制**，命中后本地解压；需求 4.1）
  * 3. 网络：取回 gz → 解压 → 写入二级缓存
  *
+ * ## 有效性检查（F-001，需求 19）
+ *
+ * 书的 `.txt.gz` 缺失时，站点的 SPA 回退以状态 200 返回 `index.html`。旧流程解压失败后
+ * 以 `fetch().text()` 兜底（`source=network-fallback`），把这页 HTML 当成正文渲染。现在：
+ *
+ * - **不再兜底**（19.5，删除依据见 design "F-001 修复"）：Opaque 响应不是 gzip（缺魔数）即抛
+ *   `not-gzip`，解压抛错即抛 `corrupt-gzip`（19.1）。
+ * - **码点检查**（19.3）：`indexeddb`、`network`、`network-transparent` 三个分支的全文，其
+ *   Unicode 码点数必须等于 `_toc.json` 的 `charCount`；`charCount` 不可用时跳过（19.10）。
+ *   `memory` 分支只会命中已通过检查（或已跳过检查）的全文，不再检查。检查是对全文的一次
+ *   线性扫描，最大书约 2 千万码元，远小于解压本身的成本。
+ * - **坏记录**（19.9）：IndexedDB 的记录解不开或未通过检查时，先删除（删除失败也继续），
+ *   再只走一轮网络；网络结果同样要过检查，此后不再回读 IndexedDB、也不做第二轮重取。
+ * - **失败不留痕**（19.2）：以错误结束的加载不写内存缓存、不写 IndexedDB、不打
+ *   `[book-load]` 日志，所以同一会话内再次打开会重新经 IndexedDB 与网络加载。
+ *
+ * 错误经 `ReaderPage` 现有的 `catch → setError(message)` 进入阅读器错误页；
+ * `BookTextInvalidError` 的 `message` 就是写给读者的那行说明。
+ *
  * 全程记录 gz 字节数、解压耗时与结果字符数（需求 3.5）。这些数字**只用于观察**：
  * 本函数不读取任何历史指标，也不因为某个读数大就改走别的分支——没有自动降级路径。
+ * `chars` 仍是 `text.length`（UTF-16 码元数，需求 19.4），与检查用的码点数是两回事。
  *
  * ## `onProgress` 的契约（需求 10.5，design §8.3）
  *
  * 回调收到的是 `LoadProgress`（确定态带整数百分比 / 不确定态）而不是一对数字：本函数的
- * 五条分支里只有一条（网络取原始 gz 且响应带 `content-length`）能给出百分比，其余都拿
+ * 四条分支里只有一条（网络取原始 gz 且响应带 `content-length`）能给出百分比，其余都拿
  * 不到分母，这在类型上必须说得出来，否则调用方只能把"拿不到"渲染成 0%。
  *
  * 两条调用方必须知道的边界：
  * - **回调可能一次都不触发**（内存命中时没有任何 I/O）。所以调用方的**初始状态就得是
  *   不确定态**，不能是 0%——不确定态是这条链路的默认值，确定态是拿到分母后的升级。
- * - 上报不保证单调覆盖全程：确定态的书在下载结束、开始本地解压或走兜底重取时会**退回**
- *   不确定态。那两段确实没有百分比可言，让条子继续循环比冻在 100% 更诚实。
+ * - 上报不保证单调覆盖全程：确定态的书在下载结束、开始本地解压时会**退回**不确定态；
+ *   IndexedDB 记录损坏而改走网络时，会从不确定态再进入确定态。那几段确实没有百分比
+ *   可言，让条子继续循环比冻在 100% 更诚实。
  */
-export async function loadGzipBookText(
-  url: string,
-  bookId: string,
-  onProgress?: ProgressReporter
-): Promise<string> {
-  const startedAt = nowMs();
-  const outcome = await resolveBookText(url, bookId, onProgress);
+export function createBookLoader(deps: BookLoaderDeps): BookLoader {
+  const memoryBookCache = new Map<string, string>();
 
-  reportBookLoad({
-    bookId,
-    source: outcome.source,
-    gzBytes: outcome.gzBytes,
-    chars: outcome.text.length,
-    decompressMs: outcome.decompressMs,
-    totalMs: nowMs() - startedAt,
-    startedAt,
-  });
+  /** 按 内存 → IndexedDB → 网络 的顺序取文本。 */
+  async function resolveBookText(
+    url: string,
+    bookId: string,
+    onProgress?: ProgressReporter
+  ): Promise<BookTextOutcome> {
+    // 1. 检查内存缓存
+    const inMemory = memoryBookCache.get(bookId);
+    if (inMemory !== undefined) {
+      // 命中内存时既没下载也没解压，gz 字节数与解压耗时都不可观测 → null，不用 0 冒充。
+      //
+      // 这条分支**不上报进度**：它在同一个微任务里就返回了，调用方的加载态根本没机会上屏，
+      // 报一次不确定态只是徒增一轮渲染。契约里已说明"回调可能一次都不触发"，兜底靠的是
+      // 调用方的初始态本就是不确定态。
+      return { text: inMemory, source: "memory", gzBytes: null, decompressMs: null };
+    }
 
-  return outcome.text;
-}
+    // 码点检查的期望值。`null` ⇒ 跳过检查（19.10）。
+    const expected = await readExpectedCharCount(deps, bookId);
 
-/** 按 内存 → IndexedDB → 网络 的顺序取文本。 */
-async function resolveBookText(
-  url: string,
-  bookId: string,
-  onProgress?: ProgressReporter
-): Promise<BookTextOutcome> {
-  // 1. 检查内存缓存
-  const inMemory = memoryBookCache.get(bookId);
-  if (inMemory !== undefined) {
-    // 命中内存时既没下载也没解压，gz 字节数与解压耗时都不可观测 → null，不用 0 冒充。
-    //
-    // 这条分支**不上报进度**：它在同一个微任务里就返回了，调用方的加载态根本没机会上屏，
-    // 报一次不确定态只是徒增一轮渲染。契约里已说明"回调可能一次都不触发"，兜底靠的是
-    // 调用方的初始态本就是不确定态。
-    return { text: inMemory, source: "memory", gzBytes: null, decompressMs: null };
+    // 2. 检查 IndexedDB 持久缓存（存的是 gz，要在本地解压）。坏记录在里面删掉并返回 null。
+    const fromCache = await resolveFromCache(deps, bookId, expected, onProgress);
+    if (fromCache) {
+      // 解压结果进内存一级缓存：同一会话内再打开这本书就不必重解压那 126 ms。
+      memoryBookCache.set(bookId, fromCache.text);
+      return fromCache;
+    }
+
+    // 3. 网络请求：只此一轮（19.9），此后不再回读 IndexedDB。
+    const fetched = await fetchBookText(deps, url, onProgress);
+    assertCharCount(fetched.text, expected);
+
+    memoryBookCache.set(bookId, fetched.text);
+
+    const { gz } = fetched;
+    if (gz) {
+      // fire-and-forget：`putCachedBook` 永不抛出（任务 47），本数 LRU 与配额降级都在它内部
+      // 处理完。不等它是有意的——缓存写入（最大书约 22 MB 的结构化克隆）不该挡在"书已经可以
+      // 看了"的前面。写不进去的唯一后果是下次打开重新下载。
+      detach(() => deps.putCached(bookId, gz));
+    }
+
+    return fetched;
   }
 
-  // 2. 检查 IndexedDB 持久缓存（存的是 gz，要在本地解压）
-  const fromCache = await resolveFromCache(bookId, onProgress);
-  if (fromCache) {
-    // 解压结果进内存一级缓存：同一会话内再打开这本书就不必重解压那 126 ms。
-    memoryBookCache.set(bookId, fromCache.text);
-    return fromCache;
-  }
+  return async function loadBookText(url, bookId, onProgress) {
+    const startedAt = deps.now();
+    // 抛错时直接冒出去：不上报、不写缓存（19.2）。
+    const outcome = await resolveBookText(url, bookId, onProgress);
 
-  // 3. 网络请求
-  const fetched = await fetchBookText(url, onProgress);
+    deps.report({
+      bookId,
+      source: outcome.source,
+      gzBytes: outcome.gzBytes,
+      chars: outcome.text.length,
+      decompressMs: outcome.decompressMs,
+      totalMs: deps.now() - startedAt,
+      startedAt,
+    });
 
-  memoryBookCache.set(bookId, fetched.text);
-
-  if (fetched.gz) {
-    // fire-and-forget：`putCachedBook` 永不抛出（任务 47），本数 LRU 与配额降级都在它内部
-    // 处理完。不等它是有意的——缓存写入（最大书约 22 MB 的结构化克隆）不该挡在"书已经可以
-    // 看了"的前面。写不进去的唯一后果是下次打开重新下载。
-    void putCachedBook(bookId, fetched.gz);
-  }
-
-  return fetched;
+    return outcome.text;
+  };
 }
 
 /**
- * IndexedDB 分支：取回 gz、本地解压、推进 `lastAccess`（需求 4.1/4.3）。
+ * 加载并解压 gzip 压缩的小说文本文件。流程、有效性检查与 `onProgress` 契约见
+ * `createBookLoader`。签名与修复前相同，`ReaderPage` 无需改动（design K4）。
+ */
+export const loadGzipBookText: BookLoader = createBookLoader(defaultDeps);
+
+/**
+ * 取码点检查的期望值：`charCount` 缺失、不是非负安全整数、或取值本身失败时为 `null`，
+ * 调用方据此跳过检查（19.10）。
+ *
+ * 取值失败也按"不可用"处理而不是让加载失败：默认实现已把 `loadToc` 的 reject 映射成
+ * `undefined`，这里再兜一层是为了让"拿不到期望值 ⇒ 跳过检查"对任何依赖实现都成立。
+ */
+async function readExpectedCharCount(
+  deps: BookLoaderDeps,
+  bookId: string
+): Promise<number | null> {
+  try {
+    return normalizeCharCount(await deps.expectedCharCount(bookId));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 码点检查（19.3）：`expected` 为 `null` 时跳过；否则全文的 Unicode 码点数必须与之相等，
+ * 不等即抛 `char-count-mismatch`。
+ *
+ * 用码点数而不是 `text.length`：预处理管线以 Python `len()` 写入 `charCount`，含增补平面
+ * 字符的书两者不相等。
+ */
+function assertCharCount(text: string, expected: number | null): void {
+  if (expected === null) return;
+
+  const actual = countCodePoints(text);
+  if (actual !== expected) {
+    throw new BookTextInvalidError(
+      "char-count-mismatch",
+      `码点数 ${actual}，目录记录 ${expected}`
+    );
+  }
+}
+
+/**
+ * 执行一个可失败的缓存副作用并等它结束；失败（含同步抛错）一律吞掉。
+ *
+ * `task` 在本函数被调用的同一时刻同步发出（async 函数体在第一个 `await` 之前同步执行），
+ * 所以 `detach` 之后副作用已经开始，而不是推迟到下一个微任务。
+ */
+async function settle(task: () => Promise<unknown>): Promise<void> {
+  try {
+    await task();
+  } catch {
+    // 缓存是可再生数据：删不掉、写不进、推不动 lastAccess，都不影响本次阅读。
+  }
+}
+
+/** 发出一个可失败的缓存副作用，不等它；失败一律吞掉。 */
+function detach(task: () => Promise<unknown>): void {
+  void settle(task);
+}
+
+/**
+ * IndexedDB 分支：取回 gz、本地解压、过码点检查、推进 `lastAccess`（需求 4.1/4.3、19.3）。
  *
  * 这条分支的 `decompressMs` 是**唯一干净的解压成本读数**：不含网络，纯 gz→文本
  * （附录 M1 实测最大书约 126 ms）。网络分支的同名读数含下载，两者不可直接比较
- * （见 loadMetrics 里的说明）。
+ * （见 loadMetrics 里的说明）。码点检查不计入 `decompressMs`，只计入 `totalMs`。
  *
- * 没有缓存、缓存不可用（`readCachedBook` 静默返回 `null`）、或缓存里的 gz 解不开时一律
- * 返回 `null`，让调用方继续走网络。坏记录不单独删除：网络分支随后会以同一个 `bookId`
- * 覆盖写，多一次删除只是多一轮事务。
+ * 返回 `null` 让调用方继续走网络，有两种情形：
+ * - 没有记录，或缓存不可用（`readCached` 静默返回 `null`）；
+ * - 记录是坏的：gz 解不开，或全文未通过码点检查（修复前写入的 HTML 记录、服务器产物更新后
+ *   遗留的旧记录）。此时**先删除再返回**（19.9）：若网络结果也不通过，加载结束时该书在
+ *   IndexedDB 里就没有记录，而不是留着一条每次都要白解压一遍的坏数据。删除会被等待，
+ *   但失败不阻止随后的网络重取。
+ *
+ * 坏记录不上报 `source=indexeddb`（19.9），也不推进它的 `lastAccess`。
  *
  * 进度只能报不确定态（需求 10.5）：下载这一步没发生，剩下的是那约 126 ms 的纯 CPU 解压，
  * `DecompressionStream` 不报进展。这段时间不算短——恰好是"离线秒开"最该显得在动的时候。
  */
 async function resolveFromCache(
+  deps: BookLoaderDeps,
   bookId: string,
+  expected: number | null,
   onProgress?: ProgressReporter
 ): Promise<BookTextOutcome | null> {
-  const cached = await readCachedBook(bookId);
+  const cached = await deps.readCached(bookId);
   if (!cached) return null;
 
   onProgress?.(INDETERMINATE);
 
-  const startedAt = nowMs();
+  const startedAt = deps.now();
   let text: string;
+  let decompressMs: number;
   try {
     text = await decompressGzip(cached.gz);
+    decompressMs = deps.now() - startedAt;
+    assertCharCount(text, expected);
   } catch {
+    await settle(() => deps.deleteCached(bookId));
     return null;
   }
-  const decompressMs = nowMs() - startedAt;
 
-  // 推进 LRU 的访问时刻。同样 fire-and-forget：它是一次整条记录的重写（存储层已注明），
+  // 推进 LRU 的访问时刻。fire-and-forget：它是一次整条记录的重写（存储层已注明），
   // 不能占着打开书的关键路径；失败了只影响淘汰顺序，不影响本次阅读，所以吞掉异常。
-  void touchCachedBook(bookId).catch(() => {});
+  detach(() => deps.touchCached(bookId));
 
   return {
     text,
@@ -168,12 +335,18 @@ async function resolveFromCache(
   };
 }
 
-/** 网络分支：取回 `.txt.gz` 并解压，顺带量出 gz 字节数与解压耗时。 */
+/**
+ * 网络分支：取回 `.txt.gz` 并解压，顺带量出 gz 字节数与解压耗时。
+ *
+ * 只负责字节层的有效性（不是 gzip、解不开即抛）；码点检查由调用方在拿到全文后做，两种
+ * 响应形态（Opaque / Transparent）共用那一处。
+ */
 async function fetchBookText(
+  deps: BookLoaderDeps,
   url: string,
   onProgress?: ProgressReporter
 ): Promise<FetchedBookText> {
-  const response = await fetch(url);
+  const response = await deps.fetch(url);
   if (!response.ok) {
     throw new Error(`无法获取书籍文件: HTTP ${response.status} ${response.statusText}`);
   }
@@ -197,7 +370,9 @@ async function fetchBookText(
     // 拿它当分母会得出一条走到 250% 的进度条，所以只能报不确定态。
     onProgress?.(INDETERMINATE);
 
-    const startedAt = nowMs();
+    // 这里拿到的已是明文，字节层无从检查；解码出来的是不是正文（例如代理把自身的错误页
+    // 压缩后返回），只能靠调用方的码点检查识别（19.3）。
+    const startedAt = deps.now();
     const text = await response.text();
     return {
       text,
@@ -205,7 +380,7 @@ async function fetchBookText(
       // 该分支拿不到解压前后的字节数，只能信 content-length（按 fetch 规范它是压缩后的
       // 长度）；头缺失时记 null。需求 10.7 的部署核对就是看这条日志出不出现。
       gzBytes: totalBytes > 0 ? totalBytes : null,
-      decompressMs: nowMs() - startedAt,
+      decompressMs: deps.now() - startedAt,
       // 压缩前的字节没进过 JS，无从缓存（见 `FetchedBookText` 的说明）。
       gz: null,
     };
@@ -249,33 +424,33 @@ async function fetchBookText(
   // 峰值停在「gz 一份 + 文本一份」（约 62 MB，A7 认可的量级），而不是三者叠加。
   chunks.length = 0;
 
-  const startedAt = nowMs();
-  try {
-    const text = await decompressGzip(gz);
-    return {
-      text,
-      source: "network",
-      // 累加的实际到达字节数，比 content-length 可靠（头可能缺失或被代理改写）。
-      gzBytes: loadedBytes,
-      decompressMs: nowMs() - startedAt,
-      gz,
-    };
-  } catch {
-    // 降级兜底：重新发一次请求整份读成文本。已经报过的不确定态继续有效——这一段同样
-    // 观测不到进展，而且此刻退回 0% 会像是"重新开始下载"。
-    const fallbackResponse = await fetch(url);
-    const text = await fallbackResponse.text();
-    return {
-      text,
-      source: "network-fallback",
-      // 解压失败时 `loadedBytes` 虽然是完整的，但这份 gz 已被证明解不开，记上去会污染
-      // 压缩率统计 → null。
-      gzBytes: null,
-      decompressMs: null,
-      // 解不开的 gz 不入缓存（见 `FetchedBookText` 的说明）。
-      gz: null,
-    };
+  // 字节层检查（19.1）：SPA 回退的 `index.html` 以 `<` 开头，在解压之前就认出来，给出比
+  // "解压失败"更能说明问题的错误。
+  if (!hasGzipMagic(new Uint8Array(gz))) {
+    throw new BookTextInvalidError(
+      "not-gzip",
+      "不是 gzip 数据，可能是文件缺失时站点返回的页面"
+    );
   }
+
+  const startedAt = deps.now();
+  let text: string;
+  try {
+    text = await decompressGzip(gz);
+  } catch {
+    // 不再兜底重取（19.5）：同一 URL 再取一次拿回的还是这批字节，按 UTF-8 解码出来只会是
+    // 乱码或那页 HTML。截断的 gz、浏览器不支持 `DecompressionStream` 都落在这里。
+    throw new BookTextInvalidError("corrupt-gzip", "无法完整解压，文件可能不完整");
+  }
+
+  return {
+    text,
+    source: "network",
+    // 累加的实际到达字节数，比 content-length 可靠（头可能缺失或被代理改写）。
+    gzBytes: loadedBytes,
+    decompressMs: deps.now() - startedAt,
+    gz,
+  };
 }
 
 /**
@@ -312,8 +487,8 @@ export function concatChunks(chunks: Uint8Array[]): ArrayBuffer {
  * 用一次性入队的 `ReadableStream` 而不是 `new Blob([gz]).stream()`：Blob 构造会把这几十 MB
  * 再拷一份（可能还落进 blob 存储），而这里的字节已经在内存里且形状正好。
  *
- * gz 损坏、截断或根本不是 gzip 时 reject（`DecompressionStream` 的原生行为），由调用方
- * 决定是回退到网络（缓存分支）还是 `fetch().text()`（网络分支，design §10）。
+ * gz 损坏、截断或根本不是 gzip 时 reject（`DecompressionStream` 的原生行为）。调用方据此
+ * 判定：缓存分支把它当坏记录删掉再走网络，网络分支抛 `corrupt-gzip`（需求 19.1、19.9）。
  */
 export async function decompressGzip(gz: ArrayBuffer): Promise<string> {
   // 分片类型写 `BufferSource` 而不是 `Uint8Array`，是为了对上 `DecompressionStream.writable`

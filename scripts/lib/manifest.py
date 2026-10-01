@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""增量清单与失效清理（design §4.9，需求 7.3 / 7.4 / 7.5，任务 23）。
+r"""增量清单（design §4.9，需求 7.3 / 7.4 / 7.5 / 7.12，任务 23 / 65）。
 
 清单是一张"源文件 → 上次产物"的映射，预处理据它决定**这本书要不要重跑**：
 
@@ -21,7 +21,7 @@ r"""增量清单与失效清理（design §4.9，需求 7.3 / 7.4 / 7.5，任务
 }
 ```
 
-编排层（design §4.9）只用到四个口子：
+编排层（design §4.9）用到的主要口子：
 
 ```python
 digest = manifest.sha256_file(src)
@@ -30,7 +30,9 @@ if mf.should_skip(src, digest):   # 需求 7.4：摘要一致 **且** 产物完�
 ...
 mf.update(src, digest, meta)      # 需求 7.3：每本成功即落盘
 ...
-mf.prune(sources)                 # 需求 7.5：源已删除的书，清产物 + 清条目
+for key, entry in mf.archived(sources):   # 需求 7.5：源已删除的书，产物与索引照旧
+    gz_ok, toc_ok = mf.artifact_state(entry.book_id)
+    ...
 ```
 
 ## 为什么要有清单（需求 D7）
@@ -44,7 +46,7 @@ mf.prune(sources)                 # 需求 7.5：源已删除的书，清产物 
 design §4.9 写的是 `manifest.unchanged(src, digest) and artifacts_exist(src)`。
 本模块把这两半合进 `should_skip()`，因为**只查一半是会静默漏产物的**：清单说
 "这本处理过"，而 `public/books/<id>.txt.gz` 已被手工删掉/磁盘满时写崩/被
-`prune` 误删——跳过它就等于让站点带着一个 404 的资源上线，且日志显示一切正常。
+误删——跳过它就等于让站点带着一个 404 的资源上线，且日志显示一切正常。
 两个 `stat` 的成本与一次 SHA-256 相比可以忽略，没有理由把它做成可选项。
 
 产物"存在"的判定是 `is_file() and st_size > 0`：零字节文件是写入过程被打断的
@@ -77,6 +79,13 @@ design §4.9 写的是 `manifest.unchanged(src, digest) and artifacts_exist(src)
 写：`save()` 失败（磁盘满、权限、路径被占）抛 `ManifestError`。这时候沉默才是
 危险的：需求 7.3 已经失效，而使用者以为断点续跑还在保护他。
 
+**例外是源文件已经删掉的书。**`--delete-source`（需求 7.12）处理完一本就删源包，
+此后这本书只剩两份记录：`public/` 里的两个产物，和清单里的这一条。清单一丢，这些书
+不会被重跑（没有源可跑），只会从 `books.json` 里消失。读取降级依旧只是告警——挡住
+整批也找不回丢掉的记录——但编排层会在批次末尾点名"磁盘上有产物、索引里却没有"的书
+（`preprocess` 的孤儿产物告警），不让这种丢失静默发生。所以删源模式下清单**不再是
+可以随手删的缓存**，它是书库的一部分。
+
 ## 流水线改了，摘要不会变（`PIPELINE_VERSION`）
 
 清单只认源文件的 SHA-256。改了 `toc_rules.py` 的规则表或 `toc.py` 的择一/切分逻辑
@@ -94,9 +103,9 @@ design §4.9 写的是 `manifest.unchanged(src, digest) and artifacts_exist(src)
 两版"这个真实状态。顶层因此**不**冗余再记一份：两处状态能互相矛盾时，多出来的那
 一处只会骗人。
 
-`MANIFEST_VERSION` 是另一件事，别混用：它管**文件格式**，不认识就整张表作废——连
-`prune` 要用的 `bookId` 一起丢掉，源文件已删除的书从此没人清得掉它的产物。流水线
-换版不该付这个代价：条目全都还有效，只是不再满足跳过条件而已。
+`MANIFEST_VERSION` 是另一件事，别混用：它管**文件格式**，不认识就整张表作废——
+源文件已删除的书随之从索引里消失（它们只剩清单这一份记录）。所以改它必须同时写迁移，
+不能简单 +1。流水线换版不该付这个代价：条目全都还有效，只是不再满足跳过条件而已。
 
 ## 清单放在仓库根，不放 `public/`
 
@@ -106,24 +115,36 @@ Vite 复制/硬链接进 `dist/` 跟着部署（design §4.1 的产物目录）�
 最省事：它描述的 `public/books`、`public/data` 本身也是 gitignore 的本地产物，
 两者同为"本机状态"，不该进版本库。
 
-## `prune` 只动清单里记过的东西（需求 7.5）
+## 源文件删了，书还在（需求 7.5 修订）
 
-`prune(sources)` 拿当前源目录的清单做差集：清单里有、源目录里没有的书 = 已删除，
-移除它的 `.txt.gz`、`_toc.json` 与清单条目。三条护栏：
+旧版 `prune(sources)` 拿源目录做差集：源没了 = 书删了，连产物带条目一起清走。这条
+语义与"处理完就删源包、省磁盘"（需求 7.12）正面冲突——删源之后的下一次运行会把
+全库产物删光——所以改为：
 
-1. **源列表为空时拒绝执行**（除非显式 `allow_empty=True`）。源目录被挪走、
-   `zip-novel/` 没挂上、glob 写错扩展名——这些都会得到一个空列表，而按差集
-   语义那意味着"全库都该删"。删 7000 本产物是不可逆的，一个拼错的路径不该有
-   这种权力，所以这里选择什么都不做 + 告警。
-2. **`book_id` 仍被其他源文件占用时不删文件**，只删这条死条目。id 冲突消歧
-   （任务 25）之后两本书可能指向同一组产物名，照差集删会把活着的那本的产物
-   一并带走。
-3. **删不掉就保留条目**（文件被占用、权限不足）。条目一删，那两个文件就再没有
-   任何记录指向它们，永远成为孤儿；留着条目下次运行还会重试。
+- **源目录只是输入，不是书库的名单。**清单里有、源目录里没有的书叫"归档"
+  （`archived()`）：产物照旧、`books.json` 照旧，只是不会再因为源文件变化而重跑。
+- **流水线换版照样生效。**归档书没有源包可重跑，但 `.txt.gz` 里就是解码后的全文，
+  编排层据此只重切章节（`preprocess.resplit_book`），不让 `PIPELINE_VERSION` 在删源
+  之后悄悄失效。
+- **要移除一本书，删它的产物。**归档书的两个产物都不在了 = 这本书没了，编排层用
+  `forget()` 移除条目。只缺 `_toc.json` 时从 `.txt.gz` 重切；只缺 `.txt.gz` 时正文已
+  无从恢复，告警、不进索引、条目保留（把源包放回来还能重建）。
+- **本模块从不删产物文件。**唯一的删除动作是编排层在 `--delete-source` 下删**源包**，
+  而且只在这本书的产物与清单记录都已落盘之后。
 
-对应地，本模块**不做**"扫 `public/` 里没有清单条目的文件并删掉"的孤儿清理：
-删除从未记录过的文件是数据丢失的常见来源（那目录下还有 `books.json` 这类不属于
-任何单本书的产物），而总文件数的异常增长由任务 25 的护栏报告负责暴露。
+## `book_id` 在清单里唯一
+
+两条记录指向同一组产物名，意味着其中一条的产物已经被另一条覆盖——它记的
+`charCount`、`gzSize` 描述的是一组不存在的文件。源文件还在时这无伤大雅（重跑就好），
+归档书却会带着这条假记录进索引，并在 `books.json` 里撞出重复 id。所以：
+
+- `update()` 写入一条记录时，**移除**其他指向同一 `book_id` 的记录并告警（那组文件
+  刚刚被覆盖）；
+- `load()` 读到重复时保留 `processedAt` 最晚的那条（最后写那组文件的就是它），其余
+  丢弃并告警。
+
+有了这条不变量，编排层才能在逐本处理之前把清单里的 id 预先占住
+（`report.Report.claim`），`book_id` 由"扫描顺序的函数"变成"一经分配就不变"。
 """
 
 from __future__ import annotations
@@ -135,19 +156,19 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import IO, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 __all__ = [
     'DEFAULT_BOOKS_DIR',
     'DEFAULT_DATA_DIR',
     'DEFAULT_PATH',
+    'GZ_SUFFIX',
     'MANIFEST_VERSION',
     'PIPELINE_VERSION',
+    'TOC_SUFFIX',
     'Entry',
     'Manifest',
     'ManifestError',
-    'PruneResult',
-    'Pruned',
     'gz_name',
     'load',
     'sha256_file',
@@ -166,8 +187,8 @@ DEFAULT_BOOKS_DIR: Path = _REPO_ROOT / 'public' / 'books'
 DEFAULT_DATA_DIR: Path = _REPO_ROOT / 'public' / 'data'
 
 #: 清单**文件格式**的版本。不认识就整张表作废并全量重跑（见 `load()`）。
-#: 产物形态变了不要动它——那是 `PIPELINE_VERSION` 的事，作废整张表会把 `prune`
-#: 要用的 `bookId` 一起丢掉（见模块 docstring）。
+#: 产物形态变了不要动它——那是 `PIPELINE_VERSION` 的事。作废整张表会让源文件已删除
+#: 的书从索引里消失（见模块 docstring），改它必须同时写迁移。
 MANIFEST_VERSION = 1
 
 # ---------------------------------------------------------------------------
@@ -202,6 +223,12 @@ HASH_CHUNK_BYTES = 1 << 20
 _VERSION_KEY = 'version'
 _BOOKS_KEY = 'books'
 
+#: 整张表作废时追加的一句：对源文件已删除的书，这不是"退化成全量重跑"。
+_WHOLE_TABLE_LOST = (
+    '\n  源文件已删除的书只有清单这一份记录：它们本次不会进 books.json'
+    '（产物还在磁盘上，批次末尾的孤儿产物告警会列出它们）。'
+)
+
 
 class ManifestError(Exception):
     """清单**写入**失败，或调用方传入了不可能处理的元数据。
@@ -216,14 +243,19 @@ class ManifestError(Exception):
 # ---------------------------------------------------------------------------
 
 
+#: 两个产物的文件名后缀。`book_id` 与后缀直接拼接，反过来按后缀截掉就是 id。
+GZ_SUFFIX = '.txt.gz'
+TOC_SUFFIX = '_toc.json'
+
+
 def gz_name(book_id: str) -> str:
     """整本正文的产物名：`<id>.txt.gz`。"""
-    return f'{book_id}.txt.gz'
+    return f'{book_id}{GZ_SUFFIX}'
 
 
 def toc_name(book_id: str) -> str:
     """单书章节索引的产物名：`<id>_toc.json`。"""
-    return f'{book_id}_toc.json'
+    return f'{book_id}{TOC_SUFFIX}'
 
 
 def source_key(src: Union[Path, str]) -> str:
@@ -275,8 +307,9 @@ class Entry:
 
     只存**后续判断真正要用到**的东西，不做"顺手记一份 books.json"：
 
-    - `book_id`：`prune` 靠它推出该删哪两个文件（需求 7.5）。
-    - `digest`：跳过判定的依据（需求 7.4）。
+    - `book_id`：两个产物名由它推出；源文件删掉之后，这本书进索引、重切章节都靠它
+      （需求 7.5）。在整张清单里唯一（见模块 docstring）。
+    - `digest`：跳过判定的依据（需求 7.4），也是识别"源文件只是改了名"的依据。
     - `pipeline_version`：产出这份产物的切分流水线版本，跳过判定的另一半
       （`PIPELINE_VERSION`）。`None` = 旧清单里没有这个字段，按"旧版"处理 → 重跑。
     - `char_count` / `total_chapters` / `gz_size`：让汇总能报出**被跳过**那些书的
@@ -295,6 +328,11 @@ class Entry:
     gz_size: int = 0
     compressor: Optional[str] = None
     processed_at: str = ''
+
+    @property
+    def current(self) -> bool:
+        """产物是否出自**当前**这版切分流水线（`PIPELINE_VERSION`）。`None` 不算。"""
+        return self.pipeline_version == PIPELINE_VERSION
 
     def to_json(self) -> Dict[str, object]:
         """序列化为清单里的对象。`compressor` 为空时不写该键（"真时才输出"）。"""
@@ -319,12 +357,13 @@ class Entry:
         """反序列化。字段缺失/类型不对时抛 `ValueError`，由 `load()` 降级为告警。
 
         `bookId` 与 `digest` 是硬要求：少了任何一个，这条记录既不能用于跳过判定
-        也不能用于清理，留着只会制造"看起来处理过"的假象。其余字段容忍缺失——
-        它们只影响汇总里的数字，不影响正确性。
+        也推不出产物名，留着只会制造"看起来处理过"的假象。其余字段容忍缺失——
+        它们只影响汇总里的数字，不影响正确性（数字为 0 的归档书会从 `.txt.gz` 重切）。
 
         `pipelineVersion` **缺失不是错误**：`PIPELINE_VERSION` 之前写出的清单里都没
         有这个键。缺失读成 `None`，落到"旧版流水线"那一档，结果是重跑这一本——正是
-        想要的行为，所以不必为此丢弃整条记录（丢了 `prune` 就找不到该删的产物了）。
+        想要的行为，所以不必为此丢弃整条记录（丢了它，源文件已删除的书就从索引里
+        消失了）。
         """
         if not isinstance(raw, dict):
             raise ValueError(f'条目必须是对象，实际是 {type(raw).__name__}')
@@ -363,8 +402,8 @@ class Entry:
 
         Raises:
             ManifestError: `meta` 里没有 `id`。那是编排层的 bug，不是数据问题——
-                没有 `book_id` 就推不出产物名，这条记录写进去等于给 `prune`
-                埋一颗哑弹。
+                没有 `book_id` 就推不出产物名，这条记录写进去等于在索引里埋一颗
+                哑弹。
         """
         book_id = meta.get('id')
         if not isinstance(book_id, str) or not book_id.strip():
@@ -384,52 +423,9 @@ class Entry:
         )
 
 
-# ---------------------------------------------------------------------------
-# prune 的结果
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Pruned:
-    """一本被清理掉的书。"""
-
-    source_name: str
-    """清单里的键，即已经不在源目录里的那个源文件名。"""
-
-    book_id: str
-    """它的产物 id。"""
-
-    removed: Tuple[Path, ...] = ()
-    """实际删掉的文件。早就不存在的产物不计入——那不是失败，是已经清干净了。"""
-
-    kept: Tuple[Path, ...] = ()
-    """因 `book_id` 仍被别的源文件占用而**保留**的文件（id 冲突，见模块 docstring）。"""
-
-
-@dataclass(frozen=True)
-class PruneResult:
-    """一次 `prune` 的结果。汇总与告警由编排层输出（任务 25）。"""
-
-    pruned: Tuple[Pruned, ...] = ()
-    """已移除条目的书。"""
-
-    kept_for_retry: Tuple[str, ...] = ()
-    """文件删除失败、条目**故意留着**下次重试的键（见模块 docstring 护栏 3）。"""
-
-    refused_empty: bool = False
-    """是否因"源列表为空"而整体拒绝执行（护栏 1）。为真时什么都没删。"""
-
-    warnings: Tuple[str, ...] = ()
-    """告警文本；`emit_warnings()` 负责输出。"""
-
-    @property
-    def removed_files(self) -> Tuple[Path, ...]:
-        """本次实际删除的全部文件，按书的顺序铺平。"""
-        return tuple(path for item in self.pruned for path in item.removed)
-
-    def emit_warnings(self, stream: Optional[IO[str]] = None) -> None:
-        """把告警打到 stderr（默认）。无告警则什么都不做。"""
-        _emit(self.warnings, stream)
+def _usable(path: Path) -> bool:
+    """产物"存在"的口径：是普通文件且非空（见模块 docstring"跳过必须两个条件"）。"""
+    return path.is_file() and path.stat().st_size > 0
 
 
 def _emit(lines: Sequence[str], stream: Optional[IO[str]] = None) -> None:
@@ -466,8 +462,8 @@ class Manifest:
     """源文件名 → 上次处理记录。空清单是完全正常的状态（首次运行就是空的）。"""
 
     warnings: List[str] = field(default_factory=list)
-    """加载期产生的告警（文件损坏、格式版本不符、条目被丢弃、流水线换版）。
-    `emit_warnings()` 输出。"""
+    """尚未输出的告警：加载期的（文件损坏、格式版本不符、条目被丢弃、id 重复、
+    流水线换版），以及 `update()` 挤掉旧记录时的。`drain_warnings()` 取走。"""
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -476,8 +472,13 @@ class Manifest:
         return source_key(src) in self.entries
 
     def emit_warnings(self, stream: Optional[IO[str]] = None) -> None:
-        """把加载期告警打到 stderr（默认）。无告警则什么都不做。"""
+        """把积压的告警打到 stderr（默认）。无告警则什么都不做。"""
         _emit(self.warnings, stream)
+
+    def drain_warnings(self) -> List[str]:
+        """取走并清空积压的告警。编排层交给 `report.warn_all()`，条数才会进汇总。"""
+        drained, self.warnings = self.warnings, []
+        return drained
 
     # -- 查询 ---------------------------------------------------------------
 
@@ -489,12 +490,30 @@ class Manifest:
         """这本书的两个产物路径：`(<books_dir>/<id>.txt.gz, <data_dir>/<id>_toc.json)`。"""
         return (self.books_dir / gz_name(book_id), self.data_dir / toc_name(book_id))
 
+    def artifact_state(self, book_id: str) -> Tuple[bool, bool]:
+        """`(.txt.gz 可用, _toc.json 可用)`。"可用" = 存在**且非空**（见模块 docstring）。
+
+        归档书要分开看两半：缺 `_toc.json` 还能从 `.txt.gz` 重切，缺 `.txt.gz` 就只能
+        等源包放回来（见模块 docstring"源文件删了，书还在"）。
+        """
+        gz_path, toc_path = self.artifacts_for(book_id)
+        return _usable(gz_path), _usable(toc_path)
+
     def artifacts_exist(self, book_id: str) -> bool:
         """两个产物是否都存在**且非空**（见模块 docstring）。"""
-        return all(
-            path.is_file() and path.stat().st_size > 0
-            for path in self.artifacts_for(book_id)
-        )
+        return all(self.artifact_state(book_id))
+
+    def archived(self, sources: Iterable[Union[Path, str]]) -> List[Tuple[str, Entry]]:
+        """清单里有、`sources` 里没有的书——源文件已删除的"归档书"，按键排序。
+
+        Args:
+            sources: 当前源目录里全部源文件（`archive.scan_source_dir` 的结果），只取文件名。
+
+        空的 `sources` 不需要护栏：旧版 `prune` 在这里会把"全库都该删"当真，现在的结果
+        只是"全库都按归档处理"——产物与索引一个都不动。
+        """
+        live = {source_key(item) for item in sources}
+        return [(key, self.entries[key]) for key in sorted(self.entries) if key not in live]
 
     def unchanged(self, src: Union[Path, str], digest: str) -> bool:
         """源文件的摘要是否与清单记录一致（design §4.9 的 `unchanged`）。
@@ -515,7 +534,7 @@ class Manifest:
         entry = self.entry_for(src)
         if entry is None or entry.digest != digest:
             return False
-        if entry.pipeline_version != PIPELINE_VERSION:
+        if not entry.current:
             # 源文件一个字节都没变，但产出它的是另一版切分逻辑：产物已经过期
             # （见模块 docstring"流水线改了，摘要不会变"）。`None` 也走这条路。
             return False
@@ -534,7 +553,7 @@ class Manifest:
         entry = self.entry_for(src)
         if entry is None or entry.digest != digest:
             return False
-        if entry.pipeline_version == PIPELINE_VERSION:
+        if entry.current:
             return False
         return self.artifacts_exist(entry.book_id)
 
@@ -559,10 +578,63 @@ class Manifest:
 
         Raises:
             ManifestError: `meta` 缺少 `id`，或清单写入失败。
+
+        其他指向同一 `book_id` 的记录会被移除并留一条告警：这组产物刚刚被本书覆盖，
+        旧记录描述的已经是不存在的文件（见模块 docstring"`book_id` 在清单里唯一"）。
         """
         entry = Entry.from_meta(digest, meta)
-        self.entries[source_key(src)] = entry
+        key = source_key(src)
+        displaced = sorted(
+            other for other, held in self.entries.items()
+            if other != key and held.book_id == entry.book_id
+        )
+        for other in displaced:
+            del self.entries[other]
+        self.entries[key] = entry
         self.save()
+        if displaced:
+            self.warnings.append(
+                f'[清单] 产物 "{entry.book_id}" 刚由 {key} 写出，原先记在 '
+                f'{"、".join(displaced)} 名下的记录已移除：那组文件已被覆盖。'
+                '源文件还在的话，下次运行会按新的 id 重建它。'
+            )
+        return entry
+
+    def forget(self, src: Union[Path, str]) -> Optional[Entry]:
+        """移除这本书的记录并落盘，返回被移除的记录；本就没有时返回 `None` 且不写文件。
+
+        **不碰产物文件。**编排层只在归档书的两个产物都已不在时调它（见模块 docstring
+        "要移除一本书，删它的产物"）。
+
+        Raises:
+            ManifestError: 清单写入失败。
+        """
+        entry = self.entries.pop(source_key(src), None)
+        if entry is not None:
+            self.save()
+        return entry
+
+    def rekey(self, old: Union[Path, str], new: Union[Path, str]) -> Entry:
+        """源文件改了名：把 `old` 名下的记录原样挪到 `new` 名下，并落盘。
+
+        `book_id`、摘要、流水线版本全都不变——内容一个字节没动，产物也就不必重做。
+
+        Raises:
+            KeyError: `old` 不在清单里。
+            ManifestError: `new` 名下已有记录（那是另一本书，不许覆盖），或写入失败。
+        """
+        old_key, new_key = source_key(old), source_key(new)
+        if new_key != old_key and new_key in self.entries:
+            raise ManifestError(f'{new_key} 已有清单记录，不能把 {old_key} 的记录挪过去')
+        entry = self.entries.pop(old_key)
+        self.entries[new_key] = entry
+        try:
+            self.save()
+        except ManifestError:
+            # 没落盘就当没挪过：内存与文件各说各话，调用方的告警就会撒谎。
+            del self.entries[new_key]
+            self.entries[old_key] = entry
+            raise
         return entry
 
     def save(self) -> None:
@@ -599,101 +671,6 @@ class Manifest:
                 '  已完成的书本次不会被记录，下次运行会重跑它们。'
             ) from exc
 
-    # -- 清理 ---------------------------------------------------------------
-
-    def prune(
-        self,
-        sources: Sequence[Union[Path, str]],
-        allow_empty: bool = False,
-    ) -> PruneResult:
-        """清理源目录中已删除的书：产物 + 清单条目（需求 7.5）。
-
-        Args:
-            sources: 当前源目录里全部源文件（`archive.scan_source_dir` 的结果）。
-                只取文件名。
-            allow_empty: 源目录确实空了时传 `True`，否则空列表会被拒绝执行
-                （见模块 docstring 护栏 1）。
-
-        Returns:
-            `PruneResult`。没有该清理的书时是一个全空的结果，且**不重写文件**。
-        """
-        live = {source_key(item) for item in sources}
-        dead = sorted(key for key in self.entries if key not in live)
-        if not dead:
-            return PruneResult()
-
-        if not live and not allow_empty:
-            warning = '\n'.join(
-                [
-                    f'[清理已跳过] 源列表为空，但清单里还有 {len(dead)} 本书。',
-                    '  照差集语义这意味着"全库都该删"，而源目录没挂上/路径写错同样'
-                    '会得到空列表。',
-                    f'  本次什么都没删（清单：{self.path}）。源目录确实空了，'
-                    '请显式允许清空。',
-                ]
-            )
-            return PruneResult(refused_empty=True, warnings=(warning,))
-
-        # id 冲突消歧（任务 25）后两个源文件可能指向同一组产物名：活着的那本的
-        # 产物不能被死条目带走。
-        claimed = {entry.book_id for key, entry in self.entries.items() if key in live}
-
-        pruned: List[Pruned] = []
-        kept_for_retry: List[str] = []
-        warnings: List[str] = []
-
-        for key in dead:
-            entry = self.entries[key]
-            paths = self.artifacts_for(entry.book_id)
-
-            if entry.book_id in claimed:
-                kept = tuple(path for path in paths if path.exists())
-                warnings.append(
-                    f'[清理] 源文件 {key} 已删除，但 book_id "{entry.book_id}" 仍被'
-                    '其他源文件占用；只移除清单条目，产物保留。'
-                )
-                del self.entries[key]
-                pruned.append(Pruned(key, entry.book_id, removed=(), kept=kept))
-                continue
-
-            removed: List[Path] = []
-            failed: List[str] = []
-            for path in paths:
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    continue          # 已经清干净了，不是失败
-                except OSError as exc:
-                    failed.append(f'{path}（{exc}）')
-                else:
-                    removed.append(path)
-
-            if failed:
-                # 条目一删，这两个文件就再没有任何记录指向它们；留着下次重试。
-                kept_for_retry.append(key)
-                warnings.append(
-                    '\n'.join(
-                        [
-                            f'[清理未完成] {key}（{entry.book_id}）的产物删不掉，'
-                            '清单条目保留以便下次重试：',
-                            *(f'    - {item}' for item in failed),
-                        ]
-                    )
-                )
-                continue
-
-            del self.entries[key]
-            pruned.append(Pruned(key, entry.book_id, removed=tuple(removed)))
-
-        if pruned:
-            self.save()
-
-        return PruneResult(
-            pruned=tuple(pruned),
-            kept_for_retry=tuple(kept_for_retry),
-            warnings=tuple(warnings),
-        )
-
 
 # ---------------------------------------------------------------------------
 # 加载
@@ -707,8 +684,13 @@ def load(
 ) -> Manifest:
     """读取清单。**任何读取问题都只降级 + 告警，不抛异常。**
 
-    清单是可再生的缓存：丢了只是退化成全量重跑，不该让它把整批构建挡在门外。
-    降级粒度尽量细——单条坏掉只重跑那一本。
+    对源文件还在的书，清单是可再生的缓存：丢了只是退化成全量重跑。源文件已删除的书
+    只剩清单这一份记录，丢了就不进索引——但挡住整批也找不回它们，所以同样只告警，
+    由编排层在批次末尾点名那些"有产物、没索引"的书（见模块 docstring）。
+    降级粒度尽量细——单条坏掉只影响那一本。
+
+    读到多条记录指向同一 `book_id` 时只留 `processedAt` 最晚的一条（见模块 docstring
+    "`book_id` 在清单里唯一"）。
 
     Args:
         path: 清单路径，默认 `DEFAULT_PATH`。
@@ -735,17 +717,19 @@ def load(
     except json.JSONDecodeError as exc:
         manifest.warnings.append(
             f'[清单损坏] {target} 不是合法 JSON（第 {exc.lineno} 行第 {exc.colno} 列'
-            f' {exc.msg}），本次全部重新处理。'
+            f' {exc.msg}），本次全部重新处理。' + _WHOLE_TABLE_LOST
         )
         return manifest
     except OSError as exc:
-        manifest.warnings.append(f'[清单不可读] {target}（{exc}），本次全部重新处理。')
+        manifest.warnings.append(
+            f'[清单不可读] {target}（{exc}），本次全部重新处理。' + _WHOLE_TABLE_LOST
+        )
         return manifest
 
     if not isinstance(raw, dict):
         manifest.warnings.append(
             f'[清单损坏] {target} 的根必须是对象，实际是 {type(raw).__name__}，'
-            '本次全部重新处理。'
+            '本次全部重新处理。' + _WHOLE_TABLE_LOST
         )
         return manifest
 
@@ -753,7 +737,7 @@ def load(
     if version != MANIFEST_VERSION:
         manifest.warnings.append(
             f'[清单版本不符] {target} 记的是 {version!r}，当前为 {MANIFEST_VERSION}，'
-            '整张表作废、本次全部重新处理。'
+            '整张表作废、本次全部重新处理。' + _WHOLE_TABLE_LOST
         )
         return manifest
 
@@ -761,7 +745,7 @@ def load(
     if not isinstance(books, dict):
         manifest.warnings.append(
             f'[清单损坏] {target} 的 "{_BOOKS_KEY}" 必须是对象，'
-            f'实际是 {type(books).__name__}，本次全部重新处理。'
+            f'实际是 {type(books).__name__}，本次全部重新处理。' + _WHOLE_TABLE_LOST
         )
         return manifest
 
@@ -786,12 +770,22 @@ def load(
             )
         )
 
+    duplicates = _dedupe_book_ids(manifest.entries)
+    if duplicates:
+        manifest.warnings.append(
+            '\n'.join(
+                [
+                    f'[清单 id 重复] {target} 里有 {len(duplicates)} 条记录与别的记录指向'
+                    '同一组产物，已丢弃（那组文件只属于最后写它的那一本）：',
+                    *(f'    - {item}' for item in duplicates),
+                    '  源文件还在的书下次按新的 id 重建；源文件已删除的，它的产物早已被覆盖。',
+                ]
+            )
+        )
+
     # 流水线换版的一次性告示：一条，不是 7,681 条。操作者最想在**开跑之前**就知道
     # "这次为什么不是全部跳过"，而不是等几小时后看汇总。
-    stale = [
-        entry for entry in manifest.entries.values()
-        if entry.pipeline_version != PIPELINE_VERSION
-    ]
+    stale = [entry for entry in manifest.entries.values() if not entry.current]
     if stale:
         recorded = sorted(
             {'未记录' if entry.pipeline_version is None else str(entry.pipeline_version)
@@ -805,9 +799,32 @@ def load(
                     f'当前 {PIPELINE_VERSION}）。',
                     '  这些书本次**全部重新处理**：源文件没变，但章节规则表/切分逻辑变了，'
                     '磁盘上的 _toc.json 是旧逻辑切出来的。',
-                    '  条目本身仍然有效（prune 还要用），只是不再满足跳过条件。',
+                    '  条目本身仍然有效，只是不再满足跳过条件；源文件已删除的书按 .txt.gz '
+                    '重切章节。',
                 ]
             )
         )
 
     return manifest
+
+
+def _dedupe_book_ids(entries: Dict[str, Entry]) -> List[str]:
+    """同一 `book_id` 只留 `processedAt` 最晚的一条，**就地**删掉其余的，返回描述。
+
+    最晚写那组产物的就是它；时间相同（或都没记）时按键取最后一个，只为结果确定。
+    """
+    holders: Dict[str, List[str]] = {}
+    for key, entry in entries.items():
+        holders.setdefault(entry.book_id, []).append(key)
+
+    dropped: List[str] = []
+    for book_id in sorted(holders):
+        keys = holders[book_id]
+        if len(keys) < 2:
+            continue
+        keep = max(keys, key=lambda item: (entries[item].processed_at, item))
+        for key in sorted(keys):
+            if key != keep:
+                del entries[key]
+                dropped.append(f'{key}（与 {keep} 同为 "{book_id}"，保留后者）')
+    return dropped

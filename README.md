@@ -1,178 +1,302 @@
-# 云端小说书架
+<p align="center">
+  <img src="public/favicon.svg" width="120" height="120" alt="CloudflarePagesNovel 的图标：一只扒着书读的蓝猫">
+</p>
 
-纯静态的 Web 小说书库：构建期用 Python 把压缩包里的 TXT 切成章节、压成单文件 `.txt.gz`，运行期由浏览器流式解压、章节化渲染，进度精确到段落。没有后端、没有数据库、没有 Cloudflare Functions——部署产物就是一棵静态目录树。
+<h1 align="center">CloudflarePagesNovel</h1>
 
-- 构建期（Python）：解压 → 编码归一 → 择一章节规则切分 → 拼音缩写 → 压缩 → 产物自校验 → 增量清单 → 容量护栏
-- 运行期（React + TypeScript）：`books.json` 驱动书架，`<id>.txt.gz` 存进 IndexedDB（存原始 gz，不存解压后的字符串），`<id>_toc.json` 提供章节的字符偏移
-
-定位坐标系只有一个：**章号 + 章内字符偏移**。进度恢复、检索跳转、书签跳转三条功能都走 `src/utils/locator.ts`，不使用字节偏移或像素比例。
+<p align="center">
+  把一堆小说压缩包变成一个在浏览器里读的书库，打包成纯静态网站，直接部署到 Cloudflare Pages。
+</p>
 
 ---
 
-## 环境要求
+## 这是什么
 
-| 依赖 | 说明 |
+你把小说压缩包（`.zip`、`.rar`、`.7z` 等）放进 `zip-novel/`，跑一条命令，每本书会被：
+
+- 解压，自动识别编码，统一转成 UTF-8；
+- 自动切出章节目录，"第一卷"这类分卷也能认出来；
+- 压成一个 `.txt.gz`，再配一份章节目录 `_toc.json`；
+- 汇总进一份全库书单 `books.json`。
+
+然后 `npm run build` 打包成网站。网站没有后端、没有数据库，就是一堆静态文件：浏览器下载 `.txt.gz` 后自己解压、按章显示，阅读进度精确到段落。
+
+网站上默认显示的站名是"云端小说书架"，可以在[站点配置](#站点配置可选)里改。
+
+项目分两半：
+
+| | 干什么 | 语言 | 代码 |
+| --- | --- | --- | --- |
+| 预处理 | 把压缩包变成书库文件 | Python | `scripts/` |
+| 网站 | 书架 + 阅读器 | React + TypeScript | `src/` |
+
+---
+
+## 准备环境
+
+| 需要 | 说明 |
 | --- | --- |
-| Node.js | 本仓库验证于 v24.18.0（npm 11.16.0） |
-| Python 3 | 本仓库验证于 3.14.6 |
+| Node.js | 验证过的版本：v24.18.0（npm 11.16.0） |
+| Python 3 | 验证过的版本：3.14.6 |
 | Python 包 | `python -m pip install -r scripts/requirements.txt` |
-| 解压 `.rar` 的外部工具 | 见下方说明 |
-
-`scripts/requirements.txt` 里的四个包都是**硬依赖**，缺任何一个 `preprocess.py` 在入口就报错退出，不静默降级：
+| 解压 `.rar` 的工具 | 见下文 |
 
 ```
-charset-normalizer==3.4.8   # 编码探测
-pypinyin==0.55.0            # 书名/作者拼音首字母
+charset-normalizer==3.4.8   # 识别文本编码
+pypinyin==0.55.0            # 书名、作者的拼音首字母（搜索用）
 py7zr==1.0.0                # 解压 .7z
-zopfli==0.2.3               # 源包 >10MB 的书用它压 gz
+zopfli==0.2.3               # 压缩大于 10MB 的书
 ```
 
-`.zip` / `.tar` / `.tar.gz` / `.tgz` 走标准库，无外部依赖。`.rar` 需要一个外部工具，`scripts/lib/archive.py` 按 `unar` → `unrar` → `7z` → `7zz` → `7za` → `bsdtar` → `tar` 的顺序在 PATH 上探测一次，选中后不再回退。Windows 10/11 自带的 `C:\Windows\System32\tar.exe` 即 bsdtar，可读 rar/rar5，无需额外安装；macOS 用 `brew install unar`，Linux 用 `apt install unar`。
+`.zip`、`.tar`、`.tar.gz`、`.tgz` 用 Python 自带功能解压。`.rar` 要借外部工具，预处理会在 PATH 里按 `unar` → `unrar` → `7z` → `7zz` → `7za` → `bsdtar` → `tar` 的顺序找第一个能用的：
+
+- **Windows 10/11**：系统自带的 `C:\Windows\System32\tar.exe` 就能解 rar/rar5，不用装别的。
+- **macOS**：`brew install unar`
+- **Linux**：`apt install unar`
 
 ---
 
-## 快速开始
+## 快速上手
 
 ```bash
 npm install
 python -m pip install -r scripts/requirements.txt
 
-# 把小说压缩包放进 zip-novel/，然后跑预处理
+# 1. 把小说压缩包放进 zip-novel/
+# 2. 生成书库。第一次比较久，之后只处理有变化的书
 npm run preprocess
-
-npm run dev      # http://localhost:3000
-npm run build    # 产物在 dist/
+# 3. 本地预览：http://localhost:3000
+npm run dev
+# 4. 打包网站，结果在 dist/
+npm run build
+# 5. 把 dist/ 部署到 Cloudflare Pages（第一次要登录，见"部署"一节）
+npx wrangler pages deploy
 ```
 
-预处理必须在 `npm run dev` / `npm run build` 之前至少跑一次，否则书架拿不到 `/data/books.json`。
+`dev` 和 `build` 之前至少要跑过一次预处理，否则书架是空的（找不到 `/data/books.json`）。
 
 ---
 
-## 命令
+## 管理书库
+
+### 加书、换新版本
+
+把压缩包放进（或覆盖进）`zip-novel/`，再跑 `npm run preprocess`。它会比对每个文件的指纹（SHA-256），只处理新增的和内容变了的，其余跳过。
+
+书名和作者取自**压缩包的文件名**，推荐 `《书名》作者：某某.rar` 这种写法。包里有好几个 `.txt` 时，取最大的那个当正文，避开 readme 和广告文件。
+
+两本书算出同一个 id（书名和作者都一样）时，后来的那本自动加 `_2`、`_3` 后缀，并打一条提示。id 一旦分配就不再变，新来的书不会挤掉老书的名字。
+
+### 处理完就删源包，省磁盘
+
+```bash
+npm run preprocess-clean
+```
+
+和 `preprocess` 一样，但每本书的文件都写好、检查通过、记进清单之后，就删掉它在 `zip-novel/` 里的压缩包。以前已经处理过的书这次也会顺手删掉，所以对现有书库跑一次就能把 `zip-novel/` 腾空。
+
+这两种情况不删：
+
+- 这本书处理失败了；
+- 压出来的文件超过 25 MiB（部署不上去，之后换压缩方式重压还要用原包）。
+
+**源包删了，书不会从网站上消失。**`zip-novel/` 只是"待处理的输入"，不是书库的名单。
+
+### 删掉一本书
+
+删掉它的两个文件：`public/books/<id>.txt.gz` 和 `public/data/<id>_toc.json`；源包还在的话也一起删。下次跑预处理，这本书就会从书单和清单里去掉。
+
+如果只删了 `.txt.gz`、留着 `_toc.json`，这本书会暂时移出书单并打提示；把源包放回 `zip-novel/` 重跑就能恢复。
+
+### 给压缩包改名
+
+内容不变、只改文件名，预处理能认出来（指纹相同），沿用原来的 id，不重新处理。
+
+### 别删 `.preprocess-manifest.json`
+
+这是预处理的账本，记着每本书的指纹、id、字数、章数、用的压缩方式。它决定哪些书可以跳过；源包删掉之后，书单里这本书的信息也全靠它。
+
+所以用过 `preprocess-clean` 之后，它就不再是能随手重建的缓存了，建议和 `public/` 一起备份。万一丢了，已删源包的书会从书单里消失（文件还在磁盘上），预处理最后会列出这些"有文件、没记录"的书提醒你。从备份恢复清单后重跑即可。
+
+---
+
+## 常用命令
 
 | 命令 | 作用 |
 | --- | --- |
-| `npm run dev` | Vite dev server，端口 3000。`/books/*` 与 `/data/*` 由 Vite 直接从 `public/` 提供 |
-| `npm run build` | `vite build`。产物写入 `dist/`，书籍产物以硬链接接入（见「构建与部署」） |
-| `npm run preview` | 预览 `dist/` |
-| `npm run typecheck` | `tsc --noEmit` |
-| `npm run lint` | `eslint .` |
-| `npm run test` | `vitest --run`（前端与构建插件的单测） |
-| `npm run preprocess` | `python scripts/preprocess.py` |
+| `npm run preprocess` | 生成或更新书库 |
+| `npm run preprocess-clean` | 同上，每本处理完删掉源压缩包 |
+| `npm run dev` | 本地开发服务器，端口 3000 |
+| `npm run build` | 打包网站到 `dist/` |
+| `npm run preview` | 本地预览 `dist/` |
+| `npm run typecheck` | TypeScript 类型检查 |
+| `npm run lint` | ESLint |
+| `npm run test` | 前端和构建插件的单测（Vitest） |
+| `npm run e2e` 等 | 浏览器里的 E2E 测试，见 [E2E 测试](#e2e-测试) |
 
-Python 侧直接调用的入口：
+也可以直接调 Python：
 
 ```bash
-python scripts/preprocess.py                 # 等价于 python -m scripts.preprocess
-python scripts/check_toc.py                  # 章节质量度量，全库
-python scripts/check_toc.py --book <id>      # 只量一本
+python scripts/preprocess.py                 # = npm run preprocess
+python scripts/preprocess.py --delete-source # = npm run preprocess-clean
+python scripts/check_toc.py                  # 全库章节质量报表
+python scripts/check_toc.py --book <id>      # 只看一本
 python scripts/check_toc.py --data-dir <path>
-python -m pytest scripts/tests -q            # Python 侧单测
+python -m pytest scripts/tests -q            # Python 单测
 ```
-
-`check_toc.py` 不评好坏、不重跑管线，只读 `public/data/*_toc.json` 输出一张定宽表（规则名、章数、卷数、章字数分布、疑似误判、标题重复率、是否兜底）。改章节规则表前后各跑一次、diff 两份输出，就是规则改动的前后对比。它的退出码只回答"有没有读到东西"（0 = 读到，1 = 没有数据）。
 
 ---
 
-## 目录结构
+## 预处理具体做了什么
 
-```
-zip-novel/            源压缩包放这里（.zip/.tar/.tar.gz/.tgz/.7z/.rar；目录内容整体 gitignore）
-public/books/         产物：<id>.txt.gz            ┐ gitignore
-public/data/          产物：<id>_toc.json、books.json ┘
-scripts/              预处理管线（Python）
-  preprocess.py       编排层：扫描 → 增量判定 → 逐本处理 → 护栏 → 退出码
-  check_toc.py        章节质量度量工具
-  toc-overrides.json  按 book_id 人工点名章节规则（进版本库）
-  requirements.txt    Python 依赖
-  lib/                archive / encoding / toc_rules / toc / toc_overrides / pinyin / validate / manifest / report
-  tests/              pytest
-  fixtures/           切章用的小样本 txt
-src/                  前端
-  pages/              BookshelfPage、ReaderPage
-  components/         书架与阅读器的 UI 组件
-  hooks/              useDebouncedValue、useDocumentTitle
-  utils/              locator / bookSearch / bookCache / indexedDB / decompress / storage / theme / shortcuts …（同目录 *.test.ts）
-  index.css           Tailwind 入口 + 主题 CSS 变量
-  types.ts            产物类型，是 scripts/lib/validate.py 的 TypeScript 镜像
-build/linkAssets.ts   Vite 插件：把 public/ 硬链接进 dist/，并断言产物顶层无 404.html
-vite.config.ts        含 site-config 插件（注入站点标识）
-wrangler.toml         Cloudflare Pages 部署配置
-site.config.example.json  站点配置样板
-.kiro/specs/          需求 / 设计 / 任务文档（gitignore，本地）
-.preprocess-manifest.json  增量清单，本机构建状态（gitignore）
-```
+每本书依次：
 
-`public/books/` 与 `public/data/` 都是 gitignore 的**本地产物**，clone 下来后必须自己跑一次预处理。`.preprocess-manifest.json` 描述的正是这两个目录，同样不进版本库。
+1. 解压，取最大的 `.txt`；
+2. 识别编码：先看文件头的 BOM，再自动探测，最后拿候选编码把全文试解一遍、确认没有乱码，统一成 UTF-8；
+3. 切章节（见下一节）；
+4. 生成书名、作者的拼音首字母，用来搜索，比如输入 `clks` 能搜到《从零开始》；
+5. 压成 `.txt.gz`；
+6. 检查生成的两个文件格式对不对；
+7. 记进清单。
 
-工作副本里另有三个 gitignore 的目录，与构建无关：`koodo-reader/` 与 `legado/` 是只读的参考实现，`wait-novel/` 是未动用的源包储备池。
+全部处理完，再处理源包已删除的书，写出 `books.json`，打印汇总，最后检查容量。
 
----
+### 一本出错不耽误别的
 
-## 预处理管线
+某本书在任何一步出错，记下原因，接着处理下一本。汇总里逐条列出失败的书和原因，退出码为 1。失败的书这次不进书单。
 
-一条流水线，每个环节在 `scripts/lib/` 里，`preprocess.py` 只负责串起来：
+只有三种情况会直接停下：缺 Python 依赖、缺解压 rar 的工具、`toc-overrides.json` 里写错了规则名。这些是环境或配置问题，继续跑只会每本都报同一个错。
 
-```
-扫描 zip-novel/ → 增量判定 → 解压出最大的 .txt → 编码探测归一为 UTF-8
-  → 采样择一章节规则 → 全文切分（正文命中过滤 + 篇幅门槛）+ 卷标记 → 超长章就地再切 → 兜底
-  → 拼音缩写 → 压缩 → 产物自校验 → 更新清单 → 清理失效产物
-  → 写 books.json → 汇总 → 容量护栏 → 退出码
-```
+### 什么时候跳过一本书
 
-几条值得知道的行为：
+三条同时满足才跳过：
 
-- **书名与作者取自压缩包文件名**，不是包内文件名；包内只解压 `.txt` 成员并取**体积最大**的那个当正文（避开 `readme.txt` 与广告文件）。同名冲突时 `book_id` 加后缀消歧并打告警。
-- **逐本容错**：某本书在任一环节抛异常时记录原因并继续下一本，不终止整批。两个例外是"继续跑只会把同一个错误重复几千次"的环境问题——必需依赖缺失、`toc-overrides.json` 里的规则名写错——直接报错退出。
-- **增量**：每本成功后立刻把记录落盘，下次运行按"源文件摘要未变、两个产物都还在、**且**清单记录的流水线版本等于当前值"跳过。手工删过产物的书会被重新处理。
-- **改了切分逻辑必须 bump `PIPELINE_VERSION`**（`scripts/lib/manifest.py`）：改了 `scripts/lib/toc_rules.py` 的规则表、或 `scripts/lib/toc.py` 的择一/切分/卷标记/兜底逻辑，源文件摘要一个都不会变——不把这个常量 +1，增量运行会跳过全部书、静默发布上一版的切分结果。+1 之后下一次运行重切全库，输出里单独记一笔 `[流水线版本变更] 本次有 N 本…`。反过来，只改日志文案、注释或文档**不要**动它，白 +1 一次就是全库重跑。
-- **自校验在写清单之前**：结构坏掉的书不进清单，否则它会带着一条"处理过"的记录被永远跳过。
-- **`books.json` 无缩进、不含 `txtPath`/`tocPath`**：两个 URL 由 `id` 派生（`book_id` 即 `书名-作者`，与产物文件名同源）。约束的是客户端 `JSON.parse` 的耗时与常驻内存，不是传输体积——传输由平台压缩解决。
-- **压缩器按源包体积二选一**：源包 ≤10MB 用 gzip level 9，>10MB 用 `zopfli.gzip.compress`（输出标准 gzip 流，前端 `DecompressionStream("gzip")` 零改动）。判定输入是源包体积而非产物体积，因为它在解压前就已知。`zopfli` 缺失时报错退出，**不回退 gz9**。
-- **章节规则是具名规则表**（`scripts/lib/toc_rules.py`，15 条，顺序即优先级）：对一本书只选用其中一条，不是"套多条取先命中"。其中 `纯序号行`、`顶格短行`、`通用激进` 三条默认关闭、不参与自动判定，只能在 `scripts/toc-overrides.json` 里按 `book_id` 点名启用。规则名写错是硬失败并列出全部合法名。
-- **覆盖表有 21 条真实点名**（18 本 `纯序号行`、2 本 `标准章节`、1 本 `顶格短行`），每条都配一个 `// <book_id>` 注释键，记下点名前后的实测（节点数 / 中位节点长度 / 最长节点）。键以 `//` 开头的条目加载时跳过。
-- **择一时的两道保险**（`scripts/lib/toc.py`）：
-  - **篇幅门槛**（`Coverage`）：命中少于 6 条且平均节点超过 3 万字符，或可读节点（100 < 长度 ≤ 10 万字符）覆盖不到全书 30%，就判"这批命中不是目录"。采样阶段不过关的候选退出竞争、继续看后面的规则；选定后在全书上（正文命中过滤之后）再判一次，不过关就整本走全书兜底（约 5000 字符一块的段落块，`fallback: true`），不回头试次优规则。
-  - **装饰降级**：`符号装饰` 的"标题"可能整行都是 `※※※`，它不许取代已经选中的精确规则；原文压根没有标题行的书，它仍可作为唯一候选当选。
-- **按书自适应的正文命中过滤**（`toc.filter_prose_hits`）：一本书里形状明确是标题的命中至少 8 条、且 ≥ 90% 顶格时，判定这本书的真标题顶格，**缩进且句子形**（以 `。！？…；` 收尾或含 `，`）的命中被当成正文剔除。标题本来就缩进的书不过滤。
-- **卷节点不是零长度节点**：它的 range 恰好覆盖自己的标题行，带 `isVolume: true` 标记。`totalChapters` 只计正文章节；前端把卷渲染成不可点击的分组表头，上下章导航跳过它。
+- 压缩包指纹和上次一样；
+- 两个生成文件都还在，而且不是空文件；
+- 上次是用当前版本的切章逻辑处理的（`PIPELINE_VERSION`，见下一节）。
 
-### 容量护栏与退出码
+手动删过生成文件的书会重新处理。格式检查没通过的书不会记进清单，下次会重来。
 
-| 阈值 | 行为 |
+### 源包已删除的书
+
+| 情况 | 预处理怎么做 |
 | --- | --- |
-| 源文件 > 30MB | 告警（解压后文本是它的 3–5 倍，且必然走 zopfli，单本约两分钟） |
-| 单本 gz 20–25 MiB | 告警，仍然通过 |
-| 单文件 > 25 MiB | 硬失败并指明文件（Cloudflare Pages 单文件上限 25 MiB = 26,214,400 B） |
-| 产物总文件数 > 20000 | 硬失败（Pages 文件数配额） |
+| 两个文件都在 | 照常进书单，不逐本打印，汇总里记"归档 N 本" |
+| 切章逻辑升级了，或 `_toc.json` 丢了 | 从 `.txt.gz` 解出全文，只重新切章节，`.txt.gz` 不动 |
+| `.txt.gz` 丢了 | 正文没法恢复：打提示、不进书单、清单保留记录，放回源包就能重建 |
+| 两个文件都没了 | 当作这本书已删除，从清单里去掉 |
 
-退出码：`0` 通过，`1` 有书处理失败或配置/环境错误，`2` 撞上容量护栏。护栏扫的是整个产物目录而不是"本次处理过的书"——上次留下的、本次被跳过的文件同样占配额。
+### 压缩方式
+
+源包不超过 10MB 用 gzip 最高级（9 级）；超过 10MB 用 zopfli，能再省 8% 左右，但慢得多，一本大书可能要两分钟。按源包大小来选，是因为解压之前就知道它多大。
+
+两种方式都输出标准 gzip，浏览器那边解压方式完全一样。zopfli 没装就报错退出，不会悄悄退回 gzip：那样可能产出超过 25 MiB、部署不上去的文件。
+
+### 容量限制与退出码
+
+Cloudflare Pages 单个文件最大 25 MiB，总共最多 20000 个文件。每本书占 2 个文件，所以大约 9999 本就到顶了。
+
+| 情况 | 结果 |
+| --- | --- |
+| 源压缩包 > 30MB | 提示（解压后是它的 3 到 5 倍，而且一定走 zopfli，会比较慢） |
+| 某本书的 `.txt.gz` 在 20 到 25 MiB 之间 | 提示，照样通过 |
+| 任一文件 > 25 MiB | 失败，并指出是哪个文件 |
+| 文件总数 > 20000 | 失败 |
+
+检查范围是 `public/books` 和 `public/data` 下的所有文件，不只是这次处理的书。源包删除不会自动清理文件，书库只会越来越大，快到 20000 个文件时要自己删掉不要的书。
+
+退出码：`0` 一切正常；`1` 有书处理失败，或配置、环境有问题；`2` 超出容量限制，这批文件部署不上去。
+
+### `books.json` 长什么样
+
+每本书一条，只有 id、书名、作者、拼音缩写、字数、章数、`.txt.gz` 大小。没有缩进，按源文件名排序。两个文件的地址由 id 拼出来，所以不单独存路径；id 由书名和作者拼成（如 `从零开始-雷云风暴`），特殊符号换成下划线。
+
+这个文件不预先压缩，传输时交给 Pages 自动压缩。去掉缩进是为了让浏览器解析 7000 本的书单更快、占内存更少。
 
 ---
 
-## 前端
+## 章节识别
 
-路由只有两条，`/` 是书架，`/read/:bookId` 是阅读器，其余路径由前端跳回书架。
+每本书只选**一条**规则来切章，不是几条规则一起上。规则表在 `scripts/lib/toc_rules.py`，共 15 条，排在前面的优先。其中 `纯序号行`、`顶格短行`、`通用激进` 三条太容易误判，默认不用，只能在覆盖表里点名给某本书用。
 
-- **书架**：`books.json` 驱动，支持模糊搜索（书名/作者原文 + 拼音首字母缩写，如"clks"命中《从零开始》）、按作者名筛选、"加载更多"分批展开、最近在读（最多 5 条）、章节目录弹窗（打开时把当前书籍反映到 URL，浏览器后退即关闭弹窗且不离开书架）。长章节列表与章节网格用自己的窗口化原语（`src/utils/listWindow.ts`，定长行高 + spacer 撑总高），不引虚拟列表库。
-- **阅读器**：章节化渲染、全文检索、书签（每章至多一个）、整本下载（由内存中已持有的文本生成 UTF-8 `.txt`，不发任何服务端请求）、排版设置。
-- **离线缓存**：IndexedDB `koodo_novel_cache_db`（v2），store `books` 存**原始 gz 二进制**，按最近访问时间 LRU 淘汰，本数上限存在 `ReaderSettings.cacheMaxBooks`（默认 10，取值收拢到 `[1, 50]`），可在设置抽屉里调。不额外设人为的字节总量上限。
-- **localStorage 键**：`koodo_novel_reader_settings`、`koodo_novel_progress_<bookId>`（总数上限 50，超限按 `lastReadTime` 淘汰最旧）、`koodo_novel_bookmarks_<bookId>`。
-- **快捷键**：`←`/`→` 上一章/下一章，`Space`/`Shift+Space` 下翻/上翻，`Home`/`End` 章首/章末，`T` 目录，`F` 检索，`S` 设置，`Esc` 关闭面板。焦点在输入类元素上、带 Ctrl/Alt/Meta、或 `Space` 落在按钮上时一律不接管。
+选规则时有几道把关：
 
-### 主题：Tailwind v4 的 CSS-first 用法
+- **得像一份目录**：命中太少又隔得太远（少于 6 条、平均每章超过 3 万字），或者长度正常的章节（100 字到 10 万字之间）加起来不到全书 30%，就认为这批"标题"不是真目录，换下一条规则。选定后在全书上再核一次，还不行就整本按约 5000 字一段切开，标上 `fallback: true`。
+- **分隔线不抢位**：`符号装饰` 规则可能把 `※※※` 这种分隔线当成标题，所以它不能顶替已经选中的正经规则。全书真的没有标题行时，才会用它。
+- **剔除正文里的误命中**：一本书里明确的标题至少 8 条、90% 以上顶格写，那么缩进、又像句子（以 `。！？…；` 结尾或带逗号）的命中就当正文剔掉。标题本来就缩进写的书不做这一步。
+- **超长章再切**：个别章节太长时就地再切开，其他章节不受影响。
+- **分卷**：`第一卷` 这类卷标题单独成一个节点，标 `isVolume: true`，只占它自己那一行。章数 `totalChapters` 不算卷；阅读器里卷显示成不能点的分组标题，上一章、下一章会跳过它。
 
-**本仓库没有 `tailwind.config.js`，也不需要。** Tailwind v4 通过 PostCSS 插件 `@tailwindcss/postcss`（见 `postcss.config.js`）接入，入口是 `src/index.css` 顶部的 `@import "tailwindcss"`。
+### 自动选错了怎么办
 
-主题由根元素上的 `data-theme` 属性 + CSS 自定义属性实现，`src/utils/theme.ts` 在首屏渲染前写入该属性。五套主题（`default` / `sepia` / `eyecare` / `dark` / `black`）各是 `src/index.css` 里的一个 `[data-theme="..."]` 块，每块声明同一组变量并带上 `color-scheme`（明亮三套 `light`，深色两套 `dark`，原生控件跟着同一个开关走）。
+在 `scripts/toc-overrides.json` 里按 id 指定规则。现在有 21 条（18 本 `纯序号行`、2 本 `标准章节`、1 本 `顶格短行`），每条旁边有一个以 `// <id>` 为键的注释条目，记着指定前后的效果对比。`//` 开头的键加载时会跳过。规则名写错会直接报错，并列出所有合法的名字。
 
-选择器刻意写成 `[data-theme="..."]` 而不是 `:root[data-theme="..."]`：任何元素带上该属性都能就地重声明整组变量，其子树随之换色。设置抽屉里同时显示五个主题色块就是靠这一点——组件不接收任何主题 prop，颜色值也不必搬回 TS。
+### 改了切章逻辑，一定要把 `PIPELINE_VERSION` +1
+
+它在 `scripts/lib/manifest.py`。清单判断"要不要重新处理"只看源文件指纹，而改规则不会改变任何源文件。改了 `toc_rules.py` 或 `toc.py` 的切章逻辑却不 +1，预处理会把所有书都跳过，网站上还是旧的切章结果，日志里却一切正常。
+
++1 之后下次运行会重切全库（源包已删的书从 `.txt.gz` 重切），输出里会有一行 `[流水线版本变更] 本次有 N 本…`。
+
+反过来，只改提示文案、注释、文档就别动它，白 +1 一次就是全库重跑好几个小时。
+
+### 看改动效果
+
+`check_toc.py` 只读 `public/data/*_toc.json`，打一张表：规则名、章数、卷数、章节字数分布、疑似误判、标题重复率、是否整本兜底。它不评好坏，也不重跑预处理。退出码 0 表示读到了数据，1 表示没读到。
+
+```bash
+python scripts/check_toc.py > before.txt
+# 改规则，PIPELINE_VERSION +1，然后 npm run preprocess
+python scripts/check_toc.py > after.txt
+# 对比 before.txt 和 after.txt
+```
+
+---
+
+## 网站功能
+
+只有两个页面：`/` 是书架，`/read/<id>` 是阅读器，其他地址一律跳回书架。
+
+**书架**
+
+- 模糊搜索：书名、作者原文都能搜，拼音首字母也行；
+- 按作者筛选，"加载更多"分批展开；
+- 最近在读，最多 5 本；
+- 章节目录弹窗：打开时地址栏会带上这本书，按浏览器后退就关掉弹窗，不会离开书架。
+
+长列表只渲染看得见的那一段（`src/utils/listWindow.ts`，自己写的，没引虚拟列表库）。
+
+**阅读器**
+
+- 按章显示，全文搜索，书签（每章最多一个）；
+- 下载整本书：用已经在内存里的文本生成 UTF-8 `.txt`，不再请求服务器；
+- 排版设置，五套主题：默认明亮、复古羊皮（默认选中）、护眼豆绿、暗色夜间、极夜纯黑。
+
+**快捷键**
+
+| 键 | 作用 |
+| --- | --- |
+| `←` / `→` | 上一章 / 下一章 |
+| `Space` / `Shift+Space` | 向下翻 / 向上翻 |
+| `Home` / `End` | 章首 / 章末 |
+| `T` | 目录 |
+| `F` | 搜索 |
+| `S` | 设置 |
+| `Esc` | 关闭面板 |
+
+在输入框里打字、按着 Ctrl/Alt/Meta、或者焦点在按钮上按空格时，快捷键不生效。
+
+**数据存在浏览器哪里**
+
+- **书的缓存**：IndexedDB `koodo_novel_cache_db`（v2）的 `books` 表，存下载下来的 `.txt.gz` 原样，不存解压后的文字。按最近读的时间淘汰，默认留 10 本，可在设置里改成 1 到 50。
+- **设置、进度、书签**：localStorage 的 `koodo_novel_reader_settings`、`koodo_novel_progress_<id>`、`koodo_novel_bookmarks_<id>`。进度最多记 50 本，超了删最久没读的。
+
+阅读进度、搜索跳转、书签跳转用的是同一种定位："第几章 + 章内第几个字"，都走 `src/utils/locator.ts`。不用字节位置，也不用滚动比例，所以换字号、换设备也能回到同一段。
 
 ---
 
 ## 站点配置（可选）
 
-仓库根的 `site.config.json` 可覆盖站点名、简介、关键词、favicon，样板见 `site.config.example.json`：
+仓库根目录放一个 `site.config.json`，可以改站点名、简介、关键词和图标。样板是 `site.config.example.json`：
 
 ```json
 {
@@ -183,60 +307,227 @@ site.config.example.json  站点配置样板
 }
 ```
 
-- 文件**不存在是正常分支**，用 `src/utils/siteConfig.ts` 里的内置默认值，一个字也不打印。默认 favicon 是一段自包含的 SVG data URI，不引用任何文件。
-- 文件存在但不是合法 JSON 是**硬失败**——静默回落成默认站名会让人带着一份自认为生效了的配置部署上线。字段级问题（类型写错、键名拼错）逐字段回落并打告警。
-- `favicon` 写成相对路径时，该文件必须真实存在于 `public/` 下，否则构建报错。**样板里的 `/favicon.svg` 在本仓库并不存在**，照抄后需要自己往 `public/` 放一个同名文件，或改用 data URI / 绝对 URL。
-- `site.config.json` **刻意不在 `.gitignore` 里**：它是部署的一部分，构建期注入进 `index.html` 的 `%SITE_*%` 占位符与 `__SITE_CONFIG__`。忽略掉会让 Pages 的 CI 读不到它，从而静默用默认值发布。
-- 改动 `site.config.json` 会重启 dev server（站点名进了 HTML 与 `define`，两者都只在启动时算一次）。
+- **没有这个文件也行**，用内置默认值，什么都不打印。默认图标是一个 📖。想用仓库自带的蓝猫（`public/favicon.svg`），把样板复制一份就行：`Copy-Item site.config.example.json site.config.json`（macOS/Linux 用 `cp`）。
+- **文件写坏了（不是合法 JSON）会让构建失败。**悄悄退回默认站名的话，你会带着一份以为生效了的配置上线。单个字段写错（类型不对、键名拼错）只退回那个字段的默认值，并打提示。
+- **图标写成路径时，文件必须在 `public/` 下真实存在**，否则构建报错。也可以写 data URI 或完整网址。
+- **这个文件要提交进仓库**，别加进 `.gitignore`：Pages 在云端构建时要读它，读不到就用默认值发布。
+- 改了它，开发服务器会自动重启。
 
 ---
 
 ## 构建与部署
 
-### 硬链接接入，不复制
+### 书库文件是硬链接进 `dist/` 的，不是复制
 
-`vite.config.ts` 设 `build.copyPublicDir: false`，`build/linkAssets.ts` 在 `closeBundle` 阶段把整棵 `public/` 树**硬链接**进 `dist/`。
+`public/` 下是整个书库，现在有二十多 GB。构建时要是再复制一份进 `dist/`，磁盘上就存了两份，每次构建还得再写一遍。所以 `vite.config.ts` 关掉了 Vite 自带的复制（`copyPublicDir: false`），改由 `build/linkAssets.ts` 把整个 `public/` 硬链接进 `dist/`。预处理只写 `public/`，从不碰 `dist/`，因为每次构建都会清空 `dist/`。
 
-理由是体量：`public/` 下是预处理生成的整个书库，逐字节复制进 `dist/` 等于磁盘上存两份、每次构建再付一遍 I/O。反过来也不能让预处理直接写 `dist/`——`emptyOutDir` 会清空它，那意味着每次构建前都得重新预处理。**预处理只写 `public/`，永不写 `dist/`。**
+这样做有两个后果：
 
-两条必须知道的后果：
+- **`public/` 和 `dist/` 必须在同一个磁盘分区上。**跨分区没法硬链接，构建会带着明确的错误停下，不会偷偷退回复制。FAT/exFAT、一些网络盘和容器挂载目录也不支持硬链接。
+- **链接的是整个 `public/`**，不只是 `books/` 和 `data/`。放在 `public/` 根下的其他文件（比如 `favicon.svg`）一样会进 `dist/`。
 
-- **`public/` 与 `dist/` 必须在同一个文件系统卷。** 跨卷时 `link(2)` 返回 `EXDEV`，构建**带着明确错误停下，不静默退回复制**（退回等于把书库在磁盘上存成两份，正是这套机制要消除的开销）。FAT/exFAT、部分网络盘与容器挂载点不支持硬链接，同样会失败。
-- **接入范围是整个 `public/`**，不只是 `books/` 与 `data/`：`copyPublicDir: false` 关掉的是全部 `public/` 内容，漏掉根下的 `robots.txt`、`icon.png` 会表现为"本机 dev 正常、线上 404"。
+`npm run dev` 不受影响，开发时 Vite 直接从 `public/` 读文件。
 
-`npm run dev` 不受影响：`copyPublicDir` 只作用于构建，dev 下 Vite 仍直接从 `public/` 提供 `/books/*` 与 `/data/*`。
+### 两个会让"打开书的链接 404"的坑
 
-### 平台约束（两条，都会表现为"首页正常、深链接 404"）
-
-**1. 产物顶层不得存在 `404.html`。** Cloudflare Pages 只在顶层不存在 `404.html` 时才按单页应用处理请求、把未命中的路径交给 `/`；一旦顶层出现 `404.html`，它改为按目录树返回最近的 404 页，`BrowserRouter` 的深链接 `/read/<id>` 当场失效。本仓库当前**没有**这个文件，`linkAssets` 插件在 `closeBundle` 里断言顶层没有它（比较时统一小写，因为 Windows 文件系统大小写不敏感），撞上即构建失败。未匹配的路由已由前端统一跳回书架，不需要这个文件。
-
-**2. 若要用 `_redirects`，规则必须窄化到 `/read/*`，不可用 `/*`。** Pages 的重定向**总是被执行，与请求是否命中静态资源无关**，所以 `/* /index.html 200` 会连带劫持 `/data/*.json` 与 `/books/*.txt.gz`，返回 `index.html` 而不是资源本身。本仓库当前**没有** `_redirects` 文件，靠的是上面那条默认 SPA 回退；只有在需要显式声明回退时才加它，并且只写应用路由前缀。
+- **`dist/` 顶层不能有 `404.html`。**Pages 只在没有这个文件时，才会把找不到的地址交给首页、由前端处理。一旦有了它，直接打开 `/read/<id>` 就是 404。构建插件会检查这件事，发现就失败。前端已经会把未知地址跳回书架，用不着这个文件。
+- **要写 `_redirects` 的话，只能写 `/read/*`，不能写 `/*`。**Pages 的重定向规则不管文件存不存在都会生效，`/* /index.html 200` 会把 `/data/*.json` 和 `/books/*.txt.gz` 也返回成首页。现在仓库里没有 `_redirects`，靠的是上面那条默认行为。
 
 ### 部署
 
-`wrangler.toml` 只有两项，有了它们 `wrangler pages deploy` 不带参数就能跑：
+先打包，再上传：
 
-```toml
-name = "novel-pages"
-pages_build_output_dir = "./dist"
+```bash
+npm run build
+npx wrangler pages deploy
 ```
 
-`pages_build_output_dir` 必须与 `vite.config.ts` 的 `build.outDir` 保持一致（均为 `dist`）。刻意不写 `compatibility_date`、绑定与 `[env.*]`：本站是纯静态站点，没有运行时代码会读它们。
+`npx wrangler pages deploy` 不用带参数，因为 `wrangler.toml` 里已经写好了传哪个目录、传给哪个项目：
 
-`.txt.gz` 依赖平台按静态资源原样返回，前端用 `DecompressionStream("gzip")` 解压；`books.json` 不预压缩，依赖 Pages 自动 gzip/brotli。首次部署后值得核对一次 Pages 对 `.txt.gz` 返回的 `Content-Type` 与 `Content-Encoding`——它决定 `loadGzipBookText` 走哪条分支（HTTP 层已透明解压时不能再解一次）。
+```toml
+name = "novel-pages"                # Pages 上的项目名，网址是 novel-pages.pages.dev
+pages_build_output_dir = "./dist"   # 上传这个目录
+```
+
+把参数写全就是：
+
+```bash
+npx wrangler pages deploy dist --project-name novel-pages
+```
+
+**第一次部署**
+
+- 会打开浏览器让你登录 Cloudflare 账号（也可以先单独跑 `npx wrangler login`）。
+- Pages 上还没有这个项目的话，会提示你创建，问生产分支时填 `main`。之后的部署都沿用这些设置。
+- 要上传整个书库，现在大约 1.5 万个文件、二十多 GB，会比较久。之后再部署，没变的文件不会重传，只传新增和改动的书。
+
+**其他**
+
+- wrangler 没装进项目依赖，`npx` 每次用的是最新版，它要求 Node.js 22 或更高。想固定版本，就写成 `npx wrangler@4.143.0 pages deploy`。
+- 想先传一个预览版、不动正式站：`npx wrangler pages deploy --branch preview`，会得到一个单独的预览网址。
+- 部署上去的站点是公开的，没有登录，拿到网址的人都能看、能下载整本书。只想自己看的话，可以在 Cloudflare 后台用 Cloudflare Access 给它加一道登录。
+- `pages_build_output_dir` 要和 `vite.config.ts` 里的 `build.outDir` 一致（都是 `dist`）。`wrangler.toml` 没写 `compatibility_date`、绑定和 `[env.*]`，因为这是纯静态站，没有服务端代码会用到它们。
+
+**第一次部署后，检查一下 `.txt.gz` 的响应头**（`Content-Type` 和 `Content-Encoding`）。如果 Pages 在传输时已经帮浏览器解压了，前端（`loadGzipBookText`）会走不再解压的那条分支，值得确认一次两边对得上。
 
 ---
 
-## 检查与测试
+## 开发
+
+### 目录结构
+
+```
+zip-novel/                  放源压缩包（内容不进 git）；处理完可以删
+public/
+  books/                    生成的 <id>.txt.gz（不进 git）
+  data/                     生成的 <id>_toc.json 和 books.json（不进 git）
+  favicon.svg               站点图标
+scripts/                    预处理（Python）
+  preprocess.py             主流程
+  check_toc.py              章节质量报表
+  toc-overrides.json        按书指定切章规则（进 git）
+  requirements.txt          Python 依赖
+  lib/                      各环节：解压、编码、切章规则、切章、拼音、格式检查、清单、汇总
+  tests/                    pytest
+  fixtures/                 切章测试用的小样本
+src/                        网站（React + TypeScript）
+  pages/                    书架页、阅读页
+  components/               界面组件
+  hooks/                    自定义 hooks
+  utils/                    定位、搜索、缓存、解压、存储、主题、快捷键等，单测放在同目录
+  index.css                 Tailwind 入口和主题变量
+  types.ts                  生成文件的类型定义，与 scripts/lib/validate.py 对应
+build/linkAssets.ts         构建插件：硬链接 public/，检查 404.html
+e2e/                        E2E 测试（Playwright），见"E2E 测试"一节
+  baselines/                像素基线（进 git）
+  fixture/                  夹具书库的合成脚本（进 git）
+  .out/                     运行产物（不进 git）
+vite.config.ts              Vite 配置，含站点配置插件
+vitest.config.ts            Vitest 配置，不收 e2e/
+playwright.config.ts        Playwright 配置
+wrangler.toml               Cloudflare Pages 部署配置
+site.config.example.json    站点配置样板
+.preprocess-manifest.json   预处理清单（不进 git，要备份）
+.kiro/specs/                需求、设计、任务文档（本地）
+```
+
+另有三个不进 git、和构建无关的目录：`koodo-reader/` 和 `legado/` 是只读的参考项目，`wait-novel/` 是还没用上的源包储备。
+
+### 主题（Tailwind v4）
+
+仓库里**没有 `tailwind.config.js`，也不需要**。Tailwind v4 通过 PostCSS 插件 `@tailwindcss/postcss` 接入（见 `postcss.config.js`），入口是 `src/index.css` 开头的 `@import "tailwindcss"`。
+
+主题靠根元素上的 `data-theme` 属性加一组 CSS 变量实现，`src/utils/theme.ts` 在页面第一次渲染前写入。五套主题（`default` / `sepia` / `eyecare` / `dark` / `black`）各是 `src/index.css` 里的一个 `[data-theme="..."]` 块，声明同一组变量，并带上 `color-scheme`（前三套 `light`，后两套 `dark`），让浏览器原生控件也跟着变色。
+
+选择器故意写成 `[data-theme="..."]` 而不是 `:root[data-theme="..."]`：任何元素加上这个属性，它里面就换成那套颜色。设置面板里同时显示五个主题色块，靠的就是这个，组件不用接收任何主题参数。
+
+### 测试
 
 ```bash
-npm run typecheck                  # tsc --noEmit
-npm run lint                       # eslint .
-npm run build                      # 含顶层 404.html 断言
-npm run test                       # vitest --run
+npm run typecheck
+npm run lint
+npm run build                      # 顺带检查顶层没有 404.html
+npm run test
 python -m pytest scripts/tests -q
 ```
 
-当前基线：Vitest 19 个文件 / 469 项通过，pytest 1834 项通过 / 1 项跳过，四条 npm 门全部退出码 0。
+目前：Vitest 19 个文件、469 项通过；pytest 1871 项通过、1 项跳过。
 
-前端单测与源文件同目录（`src/utils/*.test.ts`），构建插件的测试在 `build/linkAssets.test.ts`。不搭 jsdom：组件里的 DOM 事件不在测试范围内，需要钉住的判定逻辑（定位、检索、快捷键映射、缓存淘汰、设置读写）都抽成了纯函数。
+前端单测和源文件放在一起（`src/utils/*.test.ts`），构建插件的测试在 `build/linkAssets.test.ts`。没有搭 jsdom，不测 DOM 事件；需要测的判断逻辑（定位、搜索、快捷键、缓存淘汰、设置读写）都抽成了纯函数。DOM 和画面交给下一节的 E2E。
+
+---
+
+## E2E 测试
+
+用 Playwright 在 Chromium 里把书架和阅读器真正跑一遍：检索、翻章、目录、书签、主题、快捷键、离线缓存、加载出错，另外还有像素截图比对、给人看的评审截图、性能读数和无障碍扫描。代码在 `e2e/`，配置在 `playwright.config.ts`。它和上面的单测互不串收，`npm run test` 不会跑到 E2E。
+
+### 准备
+
+| 需要 | 说明 |
+| --- | --- |
+| Node.js | 验证过的主版本：24（v24.18.0） |
+| Python 包 | `python -m pip install -r scripts/requirements.txt`（夹具书库要用预处理管线生成） |
+| Chromium | `npm run e2e:install`，一次性下载，装好后占磁盘约 700 MB |
+
+只装与 `@playwright/test` 1.62.1 对应的那一版 Chromium（`chromium-1234` 约 430 MB，`chromium_headless_shell-1234` 约 270 MB），放在 `%LOCALAPPDATA%\ms-playwright\`，不装 Firefox 和 WebKit。`npm install` 不下载浏览器；已经装过的话，`e2e:install` 不会重复下载。没装就跑 E2E，会立刻停下、提示这条命令，退出码 3。
+
+### 命令
+
+每条都能原样粘贴进 PowerShell（5.1 也行）：
+
+```powershell
+npm run e2e:install                         # 安装 Chromium
+npm run e2e:fixture                         # 生成夹具书库
+npm run e2e                                 # 全部用例，fixture 和 real 一起跑
+npm run e2e:profile -- --profile fixture    # 只跑 fixture
+npm run e2e:profile -- --profile real       # 只跑 real
+npm run e2e:update                          # 更新像素基线
+```
+
+- `e2e:fixture` 平时不用手动跑：夹具书库缺文件，或者夹具源、`PIPELINE_VERSION` 变了，fixture 运行开始时会自动重新生成。
+- `e2e:profile` 后面可以接 Playwright 自己的参数，比如只跑一个文件：`npm run e2e:profile -- --profile fixture visual.spec`。`--profile` 只认 `fixture` 和 `real`。
+- 带 real 的运行会先单独跑完 3 个性能用例（`real-perf`），`-g` 和文件过滤管不到它们；想跳过就再加 `--no-deps`。
+- `-g` 的取值以 `@` 开头时必须加引号，否则 PowerShell 会把它当成变量：
+
+```powershell
+npm run e2e -- -g '@selfcheck'                           # 只跑服务器自检
+npm run e2e:profile -- --profile real -g '@audit'        # 解压整个真实书库核对字数，本机约 2 分钟
+npm run e2e:profile -- --profile fixture -g '@selftest'  # 运行汇总的自检，故意失败，退出码不为 0
+```
+
+`@audit` 和 `@selftest` 平时不跑，只有 `-g` 点名才跑。
+
+**退出码**：`0` 每个用例都是通过、跳过或预期失败；`1` 有用例失败、预期失败的用例意外通过，或运行中途中止（构建失败、端口被占、服务器自检失败等）；`2` 参数不对；`3` 没装 Chromium。性能超预算、无障碍违规只写进汇总，不影响退出码。
+
+每次运行先把当前 `src/` 构建到 `e2e/.out/app/`（不碰 `dist/`），再在 `127.0.0.1` 上起本地服务器：fixture 用 4611、4612，real 用 4621、4622。每组一个把 `.txt.gz` 原样返回（预期中 Pages 的做法），一个带 `Content-Encoding: gzip` 返回，前端的两条解压分支都能测到。服务器只读、只接受 GET 和 HEAD、只监听本机，没有鉴权。
+
+### fixture 和 real
+
+| | fixture | real |
+| --- | --- | --- |
+| 数据来源 | `e2e/fixture/` 的 Python 脚本合成 52 本小书，交给预处理管线生成到 `e2e/.out/fixture/` | 本机 `public/books/` 和 `public/data/` 的真实书库，只读 |
+| 干净 clone 上能跑吗 | 能 | 不能：要先跑过预处理，书库里还要有 6 本测试用书（`e2e/support/library.ts` 的 `TEST_BOOKS`）。缺了的话 real 用例整体跳过，汇总里写明原因，不算失败 |
+| 像素基线比对 | 做，13 张 | 不做，也不读写基线 |
+
+real 负责和规模有关的部分：7000 多本的书架、3000 多个节点的目录、20 MB 级的加载进度、性能读数，以及真实书库的评审截图。
+
+不管跑哪种，运行前后都会给 `public/` 和 `.preprocess-manifest.json` 记一次文件清单（路径、大小、修改时间），有任何变化本次运行就判失败。
+
+### 产物在哪
+
+运行产物都在 `e2e/.out/`（不进 git）。除 `e2e:update` 以外，跑 E2E 不会改动版本库里的任何文件。
+
+| 产物 | 路径 |
+| --- | --- |
+| 运行汇总：用例统计、失败原因，以及视觉回归、性能读数、无障碍扫描三节 | `e2e/.out/summary.md`；机器可读版 `e2e/.out/results.json` |
+| Playwright HTML 报告 | `e2e/.out/report/index.html`，用 `npx playwright show-report e2e/.out/report` 打开 |
+| 评审截图（每次运行开始时清空） | `e2e/.out/review/<名称>.png` |
+| 评审报告：逐张列出场景和验收准则 | `e2e/.out/review/review-report.md` |
+| 性能读数 | `e2e/.out/perf.json` |
+| 无障碍扫描结果 | `e2e/.out/a11y/` |
+| 失败用例的 trace 和截图，视觉回归的实际图与差异图 | `e2e/.out/test-results/` |
+| 夹具书库 | `e2e/.out/fixture/`，里面的 `books/`、`data/` 和 `public/` 布局相同 |
+| 像素基线（进 git） | `e2e/baselines/<名称>-win32.png` |
+
+### 像素基线
+
+13 张基线覆盖书架（桌面、移动、骨架）、详情弹窗、阅读器的五套主题和移动端、分卷目录、检索结果、设置抽屉，定义都在 `e2e/visual/baselines.ts`。
+
+**基线只对 Windows + 本机字体有效**。应用只用系统字体，换系统或换字体截图就会变。文件名带平台后缀（`-win32`），在别的平台上跑会因为找不到同名基线而失败。
+
+只有 `e2e:update` 会写基线。其他命令遇到缺失的基线，对应用例直接失败并提示 `npm run e2e:update`，不会拿本次截图补上。更新流程：
+
+1. 跑 `npm run e2e:update`。它只跑 fixture 的 `visual.spec`：写入缺失的基线，覆盖差异超出容差的基线，其余文件逐字节不动。想重拍一张差异还在容差内的基线，先删掉那个 PNG 再跑。
+2. 用 `git status e2e/baselines` 找出新增和改动的文件，逐张打开看，判为以下三种之一：
+   - 接受：画面就是这个视图该有的状态。除书架骨架那张以外，没有骨架、加载进度条或加载失败提示，也不是空白页。
+   - 含已知缺陷接受：画面不对，但问题出在应用本身。在 `.kiro/specs/e2e-visual-testing/findings.md` 记一条 Finding，并在 `baselines.ts` 里这张基线的定义处标注编号。
+   - 重拍：画面不对，问题出在测试代码。修好后回到第 1 步。
+
+   判定记在 `.kiro/specs/e2e-visual-testing/baseline-review.md`，只存本机。
+3. 没有"重拍"了就提交：`git add e2e/baselines`，再 `git commit`。
+
+### 无障碍扫描
+
+fixture 下用 axe 扫 6 个视图（书架、详情弹窗、阅读器正文、目录、检索、设置抽屉），再对阅读器的五套主题各查一次颜色对比度，共 11 次。违规按规则 id、影响级别、节点数列在运行汇总里，critical 和 serious 会标"待记入 Findings_Log"。它只报告，不让用例失败。
+
+**这只是自动化冒烟**。axe 只能查出一部分问题，完整的 WCAG 合规验证需要用读屏软件等辅助技术做人工测试，并请专家评审。
