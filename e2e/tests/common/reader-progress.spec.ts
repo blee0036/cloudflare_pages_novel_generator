@@ -13,25 +13,38 @@
  * - k：不超过该章正文段落数一半、且能滚到判定线的最大序号（1 ≤ k ≤ ⌊段落数 / 2⌋）。
  * - 9.12 的 `?ch=`：进度章节之后的下一个正文章节（没有时取上一个）。取另一章而不是进度章节本身：
  *   若应用不顾 `?ch=` 按已存进度恢复，显示的会是进度章节（`<h1>` 不同）及其第 k 段；两层差别都能测到。
- *   同一章时只能靠段落区分，而在 F-002 之下恢复本身不滚动，那样的用例不论对错都通过。
+ *   同一章时只能靠段落区分；EV 验收时恢复本身不滚动（F-002，已修复（reader-defect-fixes）），那样的用例
+ *   不论对错都通过。
  *
  * 所选章节、k 与读数记在注解 `progress-plan`、`progress-key` 里。前提不成立是测试自身的问题（16.6）。
  *
- * ## 滚动容器与判定段落（F-002）
+ * ## 滚动容器与判定段落
  *
- * 判定段落按需求 9.5 的定义，由 `e2e/support/reader.ts` 的 `readJudgeParagraph` 读取，其中"`<main>`
- * 边界框上边"取 `<main>` 边界框与视口交集的上边（理由见 reader.ts 的"判定段落"一节）。"滚到第 k 段"
- * 对实际在滚动的元素赋值 `scrollTop`（`scrollJudgeParagraphTo`）：实测是文档而不是 `<main>`（F-002）。
+ * 判定段落按需求 9.5 的定义，由 `e2e/support/reader.ts` 的 `readJudgeParagraph` 读取。"滚到第 k 段"对正文
+ * 滚动容器 `<main>` 赋值 `scrollTop` 并等到它的 `scroll` 事件（`scrollJudgeParagraphTo`）；滚动之前与
+ * 重新载入后读判定段落之前，都核对文档本身不可滚动（`expectDocumentNotScrollable`，reader-defect-fixes
+ * 需求 2.1、14.2）。
  *
- * 审读 `src/pages/ReaderPage.tsx`（未改动）：进度保存只监听 `<main>` 的 `scroll` 事件（rAF 里算判定
- * 段落，再以 1,000 ms 防抖落盘），恢复位置赋值的是 `<main>.scrollTop`。文档滚动不触发前者，后者赋值
- * 无效，所以 9.8 的"1,100 ms 时更新"与 9.9、9.10 的"判定段落仍为 k"不成立。它们与 F-002 同一根因，
- * 按 16.7 各自拆成标题注明 F-002 的预期失败用例；同一场景里不受影响的断言（9.8 的 900 ms 未写入、
- * 9.9 的同一章、9.10 的新字号）留在普通用例中。9.12 不依赖滚动保存，是普通用例。
+ * 应用的进度保存监听 `<main>` 的 `scroll` 事件（rAF 里算判定段落，再以 1,000 ms 防抖落盘），恢复位置
+ * 赋值 `<main>.scrollTop`。同一场景的断言分在两个用例中：9.8 的 900 ms 未写入 / 1,100 ms 已更新，9.9 的
+ * 同一章 / 判定段落仍为 k，9.10 的新字号 / 判定段落仍为 k；两个用例都执行该条 WHEN 中的全部操作（滚到
+ * 第 k 段、推进 1,100 ms、调字号、重新载入）。9.12 不依赖滚动保存。打开进度章节本身就会写一条"该章章首"
+ * 的进度记录（`ReaderPage` 的落盘 effect），9.8 的"滚动前的值"即这一条。
  *
- * 普通用例同样执行各条 WHEN 中的全部操作（滚到第 k 段、推进 1,100 ms、调字号、重新载入），只是不断言
- * 受 F-002 影响的结果。打开进度章节本身就会写一条"该章章首"的进度记录（`ReaderPage` 的落盘 effect），
- * 所以 9.9 的"同一章"与 9.12 的"已有进度记录"在 F-002 之下也成立。
+ * `RDF 3.4`（reader-defect-fixes 需求 3.4 的偏移范围）：同样执行 9.8 的 WHEN 并推进 1,100 ms，等进度键更新后
+ * 读出记录，断言其 `chapterId` 为进度章节、`charOffset` 不小于第 k 段的章内起点、小于第 k + 1 段的起点。
+ * 各段起点由测试独立推导（`readParagraphStarts`：测试进程解压的全书文本按行切分，与渲染出的 `<p>` 文本
+ * 依次对齐），不取自应用；real 的大书全文在 worker 内解压一次（`bookText` 缓存）。
+ *
+ * `RDF 3.6`（reader-defect-fixes 需求 3.6，RC 2.4 的行高一项）：与 9.10 同一流程，只是把"字号增大 5 px"换成
+ * 在"行高间距"滑杆（按可访问名称定位，需求 6.1）上把行高调到网格上的非端点值 2.1；滑杆失焦后按 Esc 关闭
+ * 抽屉、不再滚动，以不带 `?ch=` 的 `/read/<id>` 重新载入，断言正文段落的计算 `line-height` 与"字号 × 2.1"
+ * 相差 ≤ 0.5 px，且判定段落序号仍为 k。修复前正文 `<p>` 的行高固定为 `leading-relaxed`，这一条无从谈起
+ * （Findings_Log F-004 备注，已修复（reader-defect-fixes））。
+ *
+ * 历史：EV 验收时 `<main>` 随内容增高、实际滚动的是文档（Findings_Log F-002，已修复（reader-defect-fixes））：
+ * 文档滚动不触发进度保存，恢复位置的赋值无效，9.8 的"1,100 ms 时更新"与 9.9、9.10 的"判定段落仍为 k"
+ * 按 16.7 拆成预期失败用例。修复后它们改为普通用例，用例划分与断言保持不变。
  *
  * ## 时间（6.4、6.5）
  *
@@ -54,11 +67,14 @@ import { reader, settingsDrawer } from "../../support/locators";
 import {
   bookUnderTest,
   expectCurrentChapter,
+  expectDocumentNotScrollable,
+  expectOffsetInParagraph,
   judgeScrollTarget,
   openReader,
   readDocumentScroll,
   readJudgeParagraph,
   readMainScroll,
+  readParagraphStarts,
   scrollJudgeParagraphTo,
   type BookUnderTest,
   type JudgeReading,
@@ -86,6 +102,15 @@ const FONT_MAX_PX = 36;
 
 /** 书加载完成后暂停 Controlled_Clock 时向前跳的余量（与 `reader-search.spec.ts` 相同）。 */
 const PAUSE_LEAD_MS = 1_000;
+
+/**
+ * RDF 3.6：行高调到的网格上的非端点值（区间 1.4–2.5、步长 0.05；1.4 + 14 × 0.05），与默认值 1.85 不同。
+ * 写成字面量，不在测试里做浮点累加。
+ */
+const RDF_LINE_HEIGHT = 2.1;
+
+/** RDF 3.6：段落计算 `line-height` 与"字号 × 新行高"的容差。 */
+const LINE_HEIGHT_TOLERANCE_PX = 0.5;
 
 // ---------------------------------------------------------------------------
 // 用书、章节与进度键
@@ -231,9 +256,9 @@ async function openAndScrollToK(
         type: "progress-plan",
         description:
           `正文高度 ${reading.bodyHeight}、可视高度 ${reading.visibleHeight}、段落 ${reading.count}、` +
-          `k = ${picked}；实际滚动元素 ${reading.scroller ?? "无"}（最大可滚距离 ${reading.maxScrollTop}）`,
+          `k = ${picked}；<main> 最大可滚距离 ${reading.maxScrollTop}`,
       });
-      expect(reading.scroller, "<main> 或文档应可滚动").not.toBeNull();
+      expect(reading.maxScrollTop, "<main> 应可滚动（最大可滚距离 ≥ 1 px）").toBeGreaterThanOrEqual(1);
       expect(
         reading.bodyHeight,
         `正文高度应 ≥ ${BODY_SCREENS} × 可视高度 ${reading.visibleHeight}（9.8）`,
@@ -252,8 +277,12 @@ async function reopenWithoutCh(page: Page, bookLog: BookLog, book: BookUnderTest
   await openReader(page, bookLog, book);
 }
 
-/** 重新载入后等判定段落为 `k`（恢复在段落测量后的 layout effect 中执行，以轮询等待）。 */
+/**
+ * 重新载入后等判定段落为 `k`（恢复在段落测量后的 layout effect 中执行，以轮询等待）。之前核对文档不可
+ * 滚动（需求 2.1），判定段落因此只取决于 `<main>` 的滚动位置。
+ */
 async function expectJudgeParagraph(page: Page, k: number, what: string): Promise<void> {
+  await expectDocumentNotScrollable(page);
   await step(`${what}：判定段落序号为 ${k}`, async () => {
     let last: JudgeReading | null = null;
     await expect
@@ -270,7 +299,7 @@ async function expectJudgeParagraph(page: Page, k: number, what: string): Promis
         const detail =
           r === null
             ? ""
-            : `（实际第 ${r.index} 段；<main> scrollTop ${r.mainScrollTop}、文档 scrollTop ${r.documentScrollTop}、` +
+            : `（实际第 ${r.index} 段；<main> scrollTop ${r.scrollTop}（最大 ${r.maxScrollTop}）、` +
               `判定线 ${r.line}、第 ${k} 段上边 ${r.tops[k]}）`;
         throw new Error(`${what}：判定段落序号应为 ${k}${detail}\n${error instanceof Error ? error.message : String(error)}`);
       });
@@ -334,13 +363,12 @@ test.describe("9.8 停止滚动后写入进度", () => {
     });
   });
 
-  test(`9.8 F-002 判定段落滚到第 k 段并停止滚动：自最后一次滚动事件起推进满 ${SAVE_DONE_MS} ms 时更新进度键`, async ({
+  test(`9.8 判定段落滚到第 k 段并停止滚动：自最后一次滚动事件起推进满 ${SAVE_DONE_MS} ms 时更新进度键`, async ({
     page,
     lib,
     bookLog,
     clock,
   }) => {
-    test.fail(true, "F-002 正文 <main> 不是滚动容器：进度保存只监听 <main> 的 scroll 事件，文档滚动不触发保存");
     const plan = await progressPlan(lib);
     const { before } = await openAndScrollToK(page, bookLog, clock, plan);
     await advanceClock(page, SAVE_DONE_MS, "自滚动事件起");
@@ -355,6 +383,34 @@ test.describe("9.8 停止滚动后写入进度", () => {
         noteProgressKey(`${SAVE_DONE_MS} ms`, await readProgressValue(page, plan.book.id));
       }
     });
+  });
+
+  test(`RDF 3.4 判定段落滚到第 k 段并停止滚动：自最后一次滚动事件起满 ${SAVE_DONE_MS} ms 时写入的进度记录，其 charOffset 落在第 k 段的范围内（不小于该段起点、小于第 k + 1 段起点）`, async ({
+    page,
+    lib,
+    bookLog,
+    clock,
+  }) => {
+    const plan = await progressPlan(lib);
+    const { k, before } = await openAndScrollToK(page, bookLog, clock, plan);
+    await advanceClock(page, SAVE_DONE_MS, "自滚动事件起");
+    const record = await step(`等进度键更新，读出本章（chapterId ${plan.chapter}）的进度记录`, async () => {
+      await expect
+        .poll(() => readProgressValue(page, plan.book.id), {
+          message: `进度键 ${progressKey(plan.book.id)} 的值应已不同于滚动前`,
+        })
+        .not.toBe(before);
+      const raw = await readProgressValue(page, plan.book.id);
+      noteProgressKey(`${SAVE_DONE_MS} ms`, raw);
+      if (raw === null) throw new Error("进度键在读取之间消失");
+      const parsed = JSON.parse(raw) as Partial<ReadingProgress>;
+      expect(parsed.chapterId, "进度记录的 chapterId").toBe(plan.chapter);
+      return parsed;
+    });
+    const paragraphs = await step("由全书文本与渲染出的段落文本推导本章各段的章内起点", () =>
+      readParagraphStarts(page, lib, plan.book.id, plan.chapter),
+    );
+    await expectOffsetInParagraph(paragraphs, k, record.charOffset, "RDF 3.4 进度记录的 charOffset");
   });
 });
 
@@ -371,13 +427,12 @@ test.describe("9.9 重新载入后恢复进度", () => {
     await expectCurrentChapter(page, plan.book.facts, plan.chapter);
   });
 
-  test("9.9 F-002 进度写入后以不带 ?ch= 的 /read/<id> 重新载入：判定段落序号仍为 k", async ({
+  test("9.9 进度写入后以不带 ?ch= 的 /read/<id> 重新载入：判定段落序号仍为 k", async ({
     page,
     lib,
     bookLog,
     clock,
   }) => {
-    test.fail(true, "F-002 正文 <main> 不是滚动容器：文档滚动不触发进度保存，恢复位置赋值 main.scrollTop 无效");
     const plan = await progressPlan(lib);
     const { k } = await openAndScrollToK(page, bookLog, clock, plan);
     await advanceClock(page, SAVE_DONE_MS, "9.8 的写入时限");
@@ -413,19 +468,122 @@ test.describe("9.10 字号增大后恢复进度", () => {
     });
   });
 
-  test(`9.10 F-002 进度写入后字号增大 ${FONT_INCREASE_PX} px、关闭设置抽屉并重新载入：判定段落序号仍为 k`, async ({
+  test(`9.10 进度写入后字号增大 ${FONT_INCREASE_PX} px、关闭设置抽屉并重新载入：判定段落序号仍为 k`, async ({
     page,
     lib,
     bookLog,
     clock,
   }) => {
-    test.fail(true, "F-002 正文 <main> 不是滚动容器：文档滚动不触发进度保存，恢复位置赋值 main.scrollTop 无效");
     const plan = await progressPlan(lib);
     const { k } = await openAndScrollToK(page, bookLog, clock, plan);
     await advanceClock(page, SAVE_DONE_MS, "9.8 的写入时限");
     await increaseFontSize(page);
     await reopenWithoutCh(page, bookLog, plan.book);
     await expectJudgeParagraph(page, k, "9.10 字号增大后重新载入");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RDF 3.6 行高改变后恢复到同一段落
+// ---------------------------------------------------------------------------
+
+/** `"35.15px"` → 35.15；不是 px 长度时为 NaN。 */
+function px(value: string): number {
+  const match = /^(-?\d+(?:\.\d+)?)px$/.exec(value.trim());
+  return match === null ? Number.NaN : Number(match[1]);
+}
+
+/** 正文段落的计算样式 `line-height`（去重）。 */
+function paragraphLineHeights(page: Page): Promise<string[]> {
+  return reader(page).paragraphs.evaluateAll((ps) => [...new Set(ps.map((p) => getComputedStyle(p).lineHeight))]);
+}
+
+/**
+ * RDF 3.6：经顶栏"阅读设置"打开设置抽屉，在"行高间距"滑杆（按可访问名称定位，需求 6.1）上按方向键把
+ * 行高调到 `target`（前置核对 `target` 在网格上、不在端点、与当前值不同），然后让滑杆失焦、按 Esc 关闭
+ * 抽屉（焦点在滑杆上时 Esc 归输入框，阅读器不接管）。返回字号（px，未改动）。
+ */
+async function changeLineHeight(page: Page, target: number): Promise<number> {
+  const drawer = settingsDrawer(page);
+  await step("点击顶栏“阅读设置”打开设置抽屉", async () => {
+    await reader(page).settingsButton.click();
+    await expect(drawer.marker).toBeVisible();
+  });
+  const { fontSize, current, presses } = await step(
+    `读当前字号与行高（前置：${target} 在行高滑杆的网格上、不在端点、与当前值不同）`,
+    async () => {
+      const parse = async (text: Promise<string | null>, pattern: RegExp, what: string): Promise<number> => {
+        const raw = ((await text) ?? "").trim();
+        const match = pattern.exec(raw);
+        if (match === null) throw new Error(`无法解析${what}显示值 ${JSON.stringify(raw)}`);
+        return Number(match[1]);
+      };
+      const size = await parse(drawer.fontSizeValue.textContent(), /^(\d+)px$/, "字号");
+      const now = await parse(drawer.lineHeightValue.textContent(), /^(\d(?:\.\d+)?)x$/, "行高");
+      const attr = async (name: string): Promise<number> => Number(await drawer.lineHeightSlider.getAttribute(name));
+      const [min, max, stepSize] = [await attr("min"), await attr("max"), await attr("step")];
+      const offset = (target - min) / stepSize;
+      expect(Math.abs(offset - Math.round(offset)), `${target} 应在网格 ${min} + k × ${stepSize} 上`).toBeLessThan(1e-6);
+      expect(target, "目标行高应大于下端点").toBeGreaterThan(min);
+      expect(target, "目标行高应小于上端点").toBeLessThan(max);
+      expect(target, "目标行高应与当前值不同").not.toBe(now);
+      return { fontSize: size, current: now, presses: Math.round((target - now) / stepSize) };
+    },
+  );
+  const key = presses > 0 ? "ArrowRight" : "ArrowLeft";
+  await step(`“行高间距”滑杆按 ${key} ×${Math.abs(presses)}：行高 ${current}x → ${target}x`, async () => {
+    for (let i = 0; i < Math.abs(presses); i++) await drawer.lineHeightSlider.press(key);
+    await expect(drawer.lineHeightValue).toHaveText(`${target}x`);
+    await expect(drawer.lineHeightSlider).toHaveValue(String(target));
+  });
+  await step("滑杆失焦后按 Esc 关闭设置抽屉（此后不再滚动）", async () => {
+    await drawer.lineHeightSlider.blur();
+    await page.keyboard.press("Escape");
+    await expect(drawer.marker, "设置抽屉应已关闭").toHaveCount(0);
+  });
+  return fontSize;
+}
+
+test.describe("RDF 3.6 行高改变后恢复进度", () => {
+  test(`RDF 3.6 进度写入后在设置抽屉把行高调到 ${RDF_LINE_HEIGHT}（网格上的非端点值）、关闭设置抽屉并以不带 ?ch= 的 /read/<id> 重新载入：正文段落 line-height 与「字号 × ${RDF_LINE_HEIGHT}」相差 ≤ ${LINE_HEIGHT_TOLERANCE_PX} px，判定段落序号仍为 k`, async ({
+    page,
+    lib,
+    bookLog,
+    clock,
+  }) => {
+    const plan = await progressPlan(lib);
+    const { k, before } = await openAndScrollToK(page, bookLog, clock, plan);
+    await advanceClock(page, SAVE_DONE_MS, "9.8 的写入时限");
+    await step("前提：进度键已更新为第 k 段的记录", async () => {
+      await expect
+        .poll(() => readProgressValue(page, plan.book.id), {
+          message: `进度键 ${progressKey(plan.book.id)} 的值应已不同于滚动前`,
+        })
+        .not.toBe(before);
+      noteProgressKey("改行高前", await readProgressValue(page, plan.book.id));
+    });
+    const fontSize = await changeLineHeight(page, RDF_LINE_HEIGHT);
+    await reopenWithoutCh(page, bookLog, plan.book);
+    await expectCurrentChapter(page, plan.book.facts, plan.chapter);
+
+    const expected = fontSize * RDF_LINE_HEIGHT;
+    await step(
+      `RDF 3.6 重新载入后正文段落的 line-height 与 ${fontSize}px × ${RDF_LINE_HEIGHT} = ${expected.toFixed(3)}px 相差 ≤ ${LINE_HEIGHT_TOLERANCE_PX}px`,
+      async () => {
+        await expect(reader(page).paragraphs.first()).toBeVisible();
+        await expect
+          .poll(
+            async () => {
+              const values = await paragraphLineHeights(page);
+              const off = values.filter((v) => !(Math.abs(px(v) - expected) <= LINE_HEIGHT_TOLERANCE_PX));
+              return off.length === 0 ? "相符" : `段落 line-height [${values.join(" | ")}]`;
+            },
+            { message: `正文段落的 line-height 应与 ${expected.toFixed(3)}px 相差 ≤ ${LINE_HEIGHT_TOLERANCE_PX}px` },
+          )
+          .toBe("相符");
+      },
+    );
+    await expectJudgeParagraph(page, k, `RDF 3.6 行高改为 ${RDF_LINE_HEIGHT} 后重新载入`);
   });
 });
 
@@ -453,6 +611,7 @@ test.describe("9.12 带 ?ch= 重新载入", () => {
     await openReader(page, bookLog, book, other);
     await expectCurrentChapter(page, book.facts, other);
     await advanceClock(page, 2 * CLOCK_STEP_MS, "2 帧，让受时钟控制的 rAF 回调执行到");
+    await expectDocumentNotScrollable(page);
     await step("9.12 显示章首：<main> 与文档滚动元素的 scrollTop 均为 0，判定段落为第 0 段", async () => {
       const [main, doc, judge] = await Promise.all([
         readMainScroll(page),

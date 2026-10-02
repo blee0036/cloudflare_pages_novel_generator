@@ -139,8 +139,10 @@ export interface ReaderSettings {
   /**
    * IndexedDB 离线缓存的本数上限（需求 4.2，默认 10）。
    *
-   * 数值不在此处校验——`getStoredSettings()` 只做浅合并，手改过的存储可能给出负数或字符串，
-   * 故由用处的 `normalizeMaxBooks()` 收拢到 `[1, 50]`。设置 UI 由任务 50 负责。
+   * 类型本身不约束取值；`getStoredSettings()` 读出时与另外 4 个滑杆字段一起经
+   * `utils/sliderSettings.ts` 归一（缺失或非数值取默认值、越界夹到 `[1, 50]`、取整），手改过的
+   * 存储给出负数或字符串也会被收拢。`bookCache.ts` 用处的 `normalizeMaxBooks()` 对归一后的值
+   * 是恒等，仍保留作为淘汰计算的入口校验。设置 UI 由任务 50 负责。
    */
   cacheMaxBooks: number;
 }

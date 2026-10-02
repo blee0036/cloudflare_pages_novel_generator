@@ -1,20 +1,24 @@
 /**
- * 无障碍冒烟（A11y_Scan；需求 15.1、15.2、15.8、15.9、16.4；设计"无障碍冒烟（需求 15）"；任务 20.4）。
+ * 无障碍冒烟（A11y_Scan；需求 15.1、15.2、15.9、16.4；设计"无障碍冒烟（需求 15）"；任务 20.4。
+ * 违规即失败：reader-defect-fixes（RDF）需求 15.1、15.2、15.3，任务 17.1）。
  * `fixture` 项目（:4611，Opaque_Mode），桌面视口（全局默认 1280×800），不装 Controlled_Clock。
  *
  * ## 用例
  *
- * `A11Y_SCANS`（`e2e/a11y/scans.ts`）每项一个用例，各自新上下文（6.1）。标题由 `a11yTestTitle`
- * 生成，形如 `15.1 a11y-toc：目录抽屉 · 默认主题（未存储，实际 sepia）`、
- * `15.2 a11y-contrast-dark：阅读器正文 · dark（暗色夜间）· 仅 color-contrast`，节名部分取自
+ * `A11Y_SCANS`（`e2e/a11y/scans.ts`，31 次）每项一个用例，各自新上下文（6.1）。标题由
+ * `a11yTestTitle` 生成，形如 `15.1 a11y-toc：目录抽屉 · 默认主题（未存储，实际 sepia）`、
+ * `15.2 a11y-contrast-dark：阅读器正文 · dark（暗色夜间）· 仅 color-contrast`、
+ * `RDF 15.6 a11y-contrast-toc-dark：目录抽屉 · dark（暗色夜间）· 仅 color-contrast`，节名部分取自
  * `describeA11yScan`。reporter（20.5）按 `a11y-result` 附件里的扫描名归节，不解析标题；没有附件的
  * 用例按与 `a11yTestTitle` 相等的标题找回。
  *
  * 每个用例：
  *
- * 1. 主题：`themeToSeed(def.theme)` 不为 null（15.2 的对比度扫描）时首次导航前 `seedTheme`；
- *    15.1 的 6 个视图是"默认主题"（`THEME_UNSET`，localStorage 中没有已存储的主题），不 seed，
- *    `runA11yScan` 据 `seededTheme(context)` 核对。
+ * 1. 主题：`themeToSeed(def.theme)` 不为 null（15.2 的对比度扫描与 reader-defect-fixes（RDF）15.6
+ *    的 20 次 Contrast_Extension_Scan）时首次导航前 `seedTheme`；15.1 的 6 个视图是"默认主题"
+ *    （`THEME_UNSET`，localStorage 中没有已存储的主题），不 seed，`runA11yScan` 据
+ *    `seededTheme(context)` 核对。Contrast_Extension_Scan 的 `book`、`url` 与同一视图的 15.1 扫描
+ *    相同，第 2 步按 `view` 分支，进入方式与等待条件因此也相同（RDF 15.6）。
  * 2. 进入视图：按 `resolveA11yUrl(def, id)` 导航（书为 `lib.role("volumes")`，3.3 (b)；书架首屏
  *    不涉及某本书）。
  *    - 书架首屏：等首批书卡挂载、骨架移除。
@@ -26,25 +30,33 @@
  *      （抽屉只在打开时统计一次，之后不再变化）。
  * 3. `runA11yScan(page, def)`：冻结动画、等 15.7 的条件、按规则集运行 axe、附 `a11y-result` 并写
  *    `e2e/.out/a11y/<name>.json`（`e2e/a11y/scan.ts`）。
+ * 4. 断言违规为空（RDF 15.2）：失败信息由 `formatA11yViolations`（`e2e/a11y/report.ts`）生成。
  *
- * ## 判定（15.8、15.9、16.4）
+ * ## 判定（RDF 15.1–15.3；15.9、16.4）
  *
- * - 违规与 incomplete 从不断言：扫描成功时用例的结果只由第 2 步的断言决定。
+ * - 违规即失败（RDF 15.2，取代 EV D6 与 EV 15.8 的"违规与 incomplete 从不断言"，31 个扫描都适用）：
+ *   `runA11yScan` 返回 `status: "ok"` 后断言 `violations` 为空，不论影响级别。报出 ≥ 1 条违规时
+ *   用例失败，失败信息首行概括扫描名、视图与主题和每条规则的 id、影响级别、节点数，其后逐个节点
+ *   列出 `target`、`html`、`failureSummary` 与对比度数据。附件与结果文件照常是 `ok`，reporter 在
+ *   Run_Summary 的 A11y_Scan 节列出同样的节点明细。
+ * - incomplete 不断言（RDF 15.3）：只在 Run_Summary 中列出规则 id 与节点数，明细在结果文件中。
  * - `runA11yScan` 内的失败（前提不符、注入或执行失败、无结果、15.7 条件超时、主题断言不成立）
  *   由它先附 `{ status: "failed" }` 再重抛。第 2 步就失败或超时的用例没有附件，`test.afterEach`
  *   调用 `ensureA11yResult` 补记 `failed`（被跳过的补记 `skipped`），reporter 因此不会把它写成
  *   "未执行"或违规数 0。
  * - 16.4：目标元素已渲染却按 role、`aria-label` 与可见文本都定位不到时，先在 Findings_Log 记
  *   可测性缺口，再在 `TESTABILITY_GAPS` 登记该扫描与 Finding 编号，用例在进入视图之前以
- *   `skipA11yScan` 跳过（`[16.4 F-xxx]`）。目前 11 个扫描依赖的元素（书架检索框、详情弹窗的
+ *   `skipA11yScan` 跳过（`[16.4 F-xxx]`）。目前 31 个扫描依赖的元素（书架检索框、详情弹窗的
  *   "章节目录 · 全本精校"、正文 `<article>`、三个抽屉的页签或标题、顶栏三个按钮、检索框与结果）
- *   都能定位，表为空。F-003（行高与版心宽度滑杆没有可访问名称）不影响定位：扫描不操作滑杆，
- *   它由 axe 在 `a11y-settings` 里作为违规报出。
+ *   都能定位，表为空。F-003（字号、行高与版心宽度滑杆曾没有可访问名称，已修复（reader-defect-fixes））
+ *   也不曾影响定位：扫描不操作滑杆，修复前它由 axe 在 `a11y-settings` 里作为 `label` 违规报出。
  */
 import type { Page } from "@playwright/test";
+import { formatA11yViolations } from "../../a11y/report";
 import { ensureA11yResult, runA11yScan, skipA11yScan } from "../../a11y/scan";
 import {
   A11Y_SCANS,
+  a11yClause,
   a11yTestTitle,
   resolveA11yUrl,
   type A11yScanDef,
@@ -198,11 +210,15 @@ for (const def of A11Y_SCANS) {
 
     const seed = themeToSeed(def.theme);
     if (seed !== null) {
-      await step(`首次导航前把已存储主题写为 ${seed}（15.2）`, () => seedTheme(seed));
+      await step(`首次导航前把已存储主题写为 ${seed}（${a11yClause(def)}）`, () => seedTheme(seed));
     }
     await enterView(def, { page, lib, bookLog });
-    // 15.8：违规与 incomplete 不断言；runA11yScan 只在扫描本身失败时抛错（15.9）
-    await runA11yScan(page, def);
+    // runA11yScan 只在扫描本身失败时抛错（15.9）；违规由下面的断言判失败，incomplete 不断言（RDF 15.3）
+    const result = await runA11yScan(page, def);
+    await step(`断言 ${def.name} 报出 0 条违规（RDF 15.2）`, () => {
+      // 断言违规数而不是数组本身：节点明细已在失败信息里，不再由 Playwright 把整个数组打印一遍
+      expect(result.violations.length, formatA11yViolations(result)).toBe(0);
+    });
   });
 }
 

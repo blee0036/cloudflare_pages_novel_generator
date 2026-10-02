@@ -105,7 +105,7 @@ export const BookCard: React.FC<BookCardProps> = ({
       <div className="p-4 flex-1 flex flex-col justify-between space-y-4">
         <div className="space-y-2">
           {/* Metadata chips */}
-          <div className="flex items-center text-xs text-[var(--text)]/60 space-x-3">
+          <div className="flex items-center text-xs text-[var(--text-muted)] space-x-3">
             <span className="flex items-center">
               <BookOpen className="w-3.5 h-3.5 mr-1 text-blue-500" />
               {book.totalChapters} 章
@@ -122,7 +122,9 @@ export const BookCard: React.FC<BookCardProps> = ({
                   <Clock className="w-3 h-3 mr-1" />
                   已读 {progress.progressPercent.toFixed(1)}%
                 </span>
-                <span className="truncate max-w-[120px] opacity-80">
+                {/* 不再叠 `opacity-80`（F-010）。字色沿用这一行的 `--accent`：改成 `--text-muted`
+                    会把强调色的章节名换成灰色 */}
+                <span className="truncate max-w-[120px]">
                   {progress.chapterTitle}
                 </span>
               </div>
@@ -134,7 +136,7 @@ export const BookCard: React.FC<BookCardProps> = ({
               </div>
             </div>
           ) : (
-            <p className="text-xs text-[var(--text)]/50 line-clamp-1">
+            <p className="text-xs text-[var(--text-muted)] line-clamp-1">
               尚未阅读 · 点击立即开启
             </p>
           )}

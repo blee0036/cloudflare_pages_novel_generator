@@ -8,6 +8,35 @@
   把一堆小说压缩包变成一个在浏览器里读的书库，打包成纯静态网站，直接部署到 Cloudflare Pages。
 </p>
 
+<p align="center">
+  React 18 · TypeScript · Vite 6 · Tailwind CSS 4 · Python 3 · Cloudflare Pages
+</p>
+
+<p align="center">
+  <img src="e2e/baselines/px-shelf-desktop-win32.png" width="860" alt="书架首页：顶部是站名和检索框，下面是一条介绍横幅，再往下是四列书卡，每张卡片有书名、作者、章数、字数和“章节目录”“开始阅读”两个按钮">
+</p>
+
+<p align="center"><sub>本文所有截图都是 E2E 的像素基线。书名、作者和正文由测试脚本随机合成，不是真实作品。</sub></p>
+
+---
+
+## 目录
+
+- [这是什么](#这是什么)
+- [界面一览](#界面一览)
+- [准备环境](#准备环境)
+- [快速上手](#快速上手)
+- [管理书库](#管理书库)
+- [常用命令](#常用命令)
+- [预处理具体做了什么](#预处理具体做了什么)
+- [章节识别](#章节识别)
+- [网站功能](#网站功能)
+- [站点配置（可选）](#站点配置可选)
+- [构建与部署](#构建与部署)
+- [开发](#开发)
+- [E2E 测试](#e2e-测试)
+- [关于内容与版权](#关于内容与版权)
+
 ---
 
 ## 这是什么
@@ -19,7 +48,13 @@
 - 压成一个 `.txt.gz`，再配一份章节目录 `_toc.json`；
 - 汇总进一份全库书单 `books.json`。
 
-然后 `npm run build` 打包成网站。网站没有后端、没有数据库，就是一堆静态文件：浏览器下载 `.txt.gz` 后自己解压、按章显示，阅读进度精确到段落。
+然后 `npm run build` 打包成网站。网站没有后端、没有数据库，就是一堆静态文件：
+
+- **浏览器自己解压**：下载 `.txt.gz` 后用 `DecompressionStream` 流式解压，按章显示，大书也有加载进度。
+- **续读精确到段落**：阅读进度、书签、检索跳转都记"第几章 + 章内第几个字"，换字号、换设备也能回到同一段。
+- **能离线**：读过的书原样存进 IndexedDB，下次打开不再下载。
+- **搜得到**：书架按书名、作者或拼音首字母模糊搜索，阅读器里能全文检索。
+- **读得舒服**：五套主题，字号、行高、字间距、版心宽度都可调，手机上也能用。
 
 网站上默认显示的站名是"云端小说书架"，可以在[站点配置](#站点配置可选)里改。
 
@@ -32,11 +67,71 @@
 
 ---
 
+## 界面一览
+
+<table>
+  <tr>
+    <td width="50%"><img src="e2e/baselines/px-reader-sepia-win32.png" alt="阅读器，复古羊皮主题：顶栏是返回、书名、已读百分比和书签、目录、检索、设置、全屏五个按钮，中间是章节标题“楔子”和正文，底栏是上一章、目录、章节进度滑杆、全书搜索和下一章"></td>
+    <td width="50%"><img src="e2e/baselines/px-settings-drawer-win32.png" alt="阅读设置抽屉：五个主题色块，字号、字体、行高、字间距、版心宽度的滑杆，离线缓存占用与上限，以及下载整本"></td>
+  </tr>
+  <tr>
+    <td><b>阅读器</b>：按章显示。顶栏和底栏放常用操作，停止操作 4.5 秒后自动隐藏。</td>
+    <td><b>阅读设置</b>：主题、字号、字体、行高、字间距、版心宽度、离线缓存、下载整本。</td>
+  </tr>
+  <tr>
+    <td><img src="e2e/baselines/px-toc-volumes-win32.png" alt="目录抽屉：顶部是书名、章节目录与我的书签两个页签和章节搜索框；列表里“第一卷 云起”等卷标题是带竖线的分组表头，当前章“楔子”用更深的底色和强调色标出"></td>
+    <td><img src="e2e/baselines/px-search-results-win32.png" alt="全书内容检索抽屉：检索框里是“琉璃盏”，下方显示找到 7 条匹配，每条结果有章节名和带高亮命中词的上下文"></td>
+  </tr>
+  <tr>
+    <td><b>目录</b>：分卷显示成不能点的分组表头，当前章另有底色，还能按章名过滤、管理书签。</td>
+    <td><b>全书检索</b>：命中词高亮，点一条直接跳到那一段，正文里的命中处高亮 5 秒。</td>
+  </tr>
+  <tr>
+    <td><img src="e2e/baselines/px-detail-modal-win32.png" alt="书架上的章节目录弹窗：书名、作者、章数、字数和压缩后大小，一个章节过滤框和“从第 1 章开始阅读”按钮，下面两列列出全部章节和卷"></td>
+    <td><img src="e2e/baselines/px-reader-dark-win32.png" alt="阅读器，暗色夜间主题：深蓝灰底、浅色正文，布局与复古羊皮主题相同"></td>
+  </tr>
+  <tr>
+    <td><b>章节目录弹窗</b>：不进阅读器就能看全书目录、挑一章开读，浏览器后退即关闭。</td>
+    <td><b>暗色夜间</b>：五套主题之一，顶栏、底栏和抽屉跟着一起换色。</td>
+  </tr>
+</table>
+
+**手机上**
+
+<p>
+  <img src="e2e/baselines/px-shelf-mobile-win32.png" width="260" alt="手机上的书架：站名和检索框在顶部，介绍横幅与藏书数纵向排列，书卡单列显示">
+  &nbsp;&nbsp;
+  <img src="e2e/baselines/px-reader-mobile-win32.png" width="260" alt="手机上的阅读器：顶栏只留返回、书签、目录、检索、设置，底栏的上一章、目录、进度滑杆、检索、下一章五个控件都完整显示在屏幕内">
+</p>
+
+**五套主题**
+
+<table>
+  <tr>
+    <td><img src="e2e/baselines/px-reader-default-win32.png" alt="默认明亮主题的阅读器：白底深灰字"></td>
+    <td><img src="e2e/baselines/px-reader-sepia-win32.png" alt="复古羊皮主题的阅读器：米黄底深褐字"></td>
+    <td><img src="e2e/baselines/px-reader-eyecare-win32.png" alt="护眼豆绿主题的阅读器：浅绿底深绿字"></td>
+    <td><img src="e2e/baselines/px-reader-dark-win32.png" alt="暗色夜间主题的阅读器：深蓝灰底浅灰字"></td>
+    <td><img src="e2e/baselines/px-reader-black-win32.png" alt="极夜纯黑主题的阅读器：纯黑底灰字"></td>
+  </tr>
+  <tr>
+    <td align="center">默认明亮</td>
+    <td align="center">复古羊皮（默认）</td>
+    <td align="center">护眼豆绿</td>
+    <td align="center">暗色夜间</td>
+    <td align="center">极夜纯黑</td>
+  </tr>
+</table>
+
+截图在 Windows 上用 Chromium 拍摄，取自 `e2e/baselines/`。界面改动后跑 `npm run e2e:update` 重新生成基线，这里的图会跟着更新（见[像素基线](#像素基线)）。
+
+---
+
 ## 准备环境
 
 | 需要 | 说明 |
 | --- | --- |
-| Node.js | 验证过的版本：v24.18.0（npm 11.16.0） |
+| Node.js | 20.19 以上、22.13 以上或 24 以上（ESLint 10 的 `engines` 要求最严；Vitest 4 不支持 21、23）。验证过的版本：v24.18.0（npm 11.16.0） |
 | Python 3 | 验证过的版本：3.14.6 |
 | Python 包 | `python -m pip install -r scripts/requirements.txt` |
 | 解压 `.rar` 的工具 | 见下文 |
@@ -59,7 +154,7 @@ zopfli==0.2.3               # 压缩大于 10MB 的书
 ## 快速上手
 
 ```bash
-npm install
+npm ci                                            # 按 package-lock.json 原样安装
 python -m pip install -r scripts/requirements.txt
 
 # 1. 把小说压缩包放进 zip-novel/
@@ -73,10 +168,9 @@ npm run build
 npx wrangler pages deploy
 ```
 
-`dev` 和 `build` 之前至少要跑过一次预处理，否则书架是空的（找不到 `/data/books.json`）。
+`dev` 和 `build` 之前至少要跑过一次预处理，否则书架是空的（找不到 `/data/books.json`），页面上会显示"加载遇到问题"和"重新加载"按钮。
 
 ---
-
 ## 管理书库
 
 ### 加书、换新版本
@@ -154,7 +248,7 @@ python -m pytest scripts/tests -q            # Python 单测
 1. 解压，取最大的 `.txt`；
 2. 识别编码：先看文件头的 BOM，再自动探测，最后拿候选编码把全文试解一遍、确认没有乱码，统一成 UTF-8；
 3. 切章节（见下一节）；
-4. 生成书名、作者的拼音首字母，用来搜索，比如输入 `clks` 能搜到《从零开始》；
+4. 生成书名、作者的拼音首字母，用来搜索，比如输入 `qstxx` 能搜到《青山踏雪行》；
 5. 压成 `.txt.gz`；
 6. 检查生成的两个文件格式对不对；
 7. 记进清单。
@@ -209,7 +303,7 @@ Cloudflare Pages 单个文件最大 25 MiB，总共最多 20000 个文件。每�
 
 ### `books.json` 长什么样
 
-每本书一条，只有 id、书名、作者、拼音缩写、字数、章数、`.txt.gz` 大小。没有缩进，按源文件名排序。两个文件的地址由 id 拼出来，所以不单独存路径；id 由书名和作者拼成（如 `从零开始-雷云风暴`），特殊符号换成下划线。
+每本书一条，只有 id、书名、作者、拼音缩写、字数、章数、`.txt.gz` 大小。没有缩进，按源文件名排序。两个文件的地址由 id 拼出来，所以不单独存路径；id 由书名和作者拼成（如 `《青石巷》作者：夜行.zip` 得到 `青石巷-夜行`），特殊符号换成下划线。
 
 这个文件不预先压缩，传输时交给 Pages 自动压缩。去掉缩进是为了让浏览器解析 7000 本的书单更快、占内存更少。
 
@@ -251,46 +345,67 @@ python scripts/check_toc.py > after.txt
 ```
 
 ---
-
 ## 网站功能
 
 只有两个页面：`/` 是书架，`/read/<id>` 是阅读器，其他地址一律跳回书架。
 
-**书架**
+### 书架
 
 - 模糊搜索：书名、作者原文都能搜，拼音首字母也行；
 - 按作者筛选，"加载更多"分批展开；
 - 最近在读，最多 5 本；
-- 章节目录弹窗：打开时地址栏会带上这本书，按浏览器后退就关掉弹窗，不会离开书架。
+- 章节目录弹窗：打开时地址栏会带上 `?book=<id>`，按浏览器后退就关掉弹窗，不会离开书架。
 
 长列表只渲染看得见的那一段（`src/utils/listWindow.ts`，自己写的，没引虚拟列表库）。
 
-**阅读器**
+### 阅读器
 
-- 按章显示，全文搜索，书签（每章最多一个）；
+- 按章显示，全文检索，书签（每章最多一个）；
+- 地址栏的 `?ch=` 始终是当前章。换章时替换当前历史记录、不多出后退步骤，复制链接就能直接分享到这一章；
 - 下载整本书：用已经在内存里的文本生成 UTF-8 `.txt`，不再请求服务器；
-- 排版设置，五套主题：默认明亮、复古羊皮（默认选中）、护眼豆绿、暗色夜间、极夜纯黑。
+- 排版设置与五套主题，可调范围见下表。
 
-**快捷键**
+| 设置 | 范围 | 步长 | 默认 |
+| --- | --- | --- | --- |
+| 字号 | 14–36 px | 1 | 19 px |
+| 行高 | 1.4–2.5 倍 | 0.05 | 1.85 倍 |
+| 字间距 | 0–4 px | 0.5 | 1 px |
+| 版心宽度 | 600–1200 px | 20 | 820 px |
+| 离线缓存上限 | 1–50 本 | 1 | 10 本 |
+
+另有三种字体：系统黑体、宋体/明体、楷体/手写。存下来的设置每次读出时都会归一：不是数字的换回默认值，越界的夹到两端，不在步长网格上的取最近的格点。
+
+### 快捷键
 
 | 键 | 作用 |
 | --- | --- |
 | `←` / `→` | 上一章 / 下一章 |
-| `Space` / `Shift+Space` | 向下翻 / 向上翻 |
+| `↑` / `↓` | 向上 / 向下滚一行（40 px） |
+| `PageUp` / `PageDown` | 向上 / 向下滚一屏 |
+| `Space` / `Shift+Space` | 向下 / 向上翻一屏（相邻两屏留 64 px 重叠）；已到章末时再按 `Space` 进入下一章 |
 | `Home` / `End` | 章首 / 章末 |
 | `T` | 目录 |
-| `F` | 搜索 |
+| `F` | 检索 |
 | `S` | 设置 |
 | `Esc` | 关闭面板 |
 
-在输入框里打字、按着 Ctrl/Alt/Meta、或者焦点在按钮上按空格时，快捷键不生效。
+这些情况下快捷键不生效：焦点在输入框或滑杆里，按着 Ctrl/Alt/Meta，焦点在按钮上按空格。目录、检索、设置面板打开时，滚动类按键留给面板自己的列表。`↑`、`↓`、`PageUp`、`PageDown` 到了章首或章末就停住，不会换章。
 
-**数据存在浏览器哪里**
+### 加载出错时
+
+| 页面 | 显示 | 说明文字 |
+| --- | --- | --- |
+| 阅读器 | "未能打开书籍"和"返回书架" | 按原因四选一：书库里找不到这本书、暂时连不上书库、正文文件缺失或损坏、其他问题 |
+| 书架 | "加载遇到问题"和"重新加载" | 按原因三选一：找不到书库目录、暂时连不上书库、其他问题 |
+
+页面上只显示固定的中文说明。原始错误写进浏览器控制台，一行，以 `[load-error]` 开头，带出错阶段、书 id 和 HTTP 状态，排查时看这一行就够了。
+
+### 数据存在浏览器哪里
 
 - **书的缓存**：IndexedDB `koodo_novel_cache_db`（v2）的 `books` 表，存下载下来的 `.txt.gz` 原样，不存解压后的文字。按最近读的时间淘汰，默认留 10 本，可在设置里改成 1 到 50。
 - **设置、进度、书签**：localStorage 的 `koodo_novel_reader_settings`、`koodo_novel_progress_<id>`、`koodo_novel_bookmarks_<id>`。进度最多记 50 本，超了删最久没读的。
 
-阅读进度、搜索跳转、书签跳转用的是同一种定位："第几章 + 章内第几个字"，都走 `src/utils/locator.ts`。不用字节位置，也不用滚动比例，所以换字号、换设备也能回到同一段。
+阅读进度、检索跳转、书签跳转用的是同一种定位："第几章 + 章内第几个字"，都走 `src/utils/locator.ts`。不用字节位置，也不用滚动比例，所以换字号、换设备也能回到同一段。重新打开时，地址栏的 `?ch=` 若正好是上次读到的那一章，就回到章内原来的位置；指向别的章，则从那一章章首开始。
 
 ---
 
@@ -371,7 +486,6 @@ npx wrangler pages deploy dist --project-name novel-pages
 **第一次部署后，检查一下 `.txt.gz` 的响应头**（`Content-Type` 和 `Content-Encoding`）。如果 Pages 在传输时已经帮浏览器解压了，前端（`loadGzipBookText`）会走不再解压的那条分支，值得确认一次两边对得上。
 
 ---
-
 ## 开发
 
 ### 目录结构
@@ -389,18 +503,28 @@ scripts/                    预处理（Python）
   requirements.txt          Python 依赖
   lib/                      各环节：解压、编码、切章规则、切章、拼音、格式检查、清单、汇总
   tests/                    pytest
-  fixtures/                 切章测试用的小样本
+  fixtures/                 切章测试用的小样本（为测试专门写的文本）
 src/                        网站（React + TypeScript）
   pages/                    书架页、阅读页
   components/               界面组件
   hooks/                    自定义 hooks
-  utils/                    定位、搜索、缓存、解压、存储、主题、快捷键等，单测放在同目录
+  utils/                    定位、检索、缓存、解压、存储、主题、快捷键、翻页滚动、
+                            设置归一、URL 章号、加载错误分类、对比度等，单测放在同目录
   index.css                 Tailwind 入口和主题变量
   types.ts                  生成文件的类型定义，与 scripts/lib/validate.py 对应
 build/linkAssets.ts         构建插件：硬链接 public/，检查 404.html
 e2e/                        E2E 测试（Playwright），见"E2E 测试"一节
-  baselines/                像素基线（进 git）
+  tests/                    用例：common/（两种书库都跑）、fixture/、real/、tooling/ 等
+  support/                  定位器、夹具、阅读器辅助、运行汇总（reporter）
+  server/                   本地静态服务器与自检
   fixture/                  夹具书库的合成脚本（进 git）
+  visual/                   像素基线的定义
+  baselines/                像素基线（进 git，本文的截图就是它们）
+  review/                   评审截图的清单与评审报告
+  perf/                     性能读数
+  a11y/                     无障碍扫描的定义、执行与汇总
+  acceptance/               验收与收尾核对脚本（Python，只用标准库）
+  run.mjs                   E2E 入口
   .out/                     运行产物（不进 git）
 vite.config.ts              Vite 配置，含站点配置插件
 vitest.config.ts            Vitest 配置，不收 e2e/
@@ -413,13 +537,29 @@ site.config.example.json    站点配置样板
 
 另有三个不进 git、和构建无关的目录：`koodo-reader/` 和 `legado/` 是只读的参考项目，`wait-novel/` 是还没用上的源包储备。
 
+### 依赖
+
+`package.json` 里的直接依赖全部钉成精确版本（没有 `^`、`~`），和 `package-lock.json` 一致，所以装依赖用 `npm ci`。升级时改版本号、`npm install`，再把下面的测试和 E2E 跑一遍。
+
+npm 11 会拦下依赖的安装脚本，放行的包记在 `package.json` 的 `allowScripts` 里，目前只有 esbuild（Vite 用它）。新依赖带安装脚本时，`npm approve-scripts --allow-scripts-pending` 会列出来，看过脚本内容再用 `npm approve-scripts <包名>` 放行。
+
 ### 主题（Tailwind v4）
 
 仓库里**没有 `tailwind.config.js`，也不需要**。Tailwind v4 通过 PostCSS 插件 `@tailwindcss/postcss` 接入（见 `postcss.config.js`），入口是 `src/index.css` 开头的 `@import "tailwindcss"`。
 
-主题靠根元素上的 `data-theme` 属性加一组 CSS 变量实现，`src/utils/theme.ts` 在页面第一次渲染前写入。五套主题（`default` / `sepia` / `eyecare` / `dark` / `black`）各是 `src/index.css` 里的一个 `[data-theme="..."]` 块，声明同一组变量，并带上 `color-scheme`（前三套 `light`，后两套 `dark`），让浏览器原生控件也跟着变色。
+主题靠根元素上的 `data-theme` 属性加一组 CSS 变量实现，`src/utils/theme.ts` 在页面第一次渲染前写入。五套主题（`default` / `sepia` / `eyecare` / `dark` / `black`）各是 `src/index.css` 里的一个 `[data-theme="..."]` 块，声明同一组变量（`--bg`、`--card-bg`、`--text`、`--accent`、`--border`），并带上 `color-scheme`（前三套 `light`，后两套 `dark`），让浏览器原生控件也跟着变色。
 
 选择器故意写成 `[data-theme="..."]` 而不是 `:root[data-theme="..."]`：任何元素加上这个属性，它里面就换成那套颜色。设置面板里同时显示五个主题色块，靠的就是这个，组件不用接收任何主题参数。
+
+主题块之后的裸 `:root` 里还有三个派生量，由上面那组变量算出来。组件该用它们的地方就用它们，不要再拿 `opacity-*` 或 `text-slate-*` 去调淡文字：
+
+| 变量 | 算法 | 用在哪 |
+| --- | --- | --- |
+| `--hover` | `--text` 8% 叠在透明上 | 悬停底色 |
+| `--selected` | `--accent` 15% 混进 `--bg` | 目录里当前章那一行 |
+| `--text-muted` | `--text` 80% 混进 `--bg` | 次要文字：作者、字数、说明等 |
+
+改颜色之前先跑 `npx vitest --run src/utils/palette.test.ts`。它解析 `src/index.css`，逐套主题核对：`--text`、`--accent`、`--text-muted` 对 `--bg` 和 `--card-bg` 的对比度不低于 4.5:1，`--accent` 对 `--selected` 不低于 4.5:1，`--selected` 和卷标题用的 `--card-bg` 分得开。
 
 ### 测试
 
@@ -429,17 +569,17 @@ npm run lint
 npm run build                      # 顺带检查顶层没有 404.html
 npm run test
 python -m pytest scripts/tests -q
+python -m pytest e2e/acceptance -q # 验收脚本自身的测试
 ```
 
-目前：Vitest 19 个文件、469 项通过；pytest 1871 项通过、1 项跳过。
+目前：Vitest 28 个文件、710 项通过；pytest 1871 项通过、1 项跳过；`e2e/acceptance` 119 项通过。
 
-前端单测和源文件放在一起（`src/utils/*.test.ts`），构建插件的测试在 `build/linkAssets.test.ts`。没有搭 jsdom，不测 DOM 事件；需要测的判断逻辑（定位、搜索、快捷键、缓存淘汰、设置读写）都抽成了纯函数。DOM 和画面交给下一节的 E2E。
+前端单测和源文件放在一起（`src/utils/*.test.ts`），构建插件的测试在 `build/linkAssets.test.ts`。没有搭 jsdom，不测 DOM 事件；需要测的判断逻辑（定位、检索、快捷键、翻页滚动、设置归一、URL 章号、首次定位、加载错误分类、调色板对比度、缓存淘汰）都抽成了纯函数，其中不少用 fast-check 写成了属性测试。DOM 和画面交给下一节的 E2E。
 
 ---
-
 ## E2E 测试
 
-用 Playwright 在 Chromium 里把书架和阅读器真正跑一遍：检索、翻章、目录、书签、主题、快捷键、离线缓存、加载出错，另外还有像素截图比对、给人看的评审截图、性能读数和无障碍扫描。代码在 `e2e/`，配置在 `playwright.config.ts`。它和上面的单测互不串收，`npm run test` 不会跑到 E2E。
+用 Playwright 在 Chromium 里把书架和阅读器真正跑一遍：检索、翻章、滚动、目录、书签、主题、快捷键、地址栏写回、离线缓存、加载出错，另外还有像素截图比对、给人看的评审截图、性能读数和无障碍扫描。代码在 `e2e/`，配置在 `playwright.config.ts`。它和上面的单测互不串收，`npm run test` 不会跑到 E2E。
 
 ### 准备
 
@@ -449,7 +589,7 @@ python -m pytest scripts/tests -q
 | Python 包 | `python -m pip install -r scripts/requirements.txt`（夹具书库要用预处理管线生成） |
 | Chromium | `npm run e2e:install`，一次性下载，装好后占磁盘约 700 MB |
 
-只装与 `@playwright/test` 1.62.1 对应的那一版 Chromium（`chromium-1234` 约 430 MB，`chromium_headless_shell-1234` 约 270 MB），放在 `%LOCALAPPDATA%\ms-playwright\`，不装 Firefox 和 WebKit。`npm install` 不下载浏览器；已经装过的话，`e2e:install` 不会重复下载。没装就跑 E2E，会立刻停下、提示这条命令，退出码 3。
+只装与 `@playwright/test` 1.62.1 对应的那一版 Chromium（`chromium-1234` 约 430 MB，`chromium_headless_shell-1234` 约 270 MB），放在 `%LOCALAPPDATA%\ms-playwright\`，不装 Firefox 和 WebKit。`npm ci` 不下载浏览器；已经装过的话，`e2e:install` 不会重复下载。没装就跑 E2E，会立刻停下、提示这条命令，退出码 3。
 
 ### 命令
 
@@ -477,7 +617,7 @@ npm run e2e:profile -- --profile fixture -g '@selftest'  # 运行汇总的自检
 
 `@audit` 和 `@selftest` 平时不跑，只有 `-g` 点名才跑。
 
-**退出码**：`0` 每个用例都是通过、跳过或预期失败；`1` 有用例失败、预期失败的用例意外通过，或运行中途中止（构建失败、端口被占、服务器自检失败等）；`2` 参数不对；`3` 没装 Chromium。性能超预算、无障碍违规只写进汇总，不影响退出码。
+**退出码**：`0` 每个用例都是通过、跳过或预期失败；`1` 有用例失败、预期失败的用例意外通过，或运行中途中止（构建失败、端口被占、服务器自检失败等）；`2` 参数不对；`3` 没装 Chromium。无障碍扫描报出任何违规，所在用例就判失败，退出码随之为 `1`；incomplete 结果只列出，不影响退出码。性能超预算只写进汇总，不影响退出码。
 
 每次运行先把当前 `src/` 构建到 `e2e/.out/app/`（不碰 `dist/`），再在 `127.0.0.1` 上起本地服务器：fixture 用 4611、4612，real 用 4621、4622。每组一个把 `.txt.gz` 原样返回（预期中 Pages 的做法），一个带 `Content-Encoding: gzip` 返回，前端的两条解压分支都能测到。服务器只读、只接受 GET 和 HEAD、只监听本机，没有鉴权。
 
@@ -485,11 +625,11 @@ npm run e2e:profile -- --profile fixture -g '@selftest'  # 运行汇总的自检
 
 | | fixture | real |
 | --- | --- | --- |
-| 数据来源 | `e2e/fixture/` 的 Python 脚本合成 52 本小书，交给预处理管线生成到 `e2e/.out/fixture/` | 本机 `public/books/` 和 `public/data/` 的真实书库，只读 |
+| 数据来源 | `e2e/fixture/` 的 Python 脚本合成 52 本小书（固定种子，从字表里随机组字，书名、作者都是编的），交给预处理管线生成到 `e2e/.out/fixture/` | 本机 `public/books/` 和 `public/data/` 的真实书库，只读 |
 | 干净 clone 上能跑吗 | 能 | 不能：要先跑过预处理，书库里还要有 6 本测试用书（`e2e/support/library.ts` 的 `TEST_BOOKS`）。缺了的话 real 用例整体跳过，汇总里写明原因，不算失败 |
 | 像素基线比对 | 做，13 张 | 不做，也不读写基线 |
 
-real 负责和规模有关的部分：7000 多本的书架、3000 多个节点的目录、20 MB 级的加载进度、性能读数，以及真实书库的评审截图。
+real 负责和规模有关的部分：7000 多本的书架、3000 多个节点的目录、20 MB 级的加载进度、性能读数，以及真实书库的评审截图。这些截图只留在本机的 `e2e/.out/` 里，不进版本库。
 
 不管跑哪种，运行前后都会给 `public/` 和 `.preprocess-manifest.json` 记一次文件清单（路径、大小、修改时间），有任何变化本次运行就判失败。
 
@@ -511,7 +651,7 @@ real 负责和规模有关的部分：7000 多本的书架、3000 多个节点�
 
 ### 像素基线
 
-13 张基线覆盖书架（桌面、移动、骨架）、详情弹窗、阅读器的五套主题和移动端、分卷目录、检索结果、设置抽屉，定义都在 `e2e/visual/baselines.ts`。
+13 张基线覆盖书架（桌面、移动、骨架）、详情弹窗、阅读器的五套主题和移动端、分卷目录、检索结果、设置抽屉，定义都在 `e2e/visual/baselines.ts`，全部取自 fixture 的合成书库。[界面一览](#界面一览)里的图就是它们。
 
 **基线只对 Windows + 本机字体有效**。应用只用系统字体，换系统或换字体截图就会变。文件名带平台后缀（`-win32`），在别的平台上跑会因为找不到同名基线而失败。
 
@@ -520,14 +660,28 @@ real 负责和规模有关的部分：7000 多本的书架、3000 多个节点�
 1. 跑 `npm run e2e:update`。它只跑 fixture 的 `visual.spec`：写入缺失的基线，覆盖差异超出容差的基线，其余文件逐字节不动。想重拍一张差异还在容差内的基线，先删掉那个 PNG 再跑。
 2. 用 `git status e2e/baselines` 找出新增和改动的文件，逐张打开看，判为以下三种之一：
    - 接受：画面就是这个视图该有的状态。除书架骨架那张以外，没有骨架、加载进度条或加载失败提示，也不是空白页。
-   - 含已知缺陷接受：画面不对，但问题出在应用本身。在 `.kiro/specs/e2e-visual-testing/findings.md` 记一条 Finding，并在 `baselines.ts` 里这张基线的定义处标注编号。
+   - 含已知缺陷接受：画面不对，但问题出在应用本身。在 `.kiro/specs/e2e-visual-testing/findings.md` 记一条 Finding，并在 `baselines.ts` 里这张基线定义的 `knownDefects` 处标注编号。
    - 重拍：画面不对，问题出在测试代码。修好后回到第 1 步。
 
-   判定记在 `.kiro/specs/e2e-visual-testing/baseline-review.md`，只存本机。
+   判定记在 `.kiro/specs/` 下的 `baseline-review.md`，只存本机。
 3. 没有"重拍"了就提交：`git add e2e/baselines`，再 `git commit`。
 
 ### 无障碍扫描
 
-fixture 下用 axe 扫 6 个视图（书架、详情弹窗、阅读器正文、目录、检索、设置抽屉），再对阅读器的五套主题各查一次颜色对比度，共 11 次。违规按规则 id、影响级别、节点数列在运行汇总里，critical 和 serious 会标"待记入 Findings_Log"。它只报告，不让用例失败。
+fixture 下用 axe 扫 31 次，每次一个用例：
+
+- 6 个视图（书架、详情弹窗、阅读器正文、目录、检索、设置抽屉）各扫一次，用应用默认的主题（不存主题，实际是 sepia）。
+- 阅读器正文在五套主题下各查一次颜色对比度，共 5 次。
+- 另外 5 个视图（书架、详情弹窗、目录、检索、设置抽屉）在其余 4 套主题（default、eyecare、dark、black）下各查一次颜色对比度，共 20 次。
+
+任一次扫描报出违规，不论影响级别，所在用例就判失败。失败信息和运行汇总都列出规则 id、影响级别和每个节点的明细：选择器、HTML 片段、失败说明，颜色对比度另列前景色、背景色、实测和要求的对比度、字号、字重。critical 和 serious 在汇总里另标"待记入 Findings_Log"。axe 判为需人工复核的 incomplete 结果只在汇总里列出规则 id 和节点数，不让用例失败；节点明细在 `e2e/.out/a11y/<名称>.json`。书卡封面上压在渐变上的白字，axe 只能报 incomplete，需要人看一眼。
 
 **这只是自动化冒烟**。axe 只能查出一部分问题，完整的 WCAG 合规验证需要用读屏软件等辅助技术做人工测试，并请专家评审。
+
+---
+
+## 关于内容与版权
+
+- **仓库里不含任何小说。**`zip-novel/`、`public/books/`、`public/data/` 和 `.preprocess-manifest.json` 都不进 git，书库内容只存在于你自己的机器和你部署的站点上。
+- **文档和测试里的文字都是为本项目专门写的或随机合成的**：本文的截图来自 `e2e/fixture/` 合成的夹具书库，`scripts/fixtures/` 是专门写的切章样本。真实书库上跑出来的截图只留在本机的 `e2e/.out/`，不进版本库。
+- **请只放你有权使用的文本**，比如自己的作品、已进入公有领域的作品，或获得授权的内容。部署后的站点默认公开，任何人都能读、能下载整本书（见[部署](#部署)一节关于 Cloudflare Access 的说明）。

@@ -17,7 +17,8 @@
  *
  * 用例一律按用途取书，不写死 fixture 的书 id：fixture 下读 `roles.json`，real 下映射到
  * `TEST_BOOKS`（需求 Introduction 的测试用书表）。`FixtureRoles` 里 `sameAuthor`、`recent`、
- * `volumesKeyword` 不是单本书，不是 `BookRole`；另加一个 `leadingVolume`（第 2 个节点即卷节点的
+ * `volumesKeyword` 不是单本书，不是 `BookRole`；`longRun`（书 id + 章节下标，3.3 (j)）只在 fixture
+ * 下使用，用例直接读 `roles.longRun`，也不是 `BookRole`。另加一个 `leadingVolume`（第 2 个节点即卷节点的
  * 书，8.4 / 8.5 的"紧跟首节点的卷段"）：fixture 的 volumes 书同时承担它（3.3 (b)），real 下是
  * 《萌娘武侠世界》。real 下没有 crlf 书（10.3 只在 fixture 下验证），取它会抛错。
  *
@@ -250,6 +251,11 @@ export interface FixtureRoles {
   recent: string[];
   /** 在 volumes 书中命中 ≥ 1（生成器校验），供 15.1 检索抽屉。 */
   volumesKeyword: string;
+  /**
+   * 3.3 (j)（reader-defect-fixes 需求 10.2）：`chapterIndex`（`_toc.json` 的节点下标）所指正文章节
+   * 内恰有一个段落由 ≥ 58 个连续 `=` 构成（生成器校验），供 RDF 10.1。
+   */
+  longRun: { id: string; chapterIndex: number };
 }
 
 /** 校验 `roles.json` 的结构；不合法时抛错，错误信息含文件路径与第一处不合法的字段。 */
@@ -268,14 +274,17 @@ export function parseFixtureRoles(data: unknown, file: string): FixtureRoles {
     return v.map((item: unknown, i) => str(item, `${what}[${i}]`));
   };
 
+  const index = (v: unknown, what: string): number => {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw bad(`${what} 不是非负整数`);
+    return v;
+  };
+
   const top = obj(data, "顶层");
   const pinyin = obj(top.pinyin, "pinyin");
   const sameAuthor = obj(top.sameAuthor, "sameAuthor");
   const longText = obj(top.longText, "longText");
-  const { chapterIndex } = longText;
-  if (typeof chapterIndex !== "number" || !Number.isInteger(chapterIndex) || chapterIndex < 0) {
-    throw bad("longText.chapterIndex 不是非负整数");
-  }
+  const chapterIndex = index(longText.chapterIndex, "longText.chapterIndex");
+  const longRun = obj(top.longRun, "longRun");
   return {
     volumes: str(top.volumes, "volumes"),
     fallback: str(top.fallback, "fallback"),
@@ -296,6 +305,10 @@ export function parseFixtureRoles(data: unknown, file: string): FixtureRoles {
     },
     recent: strList(top.recent, "recent"),
     volumesKeyword: str(top.volumesKeyword, "volumesKeyword"),
+    longRun: {
+      id: str(longRun.id, "longRun.id"),
+      chapterIndex: index(longRun.chapterIndex, "longRun.chapterIndex"),
+    },
   };
 }
 

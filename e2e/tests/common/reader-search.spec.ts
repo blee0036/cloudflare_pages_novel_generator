@@ -35,20 +35,23 @@
  * - 9.2 / 9.3（RS-10、RS-11）：选择上述结果后不推进时钟，核对抽屉关闭、`<h1>` 等于结果项的章节名、正文区
  *   恰有 1 个 `<mark>` 且文本与关键词相同（不区分大小写）。然后推进到自点击起 4,900 ms（高亮仍在）与
  *   5,000 ms（高亮移除、滚动位置与 4,900 ms 时相同）。
- * - 9.2 边界框（预期失败，F-002）：同样的前置之后，核对 `<mark>` 的边界框位于视口内、顶栏之下、底栏之上
- *   （栏移出视口时以视口边代替）。
+ * - 9.2 边界框（单独的用例）：同样的前置之后，核对文档不可滚动（需求 2.1）与 `<mark>` 的边界框位于视口内、
+ *   顶栏之下、底栏之上（栏移出视口时以视口边代替）。
  * - 9.4：6 种导航方式各一个用例（设计"补充场景"9.4 一条）。共用前置"点击命中章节内的检索结果"，自点击起
  *   1,000 ms 时核对高亮仍在并导航离开，核对当前章节与无高亮；3,000 ms（不足 5,000 ms）时导航回命中章节，
  *   再核对无高亮。书签方式的书签在前置之前于上一章添加（顶栏"添加书签"）。
  * - 9.11：打开命中章节并把正文滚到章中，输入无命中词；核对无匹配提示、0 条结果、无"仅展示前 150 处"，
  *   等 2 个动画帧后当前章节与滚动位置不变。
  *
- * ## F-002（Findings_Log）
+ * ## 滚动容器
  *
- * 实测正文 `<main>` 的高度随内容增长（`scrollHeight` 等于 `clientHeight`），实际滚动的是文档；应用把命中
- * 段落滚入视口时赋值的是 `<main>.scrollTop`，没有效果，高亮落在视口之下。受它影响的只有 9.2 的边界框断言，
- * 按 16.7 拆成单独的预期失败用例（标题注明 F-002），其余断言留在普通用例中。"滚动位置不变"类比较（9.3、
- * 9.11、RS-11）同时比较 `<main>` 与文档滚动元素的 `scrollTop`，不依赖实际是哪一个在滚。
+ * 正文滚动容器是 `<main>`（reader-defect-fixes 需求 2.1、2.2）。应用把命中段落滚入视口时赋值
+ * `<main>.scrollTop`。"滚动位置不变"类比较（9.3、9.11、RS-11）比较 `<main>` 的 `scrollTop`，比较前核对
+ * 文档本身不可滚动（`expectDocumentNotScrollable`，需求 14.2）；9.11 的"滚到章中"同样只设 `<main>`。
+ *
+ * 历史：EV 验收时 `<main>` 随内容增高、实际滚动的是文档（Findings_Log F-002，已修复（reader-defect-fixes））：
+ * 命中段落的滚入赋值无效，高亮落在视口之下。9.2 的边界框断言因此按 16.7 拆成单独的预期失败用例，"滚动位置
+ * 不变"类比较同时比较 `<main>` 与文档。修复后边界框用例改为普通用例（划分保留），比较只对 `<main>` 进行。
  *
  * ## 时间（6.4、6.5）
  *
@@ -63,7 +66,8 @@
  *
  * 只属于 real，由标题为 `SHOT_TESTS.searchHighlight.title` 的用例拍摄；fixture 下 `shot()` 不拍摄。默认主题
  * （不 `seedTheme`）。RS-10 在 9.2 核对之后拍摄（栏可见）；RS-11 在 5,000 ms 时拍摄，拍摄前另核对滚动位置
- * 与拍摄 RS-10 时相同（同一段落）。受 F-002 影响，RS-10 画面中的高亮可能不在视口内，由评审按其准则判定。
+ * 与拍摄 RS-10 时相同（同一段落）。RS-10 画面中高亮是否在视口内由评审按其准则判定（EV 验收时受 F-002 影响
+ * 不在视口内；该缺陷已修复（reader-defect-fixes））。
  */
 import type { Locator, Page } from "@playwright/test";
 import type { BookToc } from "../../../src/types";
@@ -75,14 +79,13 @@ import {
   bookText,
   bookUnderTest,
   expectCurrentChapter,
+  expectDocumentNotScrollable,
   findOccurrences,
   openReader,
   openSearchDrawer,
   openTocDrawer,
-  readDocumentScroll,
   readMainScroll,
   readSearchResults,
-  setDocumentScrollTop,
   setMainScrollTop,
   waitFrames,
   type BookText,
@@ -471,8 +474,9 @@ async function expectResultList(page: Page, plan: SearchPlan, kc: KeywordCase): 
 
 /**
  * 经顶栏打开检索抽屉，输入少量命中词，点击 `plan.target` 那条结果（第 `resultIndex + 1` 条）。
- * `verify` 时点击前先核对该条的章节名与命中文字（9.1 已逐条核对顺序，这里只防点错）；
- * 预期失败用例不做这项核对（16.7）。返回点击时读到的该条结果（`verify` 为 false 时为 null）。
+ * `verify` 时点击前先核对该条的章节名与命中文字（9.1 已逐条核对顺序，这里只防点错）；9.2 边界框用例
+ * 不做这项核对（EV 按 16.7 拆出时只含边界框断言，改为普通用例后保持不变）。返回点击时读到的该条结果
+ * （`verify` 为 false 时为 null）。
  */
 async function selectTargetResult(
   page: Page,
@@ -499,7 +503,7 @@ async function selectTargetResult(
 
 /**
  * 9.2 / 9.4 的共用前置：`selectTargetResult` 之后核对 9.2 的抽屉关闭、章节与高亮（不含边界框，边界框在
- * F-002 的预期失败用例中）。Controlled_Clock 须已暂停；返回自点击起的推进记账。
+ * 单独的 9.2 用例中）。Controlled_Clock 须已暂停；返回自点击起的推进记账。
  */
 async function jumpToTargetResult(page: Page, plan: SearchPlan): Promise<SinceClick> {
   const { few, target } = plan;
@@ -566,10 +570,9 @@ async function midScrollTop(reading: Promise<MainScroll>): Promise<number> {
   return Math.max(0, Math.min(clientHeight, Math.floor((scrollHeight - clientHeight) / 2)));
 }
 
-/** `<main>` 与文档滚动元素的 `scrollTop`（F-002：实际滚动的是文档）。 */
-async function readPositions(page: Page): Promise<{ main: number; document: number }> {
-  const [main, doc] = await Promise.all([readMainScroll(page), readDocumentScroll(page)]);
-  return { main: main.scrollTop, document: doc.scrollTop };
+/** 正文滚动容器 `<main>` 的 `scrollTop`。 */
+async function readPosition(page: Page): Promise<number> {
+  return (await readMainScroll(page)).scrollTop;
 }
 
 async function expectNoHighlight(page: Page, title: string): Promise<void> {
@@ -620,46 +623,45 @@ test.describe("9.2 9.3 检索跳转高亮", () => {
     await openAt(page, bookLog, plan.book, plan.book.facts.bodyIndices[0]);
     await pauseClock(page);
 
-    // 9.2 的边界框断言受 F-002 影响，拆到下面的预期失败用例（16.7）
+    // 9.2 的边界框断言在下一个用例中（EV 因 F-002 按 16.7 拆出；已修复（reader-defect-fixes），拆分保留）
     const since = await jumpToTargetResult(page, plan);
-    const atJump = await readPositions(page);
+    const atJump = await readPosition(page);
     await shot("search-highlight");
 
     await since.advanceTo(HIGHLIGHT_KEPT_MS);
     const kept = await step(`9.3 自点击起 ${HIGHLIGHT_KEPT_MS} ms：高亮仍在`, async () => {
       await expect(readerJumpHighlight(page), "高亮元素应仍存在").toHaveCount(1);
-      return readPositions(page);
+      return readPosition(page);
     });
 
     await since.advanceTo(HIGHLIGHT_CLEARED_MS);
+    await expectDocumentNotScrollable(page);
     await step(
-      `9.3 自点击起满 ${HIGHLIGHT_CLEARED_MS} ms：高亮已移除，滚动位置与移除前相同（<main> ${kept.main}、文档 ${kept.document}）`,
+      `9.3 自点击起满 ${HIGHLIGHT_CLEARED_MS} ms：高亮已移除，滚动位置与移除前相同（<main> scrollTop ${kept}）`,
       async () => {
         await expect(readerJumpHighlight(page), "高亮元素应已移除").toHaveCount(0);
-        // F-002：实际滚动的是文档，<main> 与文档的 scrollTop 都比
-        expect(await readPositions(page), "高亮移除前后 <main> 与文档的 scrollTop").toEqual(kept);
+        expect(await readPosition(page), "高亮移除前后 <main> 的 scrollTop").toBe(kept);
       },
     );
     await expectCurrentChapter(page, plan.book.facts, plan.target.chapter);
 
     if (shot.applies("search-highlight-cleared")) {
       await step(
-        `RS-11 画面：滚动位置与拍摄 RS-10 时相同（<main> ${atJump.main}、文档 ${atJump.document}），即同一段落`,
+        `RS-11 画面：滚动位置与拍摄 RS-10 时相同（<main> scrollTop ${atJump}），即同一段落`,
         async () => {
-          expect(await readPositions(page)).toEqual(atJump);
+          expect(await readPosition(page), "<main> 的 scrollTop").toBe(atJump);
         },
       );
     }
     await shot("search-highlight-cleared");
   });
 
-  test("9.2 F-002 选择检索结果后高亮边界框位于视口内、顶栏之下、底栏之上（命中段落应滚入视口）", async ({
+  test("9.2 选择检索结果后高亮边界框位于视口内、顶栏之下、底栏之上（命中段落应滚入视口）", async ({
     page,
     lib,
     bookLog,
     clock,
   }) => {
-    test.fail(true, "F-002 正文 <main> 不是滚动容器：检索跳转赋值 main.scrollTop 无效，命中段落不在视口内");
     const plan = await searchPlan(lib);
     // 与上一用例相同的前置；暂停时钟使顶栏与底栏在度量时保持可见
     await clock.install();
@@ -669,6 +671,7 @@ test.describe("9.2 9.3 检索跳转高亮", () => {
     await step("等正文区出现高亮元素", async () => {
       await expect(readerJumpHighlight(page)).toHaveCount(1);
     });
+    await expectDocumentNotScrollable(page);
     await expectHighlightInView(page);
   });
 });
@@ -837,18 +840,14 @@ test.describe("9.11 无命中", () => {
     const drawer = searchDrawer(page);
 
     await openAt(page, bookLog, plan.book, chapter);
+    await expectDocumentNotScrollable(page);
     const before = await step(
-      "把正文滚到章中：<main> 与文档滚动元素的 scrollTop 各设为其可视高度与最大可滚距离一半中的较小者",
+      "把正文滚到章中：<main> 的 scrollTop 设为其可视高度与最大可滚距离一半中的较小者",
       async () => {
-        // F-002：当前实际滚动的是文档而不是 <main>；两者都设、都比，本条不依赖哪一个在滚
         await setMainScrollTop(page, await midScrollTop(readMainScroll(page)));
-        await setDocumentScrollTop(page, await midScrollTop(readDocumentScroll(page)));
         await waitFrames(page);
-        const position = await readPositions(page);
-        expect(
-          Math.max(position.main, position.document),
-          "<main> 或文档至少有一个应已离开章首（命中章节的正文应可滚动）",
-        ).toBeGreaterThan(0);
+        const position = await readPosition(page);
+        expect(position, "<main> 应已离开章首（命中章节的正文应可滚动）").toBeGreaterThan(0);
         return position;
       },
     );
@@ -862,13 +861,11 @@ test.describe("9.11 无命中", () => {
       await expect(drawer.results).toHaveCount(0);
       await expect(drawer.capNotice).toHaveCount(0);
     });
-    await step(
-      `9.11 等 2 个动画帧后滚动位置不变（<main> ${before.main}、文档 ${before.document}）`,
-      async () => {
-        await waitFrames(page);
-        expect(await readPositions(page), "检索前后 <main> 与文档的 scrollTop").toEqual(before);
-      },
-    );
+    await step(`9.11 等 2 个动画帧（之后比较滚动位置）`, () => waitFrames(page));
+    await expectDocumentNotScrollable(page);
+    await step(`9.11 滚动位置不变（<main> scrollTop ${before}）`, async () => {
+      expect(await readPosition(page), "检索前后 <main> 的 scrollTop").toBe(before);
+    });
     await expectCurrentChapter(page, plan.book.facts, chapter);
   });
 });

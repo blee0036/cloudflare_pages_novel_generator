@@ -57,7 +57,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="truncate">
             <h1 className="text-sm font-semibold truncate leading-tight">{title}</h1>
             {chapterTitle && (
-              <p className="text-xs opacity-60 truncate leading-tight mt-0.5">
+              <p className="text-xs text-[var(--text-muted)] truncate leading-tight mt-0.5">
                 {chapterTitle}
               </p>
             )}
@@ -73,7 +73,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             onClick={onToggleBookmark}
             className={`p-2 rounded-lg hover:bg-[var(--hover)] transition-colors ${
-              isBookmarked ? "text-amber-500" : "opacity-75 hover:opacity-100"
+              isBookmarked ? "text-amber-500" : "text-[var(--text-muted)]"
             }`}
             title={isBookmarked ? "已添加书签 (点击移除)" : "添加书签"}
           >

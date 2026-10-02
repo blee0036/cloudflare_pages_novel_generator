@@ -364,6 +364,7 @@ test.describe("8.2 8.3 目录抽屉中的卷节点", () => {
     const drawer = tocDrawer(page);
 
     await openAt(page, bookLog, book, current);
+    // openAt 的 8.1 判定已等到阅读器把当前章写回 URL（reader-defect-fixes 需求 7.1），这里记下的是写回后的 URL
     const url = page.url();
     await openTocDrawer(page);
 

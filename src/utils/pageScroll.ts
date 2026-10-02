@@ -55,7 +55,9 @@ export interface ScrollBox {
   readonly scrollHeight: number;
 }
 
-/** 翻页方向：`1` = 下翻（`Space`），`-1` = 上翻（`Shift+Space`）。 */
+/**
+ * 滚动方向：`1` = 向下（`Space`、`↓`、`PageDown`），`-1` = 向上（`Shift+Space`、`↑`、`PageUp`）。
+ */
 export type PageDirection = 1 | -1;
 
 /** 章内的两端：`Home` 去章首，`End` 去章末（需求 9.4）。 */
@@ -119,6 +121,39 @@ export function pageScrollTarget(box: ScrollBox, direction: PageDirection): numb
   const step = pageStep(box.clientHeight);
   if (step === 0) return null;
 
+  return Math.min(max, Math.max(0, from + direction * step));
+}
+
+/**
+ * 行滚动的步长（需求 4.3）。
+ *
+ * 取 40 与主流浏览器方向键的默认滚动量同一量级（约两行正文），读者按 `↑`/`↓` 的手感
+ * 与文档滚动时相同。不做成设置项，理由同 `PAGE_OVERLAP_PX`。
+ */
+export const LINE_STEP_PX = 40;
+
+/**
+ * 一行的目标 `scrollTop`（需求 4.3 的 `↑`/`↓`）；该方向没有可滚像素（≤ `EDGE_EPSILON_PX`）
+ * 时为 `null`。
+ *
+ * 与 `pageScrollTarget` 不同，`null` 在两个方向上都只意味着"原地不动"：行滚动是细调，
+ * 到章首/章末不换章（需求 4.3 要求章节不变）。
+ *
+ * 步长取 `LINE_STEP_PX` 与视口高度中的较小者：极矮的视口上一行也不越过一整屏
+ * （与不变量 1 同一考虑）；`clientHeight` 不足 1px（尚未布局或脏值）时同 `pageStep`
+ * 一样视为没有可滚的行。返回值恒在 `[0, maxScrollTop]`（不变量 2）。
+ */
+export function lineScrollTarget(box: ScrollBox, direction: PageDirection): number | null {
+  const height = asPx(box.clientHeight);
+  if (height < 1) return null;
+
+  const max = maxScrollTop(box);
+  const from = Math.min(max, asPx(box.scrollTop));
+
+  const room = direction > 0 ? max - from : from;
+  if (room <= EDGE_EPSILON_PX) return null;
+
+  const step = Math.min(LINE_STEP_PX, height);
   return Math.min(max, Math.max(0, from + direction * step));
 }
 

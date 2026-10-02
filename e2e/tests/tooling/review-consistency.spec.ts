@@ -38,6 +38,20 @@
  * Review_Catalog 的例子（任务 15.4，需求 13.1、13.2）：真实的 `REVIEW_CATALOG`、`REQUIRED_SHOT_NAMES`
  * 与 `REQUIRED_CHECKLIST` 对照附录 A、附录 B 的原文（在文件末尾照录）：25 个名称与顺序、各条的场景
  * 字段、书 id 与 URL、1–5 条准则的原文与编号、7 项 Checklist 的引用，以及 `by` 指向的用例。
+ * 后续 spec 追加的准则（`reader-defect-fixes` 需求 13.6 的 RS-20 第 3 条）单独列在
+ * `APPENDIX_A_ADDED_CRITERIA`，接在原文之后核对。
+ *
+ * RDF 16.1 的例子（`reader-defect-fixes` 任务 5.2，需求 16.1、16.4）：`resolveShotStatus` 区分"命令行
+ * 过滤未选中"（运行未中止，拍摄用例不在 `collected` 中）与"运行在拍摄前中止"（`abort.json` 存在，或用例
+ * 已被收集却被中断、未执行），并核对 Review_Report 中该节的原因行；`extractFilterArgs` 对 `-g x`、
+ * `--grep=x`、`--project=fixture`、位置参数等写法的提取。原因文字按需求与报告原文写成字面量。
+ *
+ * RDF 属性 10（`reader-defect-fixes` 任务 5.6，需求 16.3、16.4）：对任意不含 `\r`、`\n` 的名称
+ * （字母表富含 `\`、`[`、`]`、`<`、`>`、`(`、`)`、`!` 等 ASCII 标点，另有空格、制表符、中文、代理对
+ * 与任意码点），`escapeLinkText` / `escapeLinkDestination` 拼出的图片与 `renderReviewReport` 中该节的
+ * PNG 行都形如 `![A](<D>)`。测试内的参照解析器 `parseImage` 按 CommonMark 的反斜杠转义规则逐字读取，
+ * 核对 A 中没有未转义的方括号、D 中没有未转义的尖括号与行结束符，并反解出 A 等于名称、D 等于
+ * `<名称>.png`。参照解析器只处理反斜杠转义（属性 10 的口径），不处理代码段、原始 HTML 等其它行内结构。
  *
  * 属性内用 `node:assert` 而不是 Playwright 的 `expect`，理由同 `server-resolve.spec.ts`：
  * 每次 `expect` 都会在报告里记一个步骤。例子测试用 `expect`。
@@ -57,6 +71,8 @@ import {
   SHOT_TESTS,
   resolveShotBook,
   resolveShotUrl,
+  reviewShot,
+  reviewShotFileName,
   sameShotTest,
   shotMetadata,
   shotTestRef,
@@ -68,21 +84,28 @@ import {
 } from "../../review/catalog";
 import {
   EXPECTED_PNG_IHDR,
+  NO_FILTER_ARGS,
   REPORT_TEXT,
   UNKNOWN_UNCAPTURED_REASON,
   VIOLATION_KINDS,
   checkReviewConsistency,
   describeCaseResult,
   describeUncapturedReason,
+  escapeLinkDestination,
+  escapeLinkText,
   expectedShotSize,
   formatShotTest,
   pngSize,
   renderReviewReport,
+  resolveShotStatus,
   reviewReportData,
+  shotCaseKey,
   type CaseOutcome,
   type ConsistencyInput,
   type PngSize,
   type ReviewReportMeta,
+  type ShotCaseResult,
+  type ShotRunFacts,
   type ShotStatus,
   type UncapturedReason,
   type Violation,
@@ -90,6 +113,7 @@ import {
 } from "../../review/consistency";
 import type { Mode } from "../../server/resolve";
 import { BOOK_ROLES, type FixtureRoles, type LibraryProfile } from "../../support/library";
+import { extractFilterArgs } from "../../support/reporter";
 import { VIEWPORTS } from "../../support/settings";
 import { THEME_KEYS, THEME_UNSET, type DeclaredTheme } from "../../support/theme";
 
@@ -706,6 +730,7 @@ const SAMPLE_ROLES: FixtureRoles = {
   longText: { id: "fx-long", chapterIndex: 3, capKeyword: "的", fewKeyword: "少见", noHitKeyword: "无此词" },
   recent: ["fx-r1", "fx-r2", "fx-r3", "fx-r4", "fx-r5", "fx-r6"],
   volumesKeyword: "卷",
+  longRun: { id: "fx-long-run", chapterIndex: 1 },
 };
 
 /**
@@ -901,8 +926,13 @@ const CRITERION_LINE = /^(\d+)\. ([\s\S]*)$/;
 /** 判定栏（去掉缩进后）的开头。 */
 const VERDICT_MARK = "- 判定：";
 const isVerdictLine = (line: string): boolean => line.trimStart().startsWith(VERDICT_MARK);
-/** PNG 行的内容：Markdown 图片 `![<替代文字>](<路径>)`（生成器的名称不含 `]`、`)`）。 */
-const IMAGE = /^!\[([^\]]*)\]\(([^)]*)\)$/;
+/**
+ * PNG 行的内容：Markdown 图片 `![<替代文字>](<<路径>>)`，路径为 RDF 16.3 的尖括号形式。生成器的名称
+ * 不含 `\`、`[`、`]`、`<`、`>`，转义不改变它们；含这些字符时的转义往返见属性 10（RDF）。
+ */
+const IMAGE = /^!\[([^\]]*)\]\(<([^>]*)>\)$/;
+/** 报告中对 `<名称>.png` 的引用：图片的尖括号链接目标。 */
+const pngRefOf = (png: string): string => `(<${png}>)`;
 
 /** 设计：`statuses` 中没有的名称按未拍摄、原因不明处理，用例名取 `def.by`。 */
 function expectedStatus(def: ReviewShotDef, statuses: ReadonlyMap<string, ShotStatus>): ShotStatus {
@@ -984,13 +1014,14 @@ function assertSection(
   }
 
   const pngLines = valuesAfter(lines, REPORT_TEXT.png);
-  const pngRefs = lines.filter((line) => line.includes(`(${png})`)).length;
+  const pngRefs = lines.filter((line) => line.includes(pngRefOf(png))).length;
   const reasons = valuesAfter(lines, REPORT_TEXT.reason);
 
   if (status.captured) {
     assert.equal(pngLines.length, 1, `${where}：已拍摄的节应恰有 1 行 PNG，实际 ${pngLines.length} 行`);
     const image = IMAGE.exec(pngLines[0]);
     assert.ok(image !== null, `${where}：PNG 行应为 Markdown 图片；实际 ${JSON.stringify(pngLines[0])}`);
+    assert.equal(image[1], def.name, `${where}：PNG 的替代文字应为名称`);
     assert.equal(image[2], png, `${where}：PNG 路径应为相对报告的 <名称>.png`);
     assert.equal(pngRefs, 1, `${where}：已拍摄的节应恰引用 1 次 ${png}`);
     assert.equal(reasons.length, 0, `${where}：已拍摄的节不应有未拍摄原因`);
@@ -1269,6 +1300,15 @@ const APPENDIX_A: readonly AppendixRow[] = [
   },
 ];
 
+/**
+ * 后续 spec 在附录 A 原文之后追加的准则，按编号列出，接在该行原文切分的结果之后。EV 附录 A 本身
+ * 未改，`APPENDIX_A` 仍按原文照录。
+ * - RS-20：`reader-defect-fixes` 需求 13.6（F-011）。
+ */
+const APPENDIX_A_ADDED_CRITERIA: Readonly<Record<string, readonly string[]>> = {
+  "RS-20": ["错误说明是一句中文提示，不含英文异常信息或 HTML 片段"],
+};
+
 /** 5 个主题键，按设置抽屉的顺序（RS-13 按它展开）。 */
 const APPENDIX_THEME_KEYS = ["default", "sepia", "eyecare", "dark", "black"] as const;
 
@@ -1312,7 +1352,10 @@ function checklistFor(rs: string): string[] {
     .map(([item]) => item);
 }
 
-/** 附录 A 的一行展开为 Review_Shot：RS-13 按 5 个主题键各一张，其余一张、默认主题。 */
+/**
+ * 附录 A 的一行展开为 Review_Shot：RS-13 按 5 个主题键各一张，其余一张、默认主题。准则为原文以
+ * "；"切分的结果，后接 `APPENDIX_A_ADDED_CRITERIA` 中该编号的追加准则。
+ */
 function expandRow(row: AppendixRow): ExpectedShot[] {
   const base = {
     rs: row.rs,
@@ -1323,7 +1366,7 @@ function expandRow(row: AppendixRow): ExpectedShot[] {
     url: row.url ?? null,
     checklist: checklistFor(row.rs),
   } as const;
-  const criteria = row.criteria.split("；");
+  const criteria = [...row.criteria.split("；"), ...(APPENDIX_A_ADDED_CRITERIA[row.rs] ?? [])];
   if (row.rs !== "RS-13") return [{ ...base, name: row.name, theme: THEME_UNSET, criteria }];
   return APPENDIX_THEME_KEYS.map((key) => ({
     ...base,
@@ -1480,6 +1523,19 @@ test.describe("Review_Catalog（需求 13.1、13.2）", () => {
     }
   });
 
+  test("RDF 13.6：RS-20 load-error 为附录 A 原文的 2 条准则加第 3 条「错误说明是一句中文提示，不含英文异常信息或 HTML 片段」", () => {
+    const defs = REVIEW_CATALOG.filter((d) => d.rs === "RS-20");
+    expect(
+      defs.map((d) => d.name),
+      "RS-20 只有 load-error 一张",
+    ).toEqual(["load-error"]);
+    expect([...defs[0].criteria], "RS-20 的准则").toEqual([
+      '显示表明未能打开该书的错误标题、一行错误说明与"返回书架"按钮',
+      "页面非空白",
+      "错误说明是一句中文提示，不含英文异常信息或 HTML 片段",
+    ]);
+  });
+
   test("13.1、13.4：by 指向在该 Library_Profile 与服务器模式下收集、以 SHOT_TESTS 的标题声明的用例", async () => {
     const entries = shotTestEntries();
 
@@ -1518,5 +1574,370 @@ test.describe("Review_Catalog（需求 13.1、13.2）", () => {
       const titles = group.map((e) => e.ref.title);
       expect(new Set(titles).size, `${file} 中拍摄用例的标题应互不相同`).toBe(titles.length);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RDF 16.1：未拍摄原因区分"命令行过滤未选中"与"中止"（任务 5.2；需求 16.1、16.4）
+// ---------------------------------------------------------------------------
+
+/** 例子所用的 Review_Shot：fixture、Opaque_Mode 的 load-error（RS-20）。 */
+const RDF_SHOT = reviewShot("load-error");
+const RDF_SHOT_KEY = shotCaseKey(RDF_SHOT.profile, RDF_SHOT.mode, RDF_SHOT.by);
+/** 同一次运行收集到的另一个用例：运行确实收集了用例，只是没有 load-error 的拍摄用例。 */
+const OTHER_COLLECTED_KEY = shotCaseKey("fixture", "opaque", { file: "fixture/bookshelf.spec.ts", title: "另一个用例" });
+
+/** `notRun`：已收集、却因运行被中断或未执行而没有完成的结果（`classify` 的口径）。 */
+const NOT_RUN_RESULT: ShotCaseResult = { outcome: "notRun", timedOut: false, skipReason: null, step: null, shots: [] };
+
+/** 默认：两个 Library_Profile 都已执行、未中止、未被中断、没有任何结果、没有过滤参数。 */
+function rdfRunFacts(over: Partial<ShotRunFacts>): ShotRunFacts {
+  return {
+    selected: PROFILES,
+    abortStage: null,
+    interrupted: false,
+    cases: new Map<string, ShotCaseResult>(),
+    collected: new Set([OTHER_COLLECTED_KEY]),
+    filterArgs: [],
+    ...over,
+  };
+}
+
+/** 只含 load-error 一节的 Review_Report 中"未拍摄原因"各行的值。 */
+function reportedReasons(status: ShotStatus): string[] {
+  const markdown = renderReviewReport([RDF_SHOT], new Map([[RDF_SHOT.name, status]]), {
+    startedAt: "2026-10-02T09:00:00.000+08:00",
+    profiles: PROFILES,
+    roles: SAMPLE_ROLES,
+  });
+  return markdown
+    .split("\n")
+    .filter((line) => line.startsWith(REPORT_TEXT.reason))
+    .map((line) => line.slice(REPORT_TEXT.reason.length));
+}
+
+/** load-error 在 `facts` 下未拍摄、原因为 `reason`，且 Review_Report 该节恰有 1 行原因 `text`。 */
+function expectUncaptured(facts: ShotRunFacts, reason: UncapturedReason, text: string, where: string): void {
+  const status = resolveShotStatus(RDF_SHOT, facts);
+  expect(status, `${where}：拍摄状态`).toEqual({ captured: false, test: formatShotTest(RDF_SHOT.by), reason });
+  expect(reportedReasons(status), `${where}：Review_Report 中 load-error 一节的未拍摄原因`).toEqual([text]);
+}
+
+/** `run.mjs` 启动 Playwright 时主进程 `process.argv` 的形状：`[node, <@playwright/test/cli>, "test", …]`。 */
+function cliArgv(...args: string[]): string[] {
+  return ["C:\\Program Files\\nodejs\\node.exe", "D:\\repo\\node_modules\\@playwright\\test\\cli.js", "test", ...args];
+}
+
+test.describe("Review_Report 未拍摄原因（reader-defect-fixes 需求 16.1）", () => {
+  test("RDF 16.1：运行未中止、拍摄用例因命令行过滤未被收集 → 注明「用例未被本次运行选中（命令行过滤）」并附过滤参数，不写「运行在拍摄前中止」", () => {
+    const filterArgs = extractFilterArgs(cliArgv("fixture/bookshelf.spec.ts", "-g", "书架", "--project=fixture"));
+    expect(filterArgs, "本次运行的过滤参数").toEqual(["fixture/bookshelf.spec.ts", "-g", "书架", "--project=fixture"]);
+    const reason: UncapturedReason = { kind: "not-selected", filter: filterArgs };
+    const text = "用例未被本次运行选中（命令行过滤：fixture/bookshelf.spec.ts -g 书架 --project=fixture）";
+
+    expectUncaptured(rdfRunFacts({ filterArgs }), reason, text, "运行正常结束");
+    // 运行被中断（如 Ctrl+C）而该用例本就未被收集：仍是"未被选中"，不是"中止"
+    expectUncaptured(rdfRunFacts({ filterArgs, interrupted: true }), reason, text, "运行被中断");
+    // 未被收集、但命令行没有过滤参数（如 `--shard`、`test.only`）
+    expectUncaptured(
+      rdfRunFacts({}),
+      { kind: "not-selected", filter: [] },
+      `用例未被本次运行选中（命令行过滤：${NO_FILTER_ARGS}）`,
+      "没有过滤参数",
+    );
+  });
+
+  test("RDF 16.1：abort.json 存在 → 「运行在拍摄前中止」并附中止阶段，不论用例是否被收集、有无过滤参数", () => {
+    const filterArgs = ["-g", "书架"];
+    const reason: UncapturedReason = { kind: "aborted", cause: "abort", stage: "构建应用" };
+    const text = "运行在拍摄前中止（中止阶段：构建应用）";
+
+    // globalSetup 中止时 onBegin 未被调用，collected 为空
+    expectUncaptured(
+      rdfRunFacts({ abortStage: "构建应用", collected: new Set(), filterArgs }),
+      reason,
+      text,
+      "未收集到用例",
+    );
+    expectUncaptured(
+      rdfRunFacts({
+        abortStage: "构建应用",
+        collected: new Set([OTHER_COLLECTED_KEY, RDF_SHOT_KEY]),
+        cases: new Map([[RDF_SHOT_KEY, NOT_RUN_RESULT]]),
+        filterArgs,
+        interrupted: true,
+      }),
+      reason,
+      text,
+      "已收集、结果为 notRun",
+    );
+  });
+
+  test("RDF 16.1：用例已被收集、但运行被中断或该用例未执行 → 「运行在拍摄前中止」，不写「用例未被本次运行选中」", () => {
+    const collected = new Set([OTHER_COLLECTED_KEY, RDF_SHOT_KEY]);
+    const filterArgs = ["--project=fixture"];
+    const shapes: readonly { readonly label: string; readonly cases: ReadonlyMap<string, ShotCaseResult> }[] = [
+      { label: "没有结果", cases: new Map() },
+      { label: "结果为 notRun", cases: new Map([[RDF_SHOT_KEY, NOT_RUN_RESULT]]) },
+    ];
+    for (const { label, cases } of shapes) {
+      expectUncaptured(
+        rdfRunFacts({ collected, cases, filterArgs, interrupted: true }),
+        { kind: "aborted", cause: "interrupted" },
+        "运行在拍摄前中止（运行被中断，该用例未执行完）",
+        `运行被中断、${label}`,
+      );
+      expectUncaptured(
+        rdfRunFacts({ collected, cases, filterArgs }),
+        { kind: "aborted", cause: "not-executed" },
+        "运行在拍摄前中止（该用例未执行）",
+        `运行未被中断、${label}`,
+      );
+    }
+  });
+});
+
+test.describe("extractFilterArgs（RDF 16.1）", () => {
+  test("RDF 16.1：-g x、--grep=x、--project=fixture 与位置参数按原样、按出现顺序取出", () => {
+    expect(extractFilterArgs(cliArgv("-g", "x")), "-g x").toEqual(["-g", "x"]);
+    expect(extractFilterArgs(cliArgv("--grep=x")), "--grep=x").toEqual(["--grep=x"]);
+    expect(extractFilterArgs(cliArgv("--project=fixture")), "--project=fixture").toEqual(["--project=fixture"]);
+    expect(
+      extractFilterArgs(cliArgv("fixture/load-error.spec.ts", "common/reader-progress.spec.ts:42")),
+      "位置参数（文件过滤）",
+    ).toEqual(["fixture/load-error.spec.ts", "common/reader-progress.spec.ts:42"]);
+    expect(
+      extractFilterArgs(cliArgv("load-error", "--grep=x", "--project", "fixture", "tooling", "-g", "y", "--last-failed")),
+      "混合：--project 的多个取值、-g、--last-failed",
+    ).toEqual(["load-error", "--grep=x", "--project", "fixture", "tooling", "-g", "y", "--last-failed"]);
+  });
+
+  test("RDF 16.1：非过滤选项及其取值、`--` 之后的参数不计入；没有过滤时为空数组", () => {
+    expect(extractFilterArgs(cliArgv()), "没有参数").toEqual([]);
+    expect(
+      extractFilterArgs(cliArgv("--reporter", "list", "--workers=2", "-x", "--max-failures", "3", "--update-snapshots")),
+      "只有非过滤选项",
+    ).toEqual([]);
+    expect(
+      extractFilterArgs(cliArgv("--reporter", "list", "-g", "x", "--timeout", "5000", "fixture/load-error.spec.ts")),
+      "非过滤选项的取值不当作位置参数",
+    ).toEqual(["-g", "x", "fixture/load-error.spec.ts"]);
+    expect(extractFilterArgs(cliArgv("-g", "x", "--", "fixture/load-error.spec.ts")), "`--` 之后").toEqual(["-g", "x"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RDF 16.3：Review_Report 的 PNG 行转义往返（任务 5.6；需求 16.3、16.4；RDF 属性 10）
+// ---------------------------------------------------------------------------
+
+/**
+ * CommonMark 的 ASCII 标点（U+0021–002F、U+003A–0040、U+005B–0060、U+007B–007E）：`\` 后跟其中之一
+ * 即该字符本身。
+ */
+function isAsciiPunctuation(ch: string): boolean {
+  const c = ch.charCodeAt(0);
+  return (c >= 0x21 && c <= 0x2f) || (c >= 0x3a && c <= 0x40) || (c >= 0x5b && c <= 0x60) || (c >= 0x7b && c <= 0x7e);
+}
+
+/** 全部 32 个 ASCII 标点。 */
+const ASCII_PUNCTUATION: readonly string[] = Array.from({ length: 0x7e - 0x21 + 1 }, (_, i) =>
+  String.fromCharCode(0x21 + i),
+).filter(isAsciiPunctuation);
+
+/** CommonMark 的行结束符由 `\n`、`\r` 组成。 */
+const isLineEnding = (ch: string): boolean => ch === "\n" || ch === "\r";
+
+interface EscapedRun {
+  /** 按反斜杠转义反解后的文字。 */
+  readonly text: string;
+  /** 结束符（首个未转义的 `close`）的下标。 */
+  readonly end: number;
+}
+
+/**
+ * 从 `line[start]` 起按 CommonMark 的反斜杠转义规则读到首个未转义的 `close`：`\` 后跟 ASCII 标点即
+ * 该标点本身（不再有特殊含义）；`\` 后跟其它字符或位于末尾时是字面的 `\`。遇到未转义的 `forbidden`
+ * 字符或行结束符、或读到末尾仍没有 `close` 时抛出错误（`what` 用于报错）。按 UTF-16 码元读取：
+ * 特殊字符都在 ASCII 内，代理对原样保留。
+ */
+function readEscaped(line: string, start: number, close: string, forbidden: string, what: string): EscapedRun {
+  let text = "";
+  let i = start;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === "\\") {
+      const next = line[i + 1];
+      if (next !== undefined && isAsciiPunctuation(next)) {
+        text += next;
+        i += 2;
+      } else {
+        text += ch;
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === close) return { text, end: i };
+    if (forbidden.includes(ch) || isLineEnding(ch)) {
+      throw new Error(`${what}中第 ${i} 个码元 ${JSON.stringify(ch)} 未转义：${JSON.stringify(line)}`);
+    }
+    text += ch;
+    i += 1;
+  }
+  throw new Error(`${what}没有未转义的结束符 ${JSON.stringify(close)}：${JSON.stringify(line)}`);
+}
+
+/** 参照解析的结果：反解后的替代文本与链接目标。 */
+interface ParsedImage {
+  readonly alt: string;
+  readonly destination: string;
+}
+
+/**
+ * 参照解析器：把 `image` 整段按 CommonMark 读作 `![A](<D>)`（不带标题，`)` 之后即结束）。
+ * - A 为链接文本（图片描述），读到首个未转义的 `]` 为止；其中不得有未转义的 `[` 与行结束符
+ *   （需求 16.3 要求方括号一律转义；CommonMark 本身还允许成对的方括号，这里更严）。
+ * - D 为尖括号形式的链接目标，读到首个未转义的 `>` 为止；其中不得有未转义的 `<` 与行结束符
+ *   （CommonMark 对尖括号形式的要求）。
+ * 返回按反斜杠转义规则反解后的 A 与 D；结构不合要求时抛出错误。只处理反斜杠转义（属性 10 的口径），
+ * 不处理代码段、原始 HTML、自动链接、强调与实体引用。
+ */
+function parseImage(image: string): ParsedImage {
+  const expectAt = (at: number, token: string): number => {
+    if (!image.startsWith(token, at)) {
+      throw new Error(`第 ${at} 个码元处应为 ${JSON.stringify(token)}：${JSON.stringify(image)}`);
+    }
+    return at + token.length;
+  };
+  const alt = readEscaped(image, expectAt(0, "!["), "]", "[", "替代文本");
+  const destination = readEscaped(image, expectAt(alt.end, "](<"), ">", "<", "链接目标");
+  const end = expectAt(destination.end, ">)");
+  if (end !== image.length) {
+    throw new Error(`图片之后还有 ${JSON.stringify(image.slice(end))}：${JSON.stringify(image)}`);
+  }
+  return { alt: alt.text, destination: destination.text };
+}
+
+/** 属性 10 的名称字母表：有特殊含义的 ASCII 标点、空格与制表符、字母数字、中文与代理对。 */
+const ESCAPE_NAME_UNITS = [..."\\[]<>()!*_`&#.- \t", ..."aZ09", ..."中文书", "𠮷"];
+
+/** 转义的边界：末尾的 `\`、`\` 与被转义字符相邻、形似图片语法的片段、空名称。 */
+const TRICKY_NAMES = [
+  "",
+  "\\",
+  "a\\",
+  "\\\\",
+  "\\]",
+  "\\[",
+  "\\<",
+  "\\>",
+  "\\a",
+  "](",
+  "](<x",
+  "x>)",
+  "<>",
+  "[]",
+  "[[]]",
+  "![a](<b>)",
+  "`",
+  "中文\\书",
+];
+
+/** 不含 `\r`、`\n` 的名称：上面的字母表、全部 ASCII 标点、任意码点、边界片段或真实 catalog 的名称。 */
+const escapeNameArb: fc.Arbitrary<string> = fc
+  .oneof(
+    { weight: 4, arbitrary: fc.string({ unit: fc.constantFrom(...ESCAPE_NAME_UNITS), maxLength: 12 }) },
+    { weight: 2, arbitrary: fc.string({ unit: fc.constantFrom(...ASCII_PUNCTUATION, " ", "a"), maxLength: 12 }) },
+    { weight: 1, arbitrary: fc.string({ unit: "binary", maxLength: 12 }) },
+    { weight: 1, arbitrary: fc.constantFrom(...TRICKY_NAMES) },
+    { weight: 1, arbitrary: fc.constantFrom(...REVIEW_CATALOG.map((d) => d.name)) },
+  )
+  .filter((name) => !/[\r\n]/.test(name));
+
+/** 1–4 个互不相同的名称，各以一个真实条目为底，全部已拍摄（最终结果任意）。 */
+const escapeCaseArb = fc.uniqueArray(
+  fc.record({
+    name: escapeNameArb,
+    base: fc.nat({ max: REVIEW_CATALOG.length - 1 }),
+    result: fc.constantFrom(...OUTCOMES),
+    timedOut: fc.boolean(),
+  }),
+  { selector: (r) => r.name, minLength: 1, maxLength: 4 },
+);
+
+const ESCAPE_REPORT_META: ReviewReportMeta = {
+  startedAt: "2026-10-02T09:00:00.000+08:00",
+  profiles: PROFILES,
+  roles: SAMPLE_ROLES,
+};
+
+test.describe("Review_Report 的 PNG 行（reader-defect-fixes 需求 16.3）", () => {
+  test("RDF 16.3：参照解析器按 CommonMark 反斜杠转义反解，拒绝未转义的方括号、尖括号与行结束符", () => {
+    expect(parseImage("![a\\]b\\[c\\\\](<d\\>e\\<f\\\\.png>)"), "转义的方括号、尖括号与反斜杠").toEqual({
+      alt: "a]b[c\\",
+      destination: "d>e<f\\.png",
+    });
+    expect(parseImage("![\\a\\中\\ ](<\\a.png>)"), "`\\` 后跟非 ASCII 标点时是字面的 `\\`").toEqual({
+      alt: "\\a\\中\\ ",
+      destination: "\\a.png",
+    });
+    expect(parseImage("![\\*\\_\\`\\!](<\\(\\) x.png>)"), "其它 ASCII 标点的转义；目标中的空格与圆括号").toEqual({
+      alt: "*_`!",
+      destination: "() x.png",
+    });
+    expect(parseImage("![](<>)"), "空的替代文本与目标").toEqual({ alt: "", destination: "" });
+
+    const malformed = [
+      "![a]b](<c.png>)",
+      "![a[b](<c.png>)",
+      "![a\\](<b.png>)",
+      "![a](<b<c.png>)",
+      "![a](<b>c.png>)",
+      "![a](b.png)",
+      "![a](<b.png>) ",
+      "![a](<b\nc.png>)",
+      "![a\rb](<c.png>)",
+      "![a](<b.png",
+      "[a](<b.png>)",
+    ];
+    for (const line of malformed) expect(() => parseImage(line), JSON.stringify(line)).toThrow();
+  });
+
+  // Feature: reader-defect-fixes, Property 10: Review_Report 的 PNG 行转义往返
+  // **Validates: Requirements 16.3, 16.4**
+  test("RDF 16.3：任意不含换行的名称，PNG 行为 ![A](<D>)，A 中的方括号与 D 中的尖括号都已转义；按 CommonMark 反斜杠转义反解后 A 等于名称、D 等于 <名称>.png", () => {
+    fc.assert(
+      fc.property(escapeCaseArb, (rows) => {
+        const catalog = rows.map(({ name, base }): ReviewShotDef => ({ ...REVIEW_CATALOG[base], name }));
+        const statuses = new Map(
+          rows.map(({ name, base, result, timedOut }): [string, ShotStatus] => [
+            name,
+            { captured: true, test: formatShotTest(REVIEW_CATALOG[base].by), result, timedOut },
+          ]),
+        );
+        const report = parseReport(renderReviewReport(catalog, statuses, ESCAPE_REPORT_META));
+        assert.deepEqual(
+          report.sections.map((s) => s.heading),
+          catalog.map((d) => d.name),
+          "节标题应依次等于各名称",
+        );
+
+        catalog.forEach(({ name }, i) => {
+          const where = `第 ${i + 1} 节 ${JSON.stringify(name)}`;
+          const file = pngFileOf(name);
+          assert.equal(reviewShotFileName(name), file, `${where}：reviewShotFileName`);
+          const expected: ParsedImage = { alt: name, destination: file };
+
+          // 转义函数本身
+          const direct = `![${escapeLinkText(name)}](${escapeLinkDestination(file)})`;
+          assert.deepEqual(parseImage(direct), expected, `${where}：转义函数拼出的 ${JSON.stringify(direct)}`);
+
+          // 报告中该节的 PNG 行
+          const images = valuesAfter(report.sections[i].lines, REPORT_TEXT.png);
+          assert.equal(images.length, 1, `${where}：已拍摄的节应恰有 1 行 PNG，实际 ${images.length} 行`);
+          assert.deepEqual(parseImage(images[0]), expected, `${where}：PNG 行 ${JSON.stringify(images[0])}`);
+        });
+      }),
+      { numRuns: 100 },
+    );
   });
 });

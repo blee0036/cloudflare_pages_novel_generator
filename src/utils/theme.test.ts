@@ -206,4 +206,13 @@ describe("index.css 的主题机制", () => {
   it("定义了派生量 --hover，且由 --text 派生而非写死黑白", () => {
     expect(css).toMatch(/--hover:\s*color-mix\(in srgb, var\(--text\) 8%, transparent\)/);
   });
+
+  it("派生量 --selected 与 --hover 同在裸 :root 块，由 --accent 混 --bg 得出（需求 9.1）", () => {
+    const rootBlock = css.match(/(?:^|\n)\s*:root\s*\{([^}]*)\}/);
+    expect(rootBlock, "缺少裸 :root 派生量块").not.toBeNull();
+    expect(rootBlock![1]).toMatch(/--hover:/);
+    expect(rootBlock![1]).toMatch(
+      /--selected:\s*color-mix\(in srgb, var\(--accent\) 15%, var\(--bg\)\)/,
+    );
+  });
 });

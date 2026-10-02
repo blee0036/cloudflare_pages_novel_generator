@@ -40,7 +40,6 @@ import {
   findParaIndex,
   previewAt,
   progressPercentAt,
-  resolveContentChapter,
   resolveHighlight,
   resolveJumpTarget,
   splitParagraphs,
@@ -52,10 +51,20 @@ import {
   ChapterEdge,
   PageDirection,
   chapterEdgeScrollTop,
+  lineScrollTarget,
   pageScrollTarget,
 } from "../utils/pageScroll";
 import { preventsDefault, readerAction } from "../utils/shortcuts";
+import { CHAPTER_PARAM, parseUrlChapter, withChapterParam } from "../utils/readerUrl";
+import { initialPosition } from "../utils/readerPosition";
 import { loadToc } from "../utils/tocCache";
+import {
+  LoadErrorCategory,
+  LoadStage,
+  READER_LOAD_ERROR_TEXT,
+  classifyLoadError,
+  formatLoadErrorLog,
+} from "../utils/loadError";
 import { bookTxtFileName, downloadBookAsTxt } from "../utils/download";
 import { applyTheme } from "../utils/theme";
 import { Header } from "../components/Header";
@@ -115,7 +124,7 @@ interface HighlightTarget {
 
 export const ReaderPage: React.FC = () => {
   const { bookId } = useParams<{ bookId: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
   // Settings & Theme
@@ -148,7 +157,11 @@ export const ReaderPage: React.FC = () => {
    * 这些根本不产出百分比的分支把整段等待都显示成"卡在 0%"。
    */
   const [downloadProgress, setDownloadProgress] = useState<LoadProgress>(INDETERMINATE);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * 加载失败的类别（reader-defect-fixes 需求 13.1）。错误页只按类别显示固定的中文说明，
+   * 原始异常不进页面，只在 `loadBook` 的 `catch` 里写一行进控制台（13.4）。
+   */
+  const [error, setError] = useState<LoadErrorCategory | null>(null);
 
   /**
    * 标签页标题跟着书名走（需求 9.3）。
@@ -163,6 +176,29 @@ export const ReaderPage: React.FC = () => {
 
   // Active Chapter & Page State
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
+  /**
+   * **最近一次决定的**当前章号：`setCurrentChapterIndex` 只有两处调用（首次定位与 `jumpTo`），
+   * 两处都先写这里再写 state，于是它要么等于 `currentChapterIndex`，要么领先它一次提交。
+   *
+   * 领先的那一拍正是它存在的理由（design §6，需求 7.9）：定位 effect 因外部改动的 `ch` 调了
+   * `jumpTo` 之后，同一次 effect 冲刷里紧接着跑的写回 effect 闭包里还是旧章号；若照旧章号
+   * 写回，会把读者刚要跳去的 `ch` 改回去，随后两边来回拉扯。写回 effect 见到二者不等就等下一次
+   * 提交；定位 effect 用它判断"外部给的章是不是当前章"，不必把 `currentChapterIndex` 列进依赖。
+   */
+  const currentChapterRef = useRef(0);
+  /**
+   * 本组件最后一次处理过、或写回的 `ch` 原文（`null` = 参数缺省），design §6 的 S3。
+   *
+   * 用来区分"自己的写回"与"外部改动"：写回 effect 发起导航之前先把目标值记在这里，导航落地后
+   * `searchParams` 变化回到定位 effect，命中 `raw === urlChRef.current` 原地返回（需求 7.3）；
+   * 外部改出来的值对不上它，才当作一次跳转请求处理（需求 7.9）。
+   *
+   * 写回 effect 也拿它（而不是渲染时的 `searchParams`）判断 URL 是否已是当前章：`replace` 导航
+   * 包在 transition 里，落地前的渲染读到的 `searchParams` 还是旧值。连按 `→` `←` 时当前章恰好
+   * 回到旧值，按 `searchParams` 判会以为"已一致"而不写，随后落地的 `→` 那次写回就被误当成外部
+   * 改动、把读者拽回去。
+   */
+  const urlChRef = useRef<string | null>(null);
   /**
    * 当前位置的章内字符偏移（需求 2.1）。与 `currentChapterIndex` 一起构成阅读位置的
    * 唯一真相：谁移动了位置就改这两个 state（章节导航、`?ch=` 跳转、进度恢复、停止滚动后的
@@ -218,11 +254,21 @@ export const ReaderPage: React.FC = () => {
   const attachScroller = useCallback((el: HTMLElement | null) => {
     contentContainerRef.current = el;
     setScrollerEl(el);
+    // 从滚动过的书架页进来时，文档还停在书架的 scrollTop 上（需求 2.3）。正文分支的
+    // 根容器已钉成一屏高，文档此刻不可滚，浏览器本会把它夹到 0；这里显式归零，行为
+    // 不依赖夹取。ref 回调在提交阶段的 layout 时段执行，早于绘制，读者看不到中间态。
+    if (el) {
+      const docScroller = document.scrollingElement;
+      if (docScroller) docScroller.scrollTop = 0;
+    }
   }, []);
 
   // Which book the initial position has already been resolved for. Keeps the
-  // positioning effect below from clobbering in-reader navigation when it
-  // re-runs for a reason other than a changed `?ch=`.
+  // positioning effect from clobbering in-reader navigation when it re-runs for
+  // a reason other than an externally changed `?ch=`.
+  //
+  // 它同时是 URL 写回 effect 的闸门（需求 7.1）：初始位置定下来之前，`currentChapterIndex`
+  // 还是占位的 0，此时写回会把 URL 上的 `?ch=` 冲掉。
   //
   // 任务 35 把它从 ref 改成 state，因为进度落盘 effect 需要把它当闸门用：`toc` 到位的
   // 那一次提交里章号还是 0、偏移还是 0，若此时就落盘，会把"第 500 章 / 偏移 12345"的
@@ -249,11 +295,16 @@ export const ReaderPage: React.FC = () => {
       // 上一本书里的检索命中与本书的章节表毫无关系（组件不会为换书而重新挂载）
       setHighlightTarget(null);
 
+      // 当前所处的加载阶段，`catch` 据此分类（reader-defect-fixes 需求 13.1）：同一类错误
+      // 在两个阶段含义不同，例如 404 在 `toc` 是"找不到这本书"，在 `text` 是"正文文件缺失"。
+      let stage: LoadStage = "toc";
+
       try {
         // 1. Fetch TOC metadata（经 tocCache，与书架弹窗共用同一次请求；需求 3.4）
         const tocData: BookToc = await loadToc(bookId);
         if (isCancelled) return;
         setToc(tocData);
+        stage = "text";
 
         // 2. Fetch & decompress Gzip novel text（路径由 id 派生，需求 5.1）
         //
@@ -267,8 +318,11 @@ export const ReaderPage: React.FC = () => {
         if (isCancelled) return;
         setFullText(text);
       } catch (err) {
+        // 被取消的加载（换书、卸载、StrictMode 开发期的首轮 effect）什么也不做：错误页只为
+        // 当前这本书出现，日志也就只随它打这一条（需求 13.4）。
         if (!isCancelled) {
-          setError(err instanceof Error && err.message ? err.message : "加载书籍内容失败");
+          console.error(formatLoadErrorLog(stage, bookId, err));
+          setError(classifyLoadError(stage, err));
         }
       } finally {
         if (!isCancelled) {
@@ -300,70 +354,8 @@ export const ReaderPage: React.FC = () => {
   /** 本书有没有正文章节。全由卷节点构成的异常数据走错误页，不渲染空白（需求 12.6）。 */
   const hasContentChapters = chapterViews.contentIdx.length > 0;
 
-  // 2. Resolve the chapter to show. Split out of the loader on purpose: it
-  //    reacts to `searchParams`, so changing `?ch=` inside the same book
-  //    re-positions without re-downloading the book (Requirements 1.5).
-  //
-  //    Priority: a valid URL `?ch=` beats stored progress. When the URL says
-  //    nothing, stored progress is applied once per book — later re-runs leave
-  //    the reader where the user navigated to.
-  //
-  //    章内偏移也在这里定下来（写进 `charOffset`）：`?ch=` 是显式的整章跳转，落在章首；
-  //    没有 URL 指令时用记录里的偏移。除了把偏移写进 state，这里还发一条一次性的
-  //    `pendingRestore` 指令，由下面的 layout effect 在测量完成后把视口移过去——
-  //    位置（state）与"移动视口"（指令）必须分开，否则每次重排都会把读者拽回原处。
-  useEffect(() => {
-    if (!bookId || !toc) return;
-    // 全是卷节点的异常数据：没有任何章可定位，一个字也不写（包括不动已存的进度记录），
-    // 由下面的错误页接手（需求 12.6）。
-    if (!hasContentChapters) return;
-
-    const rawCh = searchParams.get("ch");
-    const parsedCh = rawCh === null ? Number.NaN : Number.parseInt(rawCh, 10);
-    const isValidUrlCh =
-      Number.isInteger(parsedCh) && parsedCh >= 0 && parsedCh < toc.chapters.length;
-
-    if (isValidUrlCh) {
-      setPositionedBook(bookId);
-      // `?ch=` 指向卷节点（书架/外部链接按原始下标给的章号）→ 改用其后第一个正文章节
-      // （需求 12.5）。上面已判过范围，这里不会返回 NO_CONTENT_CHAPTER。
-      setCurrentChapterIndex(resolveContentChapter(chapterViews, parsedCh));
-      setCharOffset(0);
-      // 显式的整章跳转压过一切待恢复的位置（同值时 React 自行 bail out，不多一次渲染）
-      setPendingRestore(null);
-      // `?ch=` 变更也是一次导航（需求 2.5 的"下一次导航即清除"）
-      setHighlightTarget(null);
-      if (contentContainerRef.current) {
-        contentContainerRef.current.scrollTop = 0;
-      }
-      return;
-    }
-
-    // Already positioned for this book and the URL has nothing to say:
-    // don't undo the reader's own navigation.
-    if (positionedBook === bookId) return;
-    setPositionedBook(bookId);
-
-    const savedProgress = getBookProgress(bookId);
-    // 章号越界（章节表被重切过、记录被手改）→ 回退到第一个**正文**章节并从章首开始，
-    // 不沿用那条记录的偏移：章号既然对不上，偏移更没有参照（design §10）。
-    // 下界由 `readProgress` 夹过（任务 31），这里只判上界。
-    const canRestore = savedProgress !== null && savedProgress.chapterId < toc.chapters.length;
-    const savedChapterId = canRestore ? savedProgress.chapterId : 0;
-    // 记录停在卷节点上（上一版构造的记录、或章节表被重切）→ 改用其后第一个正文章节
-    // （需求 12.5）。归一改了章号时偏移也一并作废：它是另一章里的位置。
-    const chapterId = resolveContentChapter(chapterViews, savedChapterId);
-    const target: JumpTarget = {
-      chapterId,
-      charOffset: canRestore && chapterId === savedChapterId ? savedProgress.charOffset : 0,
-    };
-
-    setCurrentChapterIndex(target.chapterId);
-    setCharOffset(target.charOffset);
-    // 位置本身即刻生效（百分比、落盘都读 state），把视口移过去则要等段落渲染并测量完成，
-    // 交给下面那个 layout effect。
-    setPendingRestore(target);
-  }, [bookId, toc, searchParams, positionedBook, chapterViews, hasContentChapters]);
+  // 2. 定位与 URL 写回（需求 7，design §6）两个 effect 声明在 `jumpTo` 之后：定位 effect 的
+  //    依赖数组在渲染时就要读 `jumpTo`，提前声明会撞上 `const` 的暂时性死区。
 
   // Current Chapter Object
   const currentChapter: ChapterMeta | undefined = toc?.chapters[currentChapterIndex];
@@ -401,7 +393,8 @@ export const ReaderPage: React.FC = () => {
   }, [highlightTarget, currentChapterIndex, bodyParas]);
 
   // 高亮 5 秒后自动清除（需求 2.5）。换一条命中会让本 effect 重跑，定时器随之重排——
-  // 连点两条结果时第二条同样能亮满 5 秒。另一条清除路径在 `jumpTo` 与 `?ch=` 分支里。
+  // 连点两条结果时第二条同样能亮满 5 秒。另一条清除路径在 `jumpTo`（外部改 `?ch=` 也经它）
+  // 与首次定位里。
   useEffect(() => {
     if (!highlightTarget) return;
     const timer = setTimeout(() => setHighlightTarget(null), HIGHLIGHT_MS);
@@ -580,9 +573,14 @@ export const ReaderPage: React.FC = () => {
 
     setPendingRestore(null);
 
-    // 目标落在首个正文段之前——章首、v1 记录补的偏移 0、或落在被跳过的标题行里（需求 2.8）。
-    // 这时显示章首，让 `<h1>` 一起进视野，而不是把它顶到视口之上。
-    if (pendingRestore.charOffset < bodyParas[0].offset) {
+    const index = findParaIndex(bodyParas, pendingRestore.charOffset);
+
+    // 目标是首个正文段，或落在它之前——章首、v1 记录补的偏移 0、被跳过的标题行（需求 2.8）。
+    // 这时显示章首（`scrollTop` 为 0），让 `<h1>` 一起进视野，而不是把它顶到视口之上。
+    // 这也正是保存的逆：`scrollTop` 为 0 时判定线之上的最后一段就是首段，记下的是它的偏移；
+    // 若按判定线恢复，会停在章首之下 `tops[0] − TOP_BIAS` 处。没有标题行的章节（如"序章 /
+    // 前言"）首段偏移就是章首，没有进度时同样落到这里（reader-defect-fixes 需求 7.6）。
+    if (index === 0) {
       scroller.scrollTop = 0;
       return;
     }
@@ -593,7 +591,6 @@ export const ReaderPage: React.FC = () => {
     //
     // 直接赋值 `scrollTop` 而不是 `scrollIntoView`：后者带平滑滚动动画（一打开书就当着
     // 读者的面滚几千像素），也无法精确控制 TOP_BIAS（design §3.4）。
-    const index = findParaIndex(bodyParas, pendingRestore.charOffset);
     scroller.scrollTop = Math.max(0, tops[index] - TOP_BIAS);
   }, [pendingRestore, currentChapterIndex, bodyParas]);
 
@@ -812,6 +809,8 @@ export const ReaderPage: React.FC = () => {
       const resolved = resolveJumpTarget(chapterViews, target);
       if (resolved === null) return;
 
+      // 先于 state 记下新章号：同一次 effect 冲刷里的写回 effect 据此知道 state 还没跟上
+      currentChapterRef.current = resolved.chapterId;
       setCurrentChapterIndex(resolved.chapterId);
       setCharOffset(resolved.charOffset);
       // 防住"上一章算出的偏移被换章后才触发的防抖提交带进新章"
@@ -841,6 +840,123 @@ export const ReaderPage: React.FC = () => {
     },
     [chapterViews, triggerShowControls]
   );
+
+  // ===========================================================================
+  // 定位与 URL 写回（design §6，需求 7；S3）
+  //
+  // 两个 effect 各管一个方向，以 `urlChRef` 区分"自己的写回"与"外部改动"：
+  // - 定位 effect 只处理**外部给出**的 `ch`：首次定位时 URL 上的那个，以及之后经应用内导航
+  //   改出来的（`popstate` 等，需求 7.9）。读者自己换章不经过这里——那些路径直接走 `jumpTo`。
+  // - 写回 effect 只负责把当前章以 `replace` 写进 URL（需求 7.1、D2）。全部换章路径最终都改
+  //   `currentChapterIndex`，写回因此只有这一个出口。
+  //
+  // 声明顺序有意义：同一次 effect 冲刷里定位先跑、写回后跑，写回读到的 `urlChRef` /
+  // `currentChapterRef` 已是定位 effect 处理过本次 `searchParams` 之后的值。
+  // ===========================================================================
+
+  // 定位：首次定位，或响应外部改动的 `ch`。
+  //
+  // 依赖里有 `searchParams`，同一本书内改 `?ch=` 会重新定位而不重新下载（RC 1.5）；加载 effect
+  // 只认 `bookId`。`jumpTo` 只随 `chapterViews` 与 `triggerShowControls`（identity 稳定）变化，
+  // 换章不会让本 effect 重跑；即使重跑，也因 `raw === urlChRef.current` 直接返回。
+  useEffect(() => {
+    if (!bookId || !toc) return;
+    // 全是卷节点的异常数据：没有任何章可定位，一个字也不写（包括不动已存的进度记录、不写回
+    // URL——`positionedBook` 不立起来），由错误页接手（需求 12.6）。
+    if (!hasContentChapters) return;
+
+    const raw = searchParams.get(CHAPTER_PARAM);
+    const chapterCount = toc.chapters.length;
+
+    if (positionedBook !== bookId) {
+      // 首次定位：URL 章号与已存进度按 D3 / RC 12.5 合成唯一的（章号, 偏移）——有效 `?ch=`
+      // 指向进度所在章时恢复章内偏移（7.5），指向另一章或没有进度时落在章首（7.6、EV 9.12），
+      // 缺省或无效时按进度恢复；卷节点一律归一到其后第一个正文章节。
+      const target = initialPosition(
+        chapterViews,
+        chapterCount,
+        parseUrlChapter(raw, chapterCount),
+        getBookProgress(bookId)
+      );
+      // 上面已判过 `hasContentChapters`，这里不会是 null；判一次只为类型收窄
+      if (target === null) return;
+
+      // 记下这次处理过的原文：写回 effect 随后若要改写它（无效、卷节点、或缺省），改写后的
+      // 值也会先记在这里，落地时本 effect 原地返回，不会把首次定位再做一遍。
+      urlChRef.current = raw;
+      currentChapterRef.current = target.chapterId;
+      setPositionedBook(bookId);
+      setCurrentChapterIndex(target.chapterId);
+      setCharOffset(target.charOffset);
+      setHighlightTarget(null);
+      // 位置本身即刻生效（百分比、落盘都读 state）。章内偏移 > 0 时发一条一次性的恢复指令，
+      // 由恢复 layout effect 在段落渲染并测量完成后把视口移过去——位置（state）与"移动视口"
+      // （指令）必须分开，否则每次重排都会把读者拽回原处。章首用不着指令：`scrollTop = 0`
+      // 当场就是正确位置（`<main>` 尚未挂载时它本来就从 0 开始）。
+      if (target.charOffset > 0) {
+        setPendingRestore(target);
+      } else {
+        setPendingRestore(null);
+        if (contentContainerRef.current) {
+          contentContainerRef.current.scrollTop = 0;
+        }
+      }
+      return;
+    }
+
+    // 自己的写回落地，或 `ch` 没变：不碰 `scrollTop`、高亮与待恢复的位置（需求 7.3）
+    if (raw === urlChRef.current) return;
+    urlChRef.current = raw;
+
+    const urlChapter = parseUrlChapter(raw, chapterCount);
+    // 无效（缺省、非数字、负数、越界）：位置不动，写回 effect 随后把 URL 改回当前章
+    if (urlChapter === null) return;
+
+    // 章内位置与首次定位同一套规则（7.9 的"按第 5、6 条确定"）
+    const target = initialPosition(chapterViews, chapterCount, urlChapter, getBookProgress(bookId));
+    // 归一后就是当前章（含指向当前章之前那个卷节点）：不改变当前位置（7.9）。URL 原文若与
+    // 当前章号的规范写法不同（"03"、卷节点下标），由写回 effect 规整。
+    if (target === null || target.chapterId === currentChapterRef.current) return;
+
+    // 清高亮、复位 scrollTop、必要时挂恢复指令，并先行更新 `currentChapterRef`
+    jumpTo(target);
+  }, [bookId, toc, searchParams, positionedBook, chapterViews, hasContentChapters, jumpTo]);
+
+  // 写回：位置已定后，URL 的 `ch` 与当前章不一致即以 `replace` 写回（需求 7.1、D2）。
+  //
+  // `replace` 不新增历史记录，`history.length` 不变；书架进入阅读器那一次 push 之后，一次后退
+  // 仍回到进入前的页面（7.8）。函数式更新器只改 `ch`，路径与其余参数（键、值、顺序）不变
+  // （`withChapterParam`，7.2）。
+  //
+  // 本 effect 不碰 `scrollTop`、高亮与 `pendingRestore`；导航落地后的那次渲染里，定位 effect
+  // 命中 `raw === urlChRef.current` 原地返回（7.3）。
+  //
+  // `searchParams` 在依赖里但不在函数体里：外部把 `ch` 改成无效值时当前章不变，要靠它让本 effect
+  // 重跑、把 URL 改回当前章。
+  useEffect(() => {
+    if (positionedBook !== bookId) return;
+    // 定位 effect 刚在本次冲刷里调了 `jumpTo`，state 还是旧章：此刻写回会把读者要去的 `ch`
+    // 改回旧章。`jumpTo` 那次提交会带着新的 `currentChapterIndex` 让本 effect 重跑。
+    if (currentChapterRef.current !== currentChapterIndex) return;
+
+    const want = String(currentChapterIndex);
+    if (urlChRef.current === want) return;
+
+    // 先记下要写出的值，再发起导航：导航落地时定位 effect 凭它认出这是自己的写回
+    const previous = urlChRef.current;
+    urlChRef.current = want;
+    try {
+      setSearchParams((prev) => withChapterParam(prev.toString(), currentChapterIndex), {
+        replace: true,
+      });
+    } catch (err) {
+      // Safari / Firefox 对 `history.replaceState` 限频，超限时抛 `SecurityError`（DOMException），
+      // React Router 的 `replace` 不接这个异常。拖章节滑杆划过上百章就可能撞上；任它从 effect 里
+      // 抛出会卸掉整个应用。这里只吞这一类：URL 没变，`urlChRef` 退回原值，下一次换章照常写回。
+      if (!(err instanceof DOMException)) throw err;
+      urlChRef.current = previous;
+    }
+  }, [positionedBook, bookId, currentChapterIndex, searchParams, setSearchParams]);
 
   /**
    * 整章跳转：目录点击、滑杆、上下章都落在**章首**（偏移 0、不高亮）。
@@ -982,6 +1098,28 @@ export const ReaderPage: React.FC = () => {
     scroller.scrollTop = chapterEdgeScrollTop(scroller, edge);
   }, []);
 
+  /**
+   * 行滚动 / 一屏滚动（需求 4.3 的 `↑`/`↓`、`PageUp`/`PageDown`）。
+   *
+   * 正文滚动容器是 `<main>`（D1），浏览器的默认按键滚动不保证落到它上面，所以由这里赋值
+   * `scrollTop`；赋值方式与不弹控制栏的理由同 `pageScroll`。一屏的步长复用
+   * `pageScrollTarget`，但到尽头（`null`）时**原地不动、不换章**——这与 `Space` 不同，
+   * 需求 4.3 要求四种按键下章节都不变。
+   */
+  const lineScroll = useCallback((direction: PageDirection) => {
+    const scroller = contentContainerRef.current;
+    if (!scroller) return;
+    const target = lineScrollTarget(scroller, direction);
+    if (target !== null) scroller.scrollTop = target;
+  }, []);
+
+  const screenScroll = useCallback((direction: PageDirection) => {
+    const scroller = contentContainerRef.current;
+    if (!scroller) return;
+    const target = pageScrollTarget(scroller, direction);
+    if (target !== null) scroller.scrollTop = target;
+  }, []);
+
   // Keyboard Navigation (Inspired by Koodo Reader)
   //
   // 按键 → 动作的映射（含"什么时候不接管"的三条规则）全在 `readerAction` 里，这里只负责
@@ -1026,6 +1164,18 @@ export const ReaderPage: React.FC = () => {
         case "chapter-end":
           scrollToChapterEdge("end");
           break;
+        case "line-down":
+          lineScroll(1);
+          break;
+        case "line-up":
+          lineScroll(-1);
+          break;
+        case "screen-down":
+          screenScroll(1);
+          break;
+        case "screen-up":
+          screenScroll(-1);
+          break;
         case "toggle-toc":
           setIsTocOpen((prev) => !prev);
           break;
@@ -1049,6 +1199,8 @@ export const ReaderPage: React.FC = () => {
     goToRelativeChapter,
     pageScroll,
     scrollToChapterEdge,
+    lineScroll,
+    screenScroll,
     isTocOpen,
     isSearchOpen,
     isSettingOpen,
@@ -1102,7 +1254,7 @@ export const ReaderPage: React.FC = () => {
           <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
         </div>
         <h2 className="text-base font-semibold mb-1">正在流式解压书籍...</h2>
-        <p className="text-xs opacity-60 mb-4">
+        <p className="text-xs text-[var(--text-muted)] mb-4">
           原生 Gzip 解压加速中
           {downloadProgress.kind === "determinate" ? ` (${downloadProgress.pct}%)` : ""}
         </p>
@@ -1143,7 +1295,10 @@ export const ReaderPage: React.FC = () => {
       <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-[var(--bg)] text-[var(--text)]">
         <AlertCircle className="w-12 h-12 text-rose-500 mb-3" />
         <h2 className="text-lg font-bold mb-1">未能打开书籍</h2>
-        <p className="text-xs opacity-70 mb-6 max-w-sm text-center">{error}</p>
+        {/* 说明只由类别决定（需求 13.2）。`error` 为 null 而 `toc` 缺失不应出现，按 unknown 兜底 */}
+        <p className="text-xs text-[var(--text-muted)] mb-6 max-w-sm text-center">
+          {READER_LOAD_ERROR_TEXT[error ?? "unknown"]}
+        </p>
         <button
           onClick={() => navigate("/")}
           className="px-5 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-semibold hover:bg-blue-700 shadow-md"
@@ -1165,7 +1320,7 @@ export const ReaderPage: React.FC = () => {
       <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-[var(--bg)] text-[var(--text)]">
         <AlertCircle className="w-12 h-12 text-amber-500 mb-3" />
         <h2 className="text-lg font-bold mb-1">这本书没有可阅读的章节</h2>
-        <p className="text-xs opacity-70 mb-6 max-w-sm text-center leading-relaxed">
+        <p className="text-xs text-[var(--text-muted)] mb-6 max-w-sm text-center leading-relaxed">
           《{toc.title}》的章节表里 {toc.chapters.length} 个节点全部是卷/分部标题，
           没有任何正文章节。该书的预处理产物有误，请重新生成后再打开。
         </p>
@@ -1215,9 +1370,24 @@ export const ReaderPage: React.FC = () => {
    */
   const downloadFileName = bookTxtFileName(toc.title);
 
+  /*
+   * 正文滚动模型（F-002，需求 2.1 / 2.2，design §3）：`<main>` 是**唯一**的滚动容器。
+   *
+   * 根容器钉成一屏高（`h-dvh`）并 `overflow-hidden`，文档本身因此没有可滚的距离；
+   * `<main>` 是 flex 列里唯一的流内子元素（顶栏、底栏、三个抽屉都是 `position: fixed`），
+   * `flex-1 min-h-0` 让它恰好占满这一屏而不被正文撑高——缺了 `min-h-0`，flex 子项的
+   * 最小高度默认是内容高度，`<main>` 会长成整章那么高，滚动又落回文档上。
+   *
+   * 以前根容器是 `min-h-screen`：`<main>` 随正文长高、自己从不滚动，于是所有对
+   * `contentContainerRef.scrollTop` 的赋值都落空（恢复、检索、书签、翻页键），滚动监听也
+   * 从不触发。现在这些读写点原样不动就都生效了。
+   *
+   * 根容器不能带 transform / filter / contain：那会让 fixed 子元素改以它为包含块，
+   * 进而被这里的 `overflow-hidden` 裁掉。
+   */
   return (
     <div
-      className="min-h-screen flex flex-col relative select-text transition-colors duration-200 bg-[var(--bg)] text-[var(--text)]"
+      className="h-dvh flex flex-col relative overflow-hidden select-text transition-colors duration-200 bg-[var(--bg)] text-[var(--text)]"
       onClick={triggerShowControls}
     >
       {/* 1. Floating Top Header */}
@@ -1239,10 +1409,12 @@ export const ReaderPage: React.FC = () => {
           `p.offsetTop` 与 `scrollTop` 共用同一个原点（容器的内边距边），
           `tops[i]` 才能直接当 scrollTop 用（design §3.3）。去掉它的话
           offsetParent 会落到外层那个 `relative` 的根 div 上，测出来的值整体带一个
-          偏移量，滚动判定与位置恢复会一起错。 */}
+          偏移量，滚动判定与位置恢复会一起错。
+
+          `min-h-0` 见上面根容器处的说明：没有它 `<main>` 会被正文撑高而不再滚动。 */}
       <main
         ref={attachScroller}
-        className="relative flex-1 overflow-y-auto pt-16 pb-28 px-4 sm:px-8"
+        className="relative flex-1 min-h-0 overflow-y-auto pt-16 pb-28 px-4 sm:px-8"
       >
         <article
           ref={setArticleEl}
@@ -1260,7 +1432,7 @@ export const ReaderPage: React.FC = () => {
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight mb-2">
               {currentChapter?.title}
             </h1>
-            <div className="flex items-center text-xs opacity-50 space-x-3">
+            <div className="flex items-center text-xs text-[var(--text-muted)] space-x-3">
               {/* 正文序号，卷节点不计入（需求 12.4）：见 `contentTotal` 处的口径说明 */}
               <span>
                 第 {contentPosition + 1} / {contentTotal} 章
@@ -1274,20 +1446,31 @@ export const ReaderPage: React.FC = () => {
 
               命中段落拆成前 / 命中 / 后三段，命中部分用 `<mark>` 包起来（design §3.6）。
               不做 DOM 手术——高亮是渲染的一部分，改字号、换章、清除高亮都只是重新渲染，
-              不需要在真实 DOM 上插删节点再想办法撤销。 */}
+              不需要在真实 DOM 上插删节点再想办法撤销。
+
+              段落不设 `leading-*`：行高继承 `<article>` 行内的无单位 `lineHeight`，计算值即
+              "字号 × 行高"（需求 5.1）。章节标题区不受此影响——`text-xl` / `sm:text-2xl` /
+              `text-xs` 在 Tailwind v4 中各自声明 `line-height`（需求 5.3）。
+
+              `wrap-anywhere`（`overflow-wrap: anywhere`）让书源自带的长分隔线这类没有断行机会的
+              长串在版心内折行；它也计入最小内容宽度，不会把版心撑宽（需求 10.1、10.3）。汉字本就
+              逐字可断，普通段落的折行不变。 */}
           <div className="space-y-6 text-justify">
             {bodyParas.map((para, index) => (
               <p
                 key={para.offset}
                 ref={paraRef(index)}
-                className="indent-[2em] leading-relaxed transition-colors select-text"
+                className="indent-[2em] wrap-anywhere transition-colors select-text"
               >
                 {highlight && highlight.paraIndex === index ? (
                   <>
                     {para.text.slice(0, highlight.offsetInPara)}
                     {/* 只改底色与字色，不动内边距与字重：那些会改变字符宽度，进而可能改变
-                        本段的折行与高度，让刚测好的 `topsRef` 就地失真（design §3.3）。 */}
-                    <mark className="animate-fade-in rounded bg-[rgba(234,179,8,0.32)] text-[var(--accent)]">
+                        本段的折行与高度，让刚测好的 `topsRef` 就地失真（design §3.3）。
+                        字色取 `--text` 而非 `--accent`（F-010）：琥珀底上强调色在四套主题下不足
+                        4.5:1。底色 30% 与检索抽屉相同——32% 时 black 主题的 `--text` 只有
+                        4.38:1，30% 时五套主题均 ≥ 4.63:1。 */}
+                    <mark className="animate-fade-in rounded bg-[rgba(234,179,8,0.3)] text-[var(--text)]">
                       {para.text.slice(
                         highlight.offsetInPara,
                         highlight.offsetInPara + highlight.length
@@ -1317,7 +1500,7 @@ export const ReaderPage: React.FC = () => {
               <span>上一章</span>
             </button>
 
-            <span className="text-xs opacity-50">
+            <span className="text-xs text-[var(--text-muted)]">
               {contentPosition + 1} / {contentTotal}
             </span>
 
@@ -1375,9 +1558,14 @@ export const ReaderPage: React.FC = () => {
 
             单章书（`contentTotal === 1`）时 `min === max === 0`，滑块钉在左端且拖不动，
             这正是"没有别的章可去"的正确呈现，无需额外分支。
+
+            区块与滑杆都带 `min-w-0`（需求 8）：flex 子项默认 `min-width: auto`，`<input type="range">`
+            的固有宽度约 129 px，窄屏上它不肯收缩，整排控件被挤出视口。390 px 视口下可用 358 px，
+            四个按钮 36 + 40 + 40 + 36 加 4 处 12 px 间距后区块剩 158 px，扣去两个 `w-10` 与
+            两处 8 px 间距，滑杆约 62 px。
           */}
-          <div className="flex-1 flex items-center space-x-2 sm:space-x-3">
-            <span className="text-xs font-mono opacity-60 w-10 text-right truncate">
+          <div className="flex-1 min-w-0 flex items-center space-x-2 sm:space-x-3">
+            <span className="text-xs font-mono text-[var(--text-muted)] w-10 text-right truncate">
               {contentPosition + 1}
             </span>
             <input
@@ -1387,9 +1575,9 @@ export const ReaderPage: React.FC = () => {
               value={contentPosition}
               onChange={(e) => goToContentPosition(parseInt(e.target.value, 10))}
               aria-label="章节进度"
-              className="flex-1 h-1.5 bg-[var(--hover)] rounded-lg appearance-none cursor-pointer accent-blue-500"
+              className="flex-1 min-w-0 h-1.5 bg-[var(--hover)] rounded-lg appearance-none cursor-pointer accent-blue-500"
             />
-            <span className="text-xs font-mono opacity-60 w-10 truncate">
+            <span className="text-xs font-mono text-[var(--text-muted)] w-10 truncate">
               {contentTotal}
             </span>
           </div>

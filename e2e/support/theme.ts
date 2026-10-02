@@ -21,7 +21,9 @@
  *   seedTheme"按本规则理解为"不是 `"unset"` 时 seedTheme"；`px-reader-default` 要 seed `default`。
  * - Perf_Metrics（19.5、19.6）：14.2 的"默认主题"即 `"unset"`，perf 用例不 seed；reporter 过滤
  *   `[book-load]` 行时以 `expectedDataTheme(THEME_UNSET)` 比对附件里的 `theme`。
- * - A11y_Scan（20.3）：15.1 的 6 个视图用 `"unset"`，15.2 的 5 次对比度扫描各 seed 一个主题键。
+ * - A11y_Scan（20.3）：15.1 的 6 个视图用 `"unset"`，15.2 的 5 次对比度扫描各 seed 一个主题键；
+ *   reader-defect-fixes 15.6 的 20 次 Contrast_Extension_Scan 各 seed `default`、`eyecare`、`dark`、
+ *   `black` 之一（应用默认渲染的主题已由 15.1 覆盖），合计 31 次。
  *
  * 可复用的函数：`themeToSeed`（要不要、seed 哪个键）、`expectedDataTheme`（断言的键，交给
  * `fixtures.ts` 的 `assertTheme`）、`describeTheme`（报告里的写法）、`appDefaultTheme`。

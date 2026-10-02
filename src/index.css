@@ -36,6 +36,14 @@
  * 裸 `:root` 跟着 `default` 拿 `light`：属性没写上时页面退化成默认明亮，控件也该是明亮的。
  * ------------------------------------------------------------------------- */
 
+/*
+ * `--accent` 的取值（F-010，reader-defect-fixes 需求 12、D5）：明亮三套原先的强调色对
+ * `--bg` / `--card-bg` 不足 4.5:1（default 3.68 / 3.52、sepia 4.47 / 4.07、eyecare 4.41 / 4.21），
+ * 换成同色相更深一档的颜色（色相差 ≤ 8°），对两种底色均 ≥ 5.7:1。深色两套本就达标，不改。
+ * `--bg`、`--card-bg`、`--text`、`--border` 与主题键、名称都不变（需求 12.2）；下限由
+ * `src/utils/palette.test.ts` 核对。
+ */
+
 /* 默认明亮 */
 :root,
 [data-theme="default"] {
@@ -43,7 +51,7 @@
   --bg: #ffffff;
   --text: #1f2937;
   --border: #e5e7eb;
-  --accent: #3b82f6;
+  --accent: #1d4ed8;
   --card-bg: #f9fafb;
 }
 
@@ -53,7 +61,7 @@
   --bg: #f8f1e3;
   --text: #523c21;
   --border: #ebd9bf;
-  --accent: #b45309;
+  --accent: #92400e;
   --card-bg: #f2e6d0;
 }
 
@@ -63,7 +71,7 @@
   --bg: #eaf3e8;
   --text: #244228;
   --border: #d1e4cf;
-  --accent: #15803d;
+  --accent: #166534;
   --card-bg: #dff0dc;
 }
 
@@ -108,9 +116,28 @@
  * 原样透传，于是兜底色是**不透明**的前景色。这条路径实际到不了：`color-mix()` 的支持
  * 门槛（Chrome 111 / Safari 16.2 / Firefox 113）低于 Tailwind v4 自身的基线，进得来
  * 这份样式表的浏览器都支持它。看到产物里那行 `--hover:var(--text)` 不必去"修"。
+ *
+ * `--selected`：目录当前章节行的底色（F-007，需求 9.1，design §8）。`--accent` 15%
+ * 混进 `--bg`，得到不透明的浅淡强调色——与卷标题的 `--card-bg` 底色分得开，上面的
+ * `--accent` 文字仍有足够对比度（下限由 `palette.test.ts` 核对）。与 `--hover` 同一
+ * 写法、同一作用域：根元素上算一次，取的是 `<html data-theme>` 那套主题的
+ * `--accent`/`--bg`（`:root` 与 `[data-theme]` 匹配同一个元素，主题块里的声明照常
+ * 生效，`var()` 在声明它的元素上代换）。设置抽屉色块的局部主题子树里它仍是页面主题
+ * 的值，但那里不用它；它只用在目录抽屉里，而目录抽屉没有局部主题。兜底拆分同上，
+ * 产物里会多一行 `--selected:var(--accent)`。
+ *
+ * `--text-muted`：次要文字的颜色（F-010，需求 12，design §11），取代组件里散落的
+ * `opacity-40…80`、`text-[var(--text)]/50`、`text-slate-400` 一类写法。`--text` 80% 混进
+ * `--bg`，得到**不透明**的浅一档前景色：半透明文字的实际颜色取决于下面叠的是什么，同一个
+ * `opacity-60` 在 `--bg` 上与在 `--card-bg` 上对比度不同，五套主题里多处不足 4.5:1。
+ * 五套主题下它对 `--bg` ≥ 5.33、对 `--card-bg` ≥ 4.85（下限由 `palette.test.ts` 核对）。
+ * 作用域与 `--selected` 相同：取的是 `<html data-theme>` 那套主题的值，设置抽屉色块的
+ * 局部主题子树里不用它。兜底拆分同上，产物里会多一行 `--text-muted:var(--text)`。
  */
 :root {
   --hover: color-mix(in srgb, var(--text) 8%, transparent);
+  --selected: color-mix(in srgb, var(--accent) 15%, var(--bg));
+  --text-muted: color-mix(in srgb, var(--text) 80%, var(--bg));
 }
 
 body {

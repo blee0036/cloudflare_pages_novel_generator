@@ -49,7 +49,9 @@
  *
  * - 10.4（拍 RS-12）：一个用例在同一次加载里依次选 5 个主题。
  * - 10.5：每个主题键一个用例。
- * - 10.6：每个主题键 × {`/read/<id>`, `/`} 一个用例。`/read/<id>` 直接 `page.reload()`；`/` 先经
+ * - 10.6：每个主题键 × {`/read/<id>`, `/`} 一个用例。`/read/<id>` 先按 8.1 判定当前章节为首个正文章节（不带
+ *   进度打开），这一判定同时等到阅读器以替换方式把当前章写回 URL（reader-defect-fixes 需求 7.1），再
+ *   `page.reload()`：重新加载的是 `/read/<id>?ch=<首个正文章节>`，路径不变，也不与写回竞争。`/` 先经
  *   "返回书架"在应用内回到书架，再 `page.reload()`。
  *
  * 读数（各主题 `--bg` 的原文与解析色、观察脚本的记录）记在注解 `theme-colors`、`theme-load` 里。
@@ -60,7 +62,7 @@ import { THEME_ATTRIBUTE } from "../../../src/utils/theme";
 import { SHOT_TESTS } from "../../review/catalog";
 import { READER_SETTINGS_KEY, expect, test, type BookLog, type Lib } from "../../support/fixtures";
 import { reader, settingsDrawer, shelf } from "../../support/locators";
-import { bookUnderTest, openReader, type BookUnderTest } from "../../support/reader";
+import { bookUnderTest, expectCurrentChapter, openReader, type BookUnderTest } from "../../support/reader";
 import { step } from "../../support/step";
 import { THEME_KEYS, appDefaultTheme } from "../../support/theme";
 
@@ -259,7 +261,10 @@ async function selectTheme(page: Page, key: ReaderThemeKey): Promise<void> {
   });
 }
 
-/** 按 `Escape` 关闭设置抽屉（抽屉的 × 按钮没有可访问名称，见 locators.ts 文件头）。 */
+/**
+ * 按 `Escape` 关闭设置抽屉。用例写于抽屉的 × 按钮尚无可访问名称时，沿用当时的做法；F-009 已修复
+ * （reader-defect-fixes），× 按钮现名"关闭设置"，其名称与点击关闭由 `close-buttons.spec.ts` 覆盖。
+ */
 async function closeSettingsDrawer(page: Page): Promise<void> {
   await step("按 Escape 关闭设置抽屉", async () => {
     await page.keyboard.press("Escape");
@@ -581,6 +586,8 @@ test.describe("10.6 已存储主题下重新加载", () => {
         await closeSettingsDrawer(page);
 
         if (where === "reader") {
+          // 先等阅读器把当前章写回 URL（reader-defect-fixes 需求 7.1），重新加载不与写回竞争（见文件头 10.6）
+          await expectCurrentChapter(page, book.facts, book.facts.bodyIndices[0]);
           await step(`重新加载 ${label}，等正文加载完成`, async () => {
             const since = bookLog.count;
             await page.reload();

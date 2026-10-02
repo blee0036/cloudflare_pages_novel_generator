@@ -22,12 +22,17 @@
  * - 设置抽屉的主题色块显示主题名的前两个字（`name.slice(0, 2)`），名称取这两个字，完整主题名
  *   在 `title` 里，只是描述。
  * - 章节行（目录抽屉、详情弹窗网格）的名称是"章节标题 + 空格 + N字"，`length` 为 0 时只有标题。
+ * - 设置抽屉的 5 个滑杆都按可访问名称定位：字号、行高、版心宽度三个的说明文字是关联的
+ *   `<label htmlFor>`，名称即"字号大小""行高间距""内容版心宽度"；字间距与缓存上限的名称来自
+ *   `aria-label`。历史：EV 验收时前三个滑杆没有名称、说明文字是 `<span>`，只能定位旁边的文字与
+ *   显示值（Findings_Log F-003，已修复（reader-defect-fixes））。
+ * - 详情弹窗与三个抽屉右上角的关闭按钮（×）：纯图标，名称来自 `aria-label`（`title` 同文，作悬停
+ *   提示），即"关闭书籍详情""关闭目录""关闭检索""关闭设置"（`CLOSE_BUTTON_NAMES`）。历史：EV 验收时
+ *   这四个按钮没有 `title` 或 `aria-label`，按名称定位不到（Findings_Log F-009，已修复
+ *   （reader-defect-fixes））。
  *
  * 定位不到的元素（已渲染但没有可用的 role 名称或文本，需求 16.4 的可测性缺口，由各场景任务按需
  * 记 Finding）：
- * - 设置抽屉里字号、行高、版心宽度三个滑杆：无 `aria-label`，旁边的文字不是关联的 `<label>`；
- *   这里只提供它们旁边的文字与显示值。
- * - 详情弹窗与三个抽屉右上角的关闭按钮（×）：纯图标，无 `title` 或 `aria-label`。
  * - 弹窗与抽屉的遮罩：无 role 的 `<div>`。
  * - "我的书签"列表条目是带点击处理器的 `<div>`，没有 role；只能按其中的章节标题文本定位，见
  *   `tocDrawer().bookmarkEntry`。
@@ -65,6 +70,12 @@ export function chapterRowName(title: string): RegExp {
 /** 任一章节行：名称以 " N字" 结尾。`length` 为 0 的行不含字数，不在此列。 */
 const ANY_CHAPTER_ROW = / \d+字$/;
 
+/** 底栏目录按钮的名称：宽屏取文字"目录"，窄屏文字隐藏、退到 `title`。 */
+const FOOTER_TOC_NAME = /^(?:目录|查看完整章节列表 \(T\))$/;
+
+/** 底栏检索按钮的名称：宽屏取文字"全书搜索"，窄屏文字隐藏、退到 `title`。 */
+const FOOTER_SEARCH_NAME = /^(?:全书搜索|全文检索 \(F\))$/;
+
 /**
  * 已知锚点的原文（可访问名称或可见文本），与 `src/` 中的写法逐字一致。
  * 断言可访问名称时直接用这里的值（如 `toHaveAccessibleName(NAMES.removeBookmark)`）。
@@ -83,6 +94,7 @@ export const NAMES = {
 
   // 详情弹窗（BookDetailModal）
   modalMarker: "章节目录 · 全本精校",
+  closeDetailModal: "关闭书籍详情",
   modalFilter: "快速过滤章节...",
   modalStartFirst: "从第 1 章开始阅读",
   modalLoading: "正在载入完整章节目录...",
@@ -116,21 +128,25 @@ export const NAMES = {
   noContentHeading: "这本书没有可阅读的章节",
 
   // 目录抽屉（NavigationDrawer）
+  closeTocDrawer: "关闭目录",
   tocFilter: "搜索章节名...",
   clearKeyword: "清除",
   deleteBookmark: "删除此书签",
 
   // 检索抽屉（SearchDrawer）
+  closeSearchDrawer: "关闭检索",
   searchHeading: "全书内容检索",
   searchInput: "输入关键词（角色、地点、台词...）",
 
   // 设置抽屉（SettingDrawer）
+  closeSettingsDrawer: "关闭设置",
   settingsHeading: "阅读设置",
   fontIncrease: "A+",
   fontDecrease: "A-",
   fontSystem: "系统黑体",
   fontSerif: "宋体/明体",
   fontKaiti: "楷体/手写",
+  fontSize: "字号大小",
   lineHeight: "行高间距",
   letterSpacing: "字间距",
   contentWidth: "内容版心宽度",
@@ -149,6 +165,32 @@ export const THEME_BUTTON_NAMES: Readonly<Record<ReaderThemeKey, string>> = Obje
   READER_THEMES.map(({ key, name }) => [key, name.slice(0, 2)]),
 ) as Record<ReaderThemeKey, string>;
 
+/**
+ * 阅读器错误页（"未能打开书籍"）标题下的错误说明，键为 Load_Error_Category（reader-defect-fixes
+ * 需求 13.1）。按需求原文逐字照录，不从 `src/utils/loadError.ts` 导入：期望值不由被测代码推出。
+ */
+export const READER_ERROR_TEXTS = {
+  "not-found": "书库里找不到这本书，可能已被移除，或链接有误。",
+  unavailable: "暂时无法连接书库，请检查网络后重试。",
+  damaged: "这本书的正文文件缺失或已损坏，暂时无法打开。",
+  unknown: "打开这本书时出了点问题，请稍后重试。",
+} as const;
+
+/**
+ * 书架加载失败（"加载遇到问题"）的失败说明，键为 Load_Error_Category（`catalog` 阶段没有
+ * `damaged`；reader-defect-fixes 需求 13.7）。同样按需求原文逐字照录。
+ */
+export const SHELF_ERROR_TEXTS = {
+  "not-found": "暂时找不到书库目录，站点可能正在更新，请稍后再试。",
+  unavailable: "暂时无法连接书库，请检查网络后重试。",
+  unknown: "加载书架时出了点问题，请稍后重试。",
+} as const;
+
+/** 书架失败说明的三句之一（整句精确匹配）。 */
+const SHELF_ERROR_TEXT_PATTERN = new RegExp(
+  `^(?:${Object.values(SHELF_ERROR_TEXTS).map(escapeRegExp).join("|")})$`,
+);
+
 /** 设置抽屉的三个字体按钮，键与 `ReaderSettings["fontFamily"]` 相同。 */
 export const FONT_BUTTON_NAMES = {
   system: NAMES.fontSystem,
@@ -158,8 +200,30 @@ export const FONT_BUTTON_NAMES = {
 
 export type FontKey = keyof typeof FONT_BUTTON_NAMES;
 
+/**
+ * 详情弹窗与三个抽屉右上角关闭按钮（×）的可访问名称（`aria-label`，reader-defect-fixes 需求 11.1），
+ * 键与 `overlayMarkers` 相同。
+ */
+export const CLOSE_BUTTON_NAMES = {
+  detailModal: NAMES.closeDetailModal,
+  tocDrawer: NAMES.closeTocDrawer,
+  searchDrawer: NAMES.closeSearchDrawer,
+  settingsDrawer: NAMES.closeSettingsDrawer,
+} as const;
+
+/** 详情弹窗与三个抽屉的键（`overlayMarkers`、`overlayCloseButtons`、`CLOSE_BUTTON_NAMES` 共用）。 */
+export type OverlayKey = keyof typeof CLOSE_BUTTON_NAMES;
+
 function button(scope: Scope, name: string): Locator {
   return scope.getByRole("button", { name, exact: true });
+}
+
+/**
+ * 可访问名称中含 `name`（区分大小写的子串，未锚定的正则）的按钮。只用于"没有别的按钮的名称包含它"
+ * 一类唯一性核对（reader-defect-fixes 需求 11.1），不用于操作：定位一律精确匹配（见文件头）。
+ */
+export function buttonsNameContaining(scope: Scope, name: string): Locator {
+  return scope.getByRole("button", { name: new RegExp(escapeRegExp(normalizeWhiteSpace(name))) });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -186,8 +250,12 @@ export function shelf(page: Page) {
     /** 骨架占位（`role="status"`、`aria-busy="true"`）。 */
     skeleton: page.getByRole("status"),
     errorHeading: page.getByRole("heading", { name: NAMES.shelfErrorHeading, exact: true }),
-    /** 失败说明里 `books.json` 为非成功状态时的一句"无法获取书架索引 (HTTP N)。…"；网络错误时是浏览器的报错原文，不在此列。 */
-    errorHttpDetail: page.getByText(/^无法获取书架索引 \(HTTP \d+\)/),
+    /**
+     * "加载遇到问题"下的失败说明：`SHELF_ERROR_TEXTS` 三句之一（整句匹配），按类别断言具体哪一句。
+     * 历史：EV 验收时这里显示原始 `err.message`（非成功状态为"无法获取书架索引 (HTTP N)。…"，网络错误为
+     * 浏览器的报错原文），本定位曾按前者匹配（Findings_Log F-012，已修复（reader-defect-fixes））。
+     */
+    errorDetail: page.getByText(SHELF_ERROR_TEXT_PATTERN),
     reloadButton: button(page, NAMES.reload),
     /** 检索（及作者筛选）结果为空时的提示。 */
     emptyResult: page.getByText(/^(?:「.+」的作品里没有|未找到)与 ".*" 相关的书籍$/),
@@ -282,6 +350,8 @@ export function detailModal(page: Page) {
     chapterRows: page.getByRole("button", { name: ANY_CHAPTER_ROW }),
     loading: page.getByText(NAMES.modalLoading, { exact: true }),
     empty: page.getByText(NAMES.noMatchingChapter, { exact: true }),
+    /** 右上角的关闭按钮（×），名称"关闭书籍详情"（需求 11.1）；关闭后 URL 去掉 `book` 参数（11.2）。 */
+    closeButton: button(page, NAMES.closeDetailModal),
   };
 }
 
@@ -327,9 +397,9 @@ export function reader(page: Page) {
     prevChapterButton: button(page, NAMES.prevChapter),
     nextChapterButton: button(page, NAMES.nextChapter),
     /** 底栏目录按钮：宽屏名称"目录"，窄屏"查看完整章节列表 (T)"。 */
-    footerTocButton: page.getByRole("button", { name: /^(?:目录|查看完整章节列表 \(T\))$/ }),
+    footerTocButton: page.getByRole("button", { name: FOOTER_TOC_NAME }),
     /** 底栏检索按钮：宽屏名称"全书搜索"，窄屏"全文检索 (F)"。 */
-    footerSearchButton: page.getByRole("button", { name: /^(?:全书搜索|全文检索 \(F\))$/ }),
+    footerSearchButton: page.getByRole("button", { name: FOOTER_SEARCH_NAME }),
     chapterSlider: page.getByRole("slider", { name: NAMES.chapterProgress, exact: true }),
 
     /** 滚动容器（`<main>`）。 */
@@ -346,6 +416,28 @@ export function reader(page: Page) {
     prevChapterEndButton: article.getByRole("button", { name: NAMES.prevChapterEnd, exact: true }),
     nextChapterEndButton: article.getByRole("button", { name: NAMES.nextChapterEnd, exact: true }),
   };
+}
+
+/** Bottom_Bar 的一个控件：报告里的写法与定位。 */
+export interface BottomBarControl {
+  label: string;
+  locator: Locator;
+}
+
+/**
+ * Bottom_Bar（`<footer>`，contentinfo）的 5 个控件，按从左到右的顺序：上一章、目录、章节进度滑杆、
+ * 全文检索、下一章（reader-defect-fixes 需求 8 的 Glossary）。都以 contentinfo 区域为作用域按 role 与
+ * 名称定位，章末导航的"上一章""下一章"（在 `<article>` 内）不在其中。
+ */
+export function bottomBarControls(page: Page): readonly BottomBarControl[] {
+  const bar = page.getByRole("contentinfo");
+  return [
+    { label: "上一章", locator: button(bar, NAMES.prevChapter) },
+    { label: "目录", locator: bar.getByRole("button", { name: FOOTER_TOC_NAME }) },
+    { label: "章节进度滑杆", locator: bar.getByRole("slider", { name: NAMES.chapterProgress, exact: true }) },
+    { label: "全文检索", locator: bar.getByRole("button", { name: FOOTER_SEARCH_NAME }) },
+    { label: "下一章", locator: button(bar, NAMES.nextChapter) },
+  ];
 }
 
 /** 阅读器加载视图（`.txt.gz` 下载 / 解压中）。 */
@@ -365,9 +457,10 @@ export function readerError(page: Page) {
     heading: page.getByRole("heading", { name: NAMES.loadErrorHeading, exact: true }),
     noContentHeading: page.getByRole("heading", { name: NAMES.noContentHeading, exact: true }),
     /**
-     * 标题下的一行说明（`<p>`，文本为加载失败的错误信息，随原因而变，不按文本定位）。两种视图都只有
-     * 这一个段落，且整页只渲染该视图（没有顶栏、底栏与正文），所以只在 `heading` 或
-     * `noContentHeading` 可见时使用，并先断言计数为 1。
+     * 标题下的一行说明（`<p>`）。错误视图中为 `READER_ERROR_TEXTS` 四句之一，按类别断言具体哪一句；
+     * 不按文本定位，以便同一定位也用于无正文章节视图。两种视图都只有这一个段落，且整页只渲染该视图
+     * （没有顶栏、底栏与正文），所以只在 `heading` 或 `noContentHeading` 可见时使用，并先断言计数为 1。
+     * 历史：EV 验收时错误视图的这一行是原始异常消息（Findings_Log F-011，已修复（reader-defect-fixes））。
      */
     description: page.getByRole("paragraph"),
     backButton: button(page, NAMES.backToShelf),
@@ -382,6 +475,8 @@ export function tocDrawer(page: Page) {
   const tabToc = page.getByRole("button", { name: /^章节目录 \(\d+\)$/ });
   return {
     marker: tabToc,
+    /** 右上角的关闭按钮（×），名称"关闭目录"（需求 11.1）。 */
+    closeButton: button(page, NAMES.closeTocDrawer),
     /** 抽屉头部的书名（`<h2>`）。 */
     heading: (bookTitle: string) =>
       page.getByRole("heading", { level: 2, name: bookTitle, exact: true }),
@@ -425,6 +520,8 @@ export function searchDrawer(page: Page) {
   return {
     marker: heading,
     heading,
+    /** 右上角的关闭按钮（×），名称"关闭检索"（需求 11.1）。 */
+    closeButton: button(page, NAMES.closeSearchDrawer),
     input: page.getByRole("textbox", { name: NAMES.searchInput, exact: true }),
     clearButton: button(page, NAMES.clearKeyword),
     /** "找到 N 条匹配"。 */
@@ -457,20 +554,30 @@ export function settingsDrawer(page: Page) {
   return {
     marker: heading,
     heading,
+    /** 右上角的关闭按钮（×），名称"关闭设置"（需求 11.1）。 */
+    closeButton: button(page, NAMES.closeSettingsDrawer),
     theme: (key: ReaderThemeKey) => button(page, THEME_BUTTON_NAMES[key]),
 
     fontIncrease: button(page, NAMES.fontIncrease),
     fontDecrease: button(page, NAMES.fontDecrease),
-    /** 字号显示值"NNpx"（字号滑杆本身没有可访问名称）。 */
+    /** "字号大小"滑杆：名称取自关联的 `<label>`（需求 6.1）。 */
+    fontSizeSlider: page.getByRole("slider", { name: NAMES.fontSize, exact: true }),
+    /** "字号大小"字样（滑杆的 `<label>`，可见文字）。 */
+    fontSizeLabel: page.getByText(NAMES.fontSize, { exact: true }),
+    /** 字号显示值"NNpx"（在 `<label>` 之外，不计入滑杆名称）。 */
     fontSizeValue: page.getByText(/^\d{2}px$/),
     fontFamily: (key: FontKey) => button(page, FONT_BUTTON_NAMES[key]),
 
-    /** "行高间距"字样（滑杆本身没有可访问名称）。 */
+    /** "行高间距"滑杆：名称取自关联的 `<label>`（需求 6.1）。 */
+    lineHeightSlider: page.getByRole("slider", { name: NAMES.lineHeight, exact: true }),
+    /** "行高间距"字样（滑杆的 `<label>`，可见文字）。 */
     lineHeightLabel: page.getByText(NAMES.lineHeight, { exact: true }),
     lineHeightValue: page.getByText(/^\d(?:\.\d+)?x$/),
     letterSpacingSlider: page.getByRole("slider", { name: NAMES.letterSpacing, exact: true }),
     letterSpacingValue: page.getByText(/^\d(?:\.\d)?px$/),
-    /** "内容版心宽度"字样（滑杆本身没有可访问名称）。 */
+    /** "内容版心宽度"滑杆：名称取自关联的 `<label>`（需求 6.1）。 */
+    contentWidthSlider: page.getByRole("slider", { name: NAMES.contentWidth, exact: true }),
+    /** "内容版心宽度"字样（滑杆的 `<label>`，可见文字）。 */
     contentWidthLabel: page.getByText(NAMES.contentWidth, { exact: true }),
     contentWidthValue: page.getByText(/^\d{3,4}px$/),
 
@@ -491,17 +598,22 @@ export function settingsDrawer(page: Page) {
  * 弹窗与抽屉的打开标志，合计计数用于"恰好打开了一个"类判断（10.16–10.19、15.7 (c)）。
  * 详情弹窗只出现在书架，三个抽屉只出现在阅读器。
  */
-export function overlayMarkers(page: Page): {
-  detailModal: Locator;
-  tocDrawer: Locator;
-  searchDrawer: Locator;
-  settingsDrawer: Locator;
-} {
+export function overlayMarkers(page: Page): Record<OverlayKey, Locator> {
   return {
     detailModal: detailModal(page).marker,
     tocDrawer: tocDrawer(page).marker,
     searchDrawer: searchDrawer(page).marker,
     settingsDrawer: settingsDrawer(page).marker,
+  };
+}
+
+/** 详情弹窗与三个抽屉右上角的关闭按钮（×），按 `CLOSE_BUTTON_NAMES` 精确匹配（reader-defect-fixes 需求 11）。 */
+export function overlayCloseButtons(page: Page): Record<OverlayKey, Locator> {
+  return {
+    detailModal: detailModal(page).closeButton,
+    tocDrawer: tocDrawer(page).closeButton,
+    searchDrawer: searchDrawer(page).closeButton,
+    settingsDrawer: settingsDrawer(page).closeButton,
   };
 }
 

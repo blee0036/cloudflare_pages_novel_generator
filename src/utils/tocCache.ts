@@ -1,4 +1,5 @@
 import { BookToc } from "../types";
+import { fetchJson } from "./loadError";
 import { tocUrl } from "./locator";
 
 /**
@@ -8,12 +9,16 @@ import { tocUrl } from "./locator";
  */
 const tocCache = new Map<string, Promise<BookToc>>();
 
+/**
+ * 取一本书的 `_toc.json`。失败经 `fetchJson` 抛出带类型的错误（`NetworkError`、
+ * `HttpStatusError`、`ResponseFormatError`），阅读器据此按 `toc` 阶段分类，
+ * 不再依赖错误消息文本（reader-defect-fixes 需求 13.1、13.2）。
+ *
+ * 保留 `async`：`tocUrl` 若同步抛错（`encodeURIComponent` 遇孤立代理项），仍以 rejection
+ * 交给调用方并照常逐出，与改动前一致。
+ */
 async function fetchToc(bookId: string): Promise<BookToc> {
-  const res = await fetch(tocUrl(bookId));
-  if (!res.ok) {
-    throw new Error(`无法获取章节索引 (HTTP ${res.status})`);
-  }
-  return (await res.json()) as BookToc;
+  return fetchJson<BookToc>(tocUrl(bookId));
 }
 
 /**

@@ -18,13 +18,20 @@
  * - 19.2 后半句（F-001 修复的"失败不进内存缓存"）：11.10 的错误页之后，经"返回书架"与浏览器后退
  *   在同一会话（同一文档，不整页重载）内再次打开该书，此时已撤掉拦截；不出现 `source=memory`，
  *   而是重新经网络加载（`source=network`）并渲染正文。
+ * - reader-defect-fixes 需求 13.5、13.4（F-011）：11.9 的场景显示 `not-found` 的文案、11.10 的场景
+ *   显示 `damaged` 的文案；另取 `.txt.gz` 最小的一本书，以 `page.route` 使其 `_toc.json` 的请求以
+ *   网络错误失败（`route.abort("failed")`），显示 `unavailable` 的文案。三者各自的观测窗口内，
+ *   console 中以 `[load-error] ` 开头的消息恰为 1 条（`console.error`），含书 id 与出错阶段
+ *   （`stage=toc` / `stage=text`）及所抛值的名称与消息（`e2e/support/load-error.ts`）。
  *
  * ## 观测
  *
  * - 错误页（`readerError`）：错误标题"未能打开书籍"、标题下的一行说明（错误视图中唯一的段落，
- *   非空、不含换行；文本随原因而变，只记入注解）与"返回书架"按钮；"书籍加载进度"进度条
- *   （`readerLoading().progress`）计数为 0。时限自 `page.goto` 之前一刻起算：11.10 / 19.1 的
- *   "响应体接收完毕后 10 s 内"起点更晚，自访问起算只会更严。
+ *   文本恰为该类别的固定文案 `READER_ERROR_TEXTS`，RDF 需求 13.1）与"返回书架"按钮；"书籍加载进度"
+ *   进度条（`readerLoading().progress`）计数为 0。时限自 `page.goto` 之前一刻起算：11.10 / 19.1 的
+ *   "响应体接收完毕后 10 s 内"起点更晚，自访问起算只会更严。历史：EV 验收时这一行显示原始异常消息
+ *   （11.9 为 JSON 解析的英文报错），当时只核对非空、一行并记入注解（Findings_Log F-011，已修复
+ *   （reader-defect-fixes））。
  * - "不打 `[book-load]`、不写 IndexedDB"是否定判断，观测窗口的终点取可观测条件：错误页已显示后
  *   再等 2 个动画帧（`waitFrames`），不用固定时长。失败路径上应用既不写内存缓存也不写 IndexedDB
  *   （写入只在成功返回全文之后发生），窗口终点之后不会再有写入。
@@ -37,8 +44,9 @@
  *
  * ## 用例划分
  *
- * 11.9、11.10 各一个用例；11.11 按两种错误页各一个用例；19.2 的再次打开一个用例。各自新上下文
- * （6.1），前置只核对到能进入被测条目所需的程度。读数记在注解 `load-error-*` 里。
+ * 11.9、11.10 各一个用例；11.11 按两种错误页各一个用例；19.2 的再次打开一个用例；RDF 13.4、13.5
+ * 按三种失败各一个用例（11.9、11.10 的场景与 EV 用例相同，另核对日志）。各自新上下文（6.1），
+ * 前置只核对到能进入被测条目所需的程度。读数记在注解 `load-error-*` 里。
  */
 import { stat } from "node:fs/promises";
 import type { Page, Request, Route } from "@playwright/test";
@@ -49,7 +57,15 @@ import { contentTypeFor } from "../../server/resolve";
 import { decodedPath, pickBooks } from "../../support/cache";
 import { expect, test, type BookLog, type IdbProbe, type Lib } from "../../support/fixtures";
 import { libRootFor, tocPath } from "../../support/library";
-import { normalizeWhiteSpace, reader, readerError, readerLoading, shelf } from "../../support/locators";
+import { expectSingleLoadErrorLog, recordLoadErrorLog } from "../../support/load-error";
+import {
+  READER_ERROR_TEXTS,
+  normalizeWhiteSpace,
+  reader,
+  readerError,
+  readerLoading,
+  shelf,
+} from "../../support/locators";
 import { readerPath, waitFrames, type BookUnderTest } from "../../support/reader";
 import { TIMEOUTS } from "../../support/settings";
 import { step } from "../../support/step";
@@ -165,13 +181,23 @@ interface ErrorPageShown {
   elapsedMs: number;
 }
 
+/** Load_Error_Category（RDF 需求 13.1），即 `READER_ERROR_TEXTS` 的键。 */
+type ReaderErrorCategory = keyof typeof READER_ERROR_TEXTS;
+
 /**
  * 自 `since` 起 `TIMEOUTS.loadError` 内"书籍加载进度"进度条消失并显示错误页：错误标题、一行错误
- * 说明（非空、不含换行）与"返回书架"按钮（11.9、11.10、19.1）。
+ * 说明与"返回书架"按钮（11.9、11.10、19.1）；错误说明恰为 `category` 的固定文案（RDF 需求 13.1、
+ * 13.3、13.5）。
  */
-async function expectErrorPage(page: Page, since: number, label: string): Promise<ErrorPageShown> {
+async function expectErrorPage(
+  page: Page,
+  since: number,
+  label: string,
+  category: ReaderErrorCategory,
+): Promise<ErrorPageShown> {
+  const expectedText = READER_ERROR_TEXTS[category];
   return step(
-    `${label} ${TIMEOUTS.loadError} ms 内“书籍加载进度”进度条消失，显示错误页（错误标题、一行错误说明、“返回书架”按钮）`,
+    `${label} ${TIMEOUTS.loadError} ms 内“书籍加载进度”进度条消失，显示错误页（错误标题、${category} 的错误说明「${expectedText}」、“返回书架”按钮）`,
     async () => {
       const error = readerError(page);
       await expect(error.heading, "错误标题“未能打开书籍”").toBeVisible({ timeout: remainingMs(since) });
@@ -183,8 +209,8 @@ async function expectErrorPage(page: Page, since: number, label: string): Promis
       await expect(error.description, "错误说明（错误视图中唯一的段落）").toHaveCount(1);
       await expect(error.description).toBeVisible();
       const description = ((await error.description.textContent()) ?? "").trim();
-      expect(description, "错误说明不应为空").not.toBe("");
       expect(description, "错误说明应为一行（不含换行）").not.toMatch(/[\r\n]/);
+      expect(description, `错误说明应恰为 ${category} 的文案（RDF 13.1）`).toBe(expectedText);
       await expect(error.backButton, "“返回书架”按钮").toBeVisible();
 
       test.info().annotations.push({
@@ -372,13 +398,62 @@ async function openInterceptedBook(page: Page, lib: Lib): Promise<InterceptedOpe
 }
 
 // ---------------------------------------------------------------------------
+// RDF 13.5 的网络错误：_toc.json 的请求被中止
+// ---------------------------------------------------------------------------
+
+/** `_toc.json` 以网络错误失败的一次打开。 */
+interface AbortedTocOpen {
+  book: BookUnderTest;
+  /** 访问前一刻（`Date.now()`）。 */
+  startedAt: number;
+}
+
+/**
+ * 取 `.txt.gz` 最小的一本书，以 `page.route` 使其 `_toc.json` 的请求以网络错误失败
+ * （`route.abort("failed")`：页面内的 `fetch` 以 `TypeError` 拒绝），访问其阅读页，并核对该请求确以
+ * 网络错误失败、只被中止 1 次。须在首次导航之前调用。
+ */
+async function openWithTocAborted(page: Page, lib: Lib): Promise<AbortedTocOpen> {
+  const [book] = await pickBooks(lib, 1);
+  const tocPathname = tocRequestPath(book.id);
+  let aborted = 0;
+  await page.route(
+    (url) => decodedPath(url.href) === tocPathname,
+    async (route) => {
+      aborted += 1;
+      await route.abort("failed");
+    },
+  );
+  const tocFailed = page.waitForEvent("requestfailed", (r) => decodedPath(r.url()) === tocPathname);
+  // goto 自身失败时不留下未处理的拒绝；成功路径仍 await 同一个 Promise
+  void tocFailed.catch(() => undefined);
+
+  const url = readerPath(book.id);
+  const startedAt = await step(`访问 ${decodeURIComponent(url)}（${tocPathname} 以网络错误失败）`, async () => {
+    const at = Date.now();
+    await page.goto(url);
+    return at;
+  });
+  await step(`前置：${tocPathname} 的请求以网络错误失败（被中止 1 次）`, async () => {
+    const request = await tocFailed;
+    test.info().annotations.push({
+      type: "load-error-toc-failure",
+      description: `${tocPathname}：${request.failure()?.errorText ?? "（无错误文本）"}；被中止 ${aborted} 次`,
+    });
+    expect(request.failure(), `${tocPathname} 的请求应以网络错误失败`).not.toBeNull();
+    expect(aborted, `${tocPathname} 被中止的次数`).toBe(1);
+  });
+  return { book, startedAt };
+}
+
+// ---------------------------------------------------------------------------
 // 11.9
 // ---------------------------------------------------------------------------
 
 test(SHOT_TESTS.loadErrorMissingBook.title, async ({ page, lib, bookLog, idb, shot }) => {
   await checkMissingBook(lib);
   const startedAt = await openMissingBook(page, lib);
-  await expectErrorPage(page, startedAt, "11.9");
+  await expectErrorPage(page, startedAt, "11.9", "not-found");
   await endObservationWindow(page);
   // RS-20 为默认主题（localStorage 中没有已存储的主题），不 seedTheme
   await shot("load-error");
@@ -398,7 +473,7 @@ test("11.10 _toc.json 正常而 .txt.gz 收到状态 200 的 index.html（Opaque
 }) => {
   const opened = await openInterceptedBook(page, lib);
   const { book } = opened;
-  await expectErrorPage(page, opened.startedAt, "11.10");
+  await expectErrorPage(page, opened.startedAt, "11.10", "damaged");
   await endObservationWindow(page);
   opened.requests.stop();
 
@@ -444,13 +519,13 @@ test("11.10 _toc.json 正常而 .txt.gz 收到状态 200 的 index.html（Opaque
 test("11.11 在 11.9 的错误页点击“返回书架”：URL 变为 /，显示书架的书卡网格", async ({ page, lib }) => {
   await checkMissingBook(lib);
   const startedAt = await openMissingBook(page, lib);
-  await expectErrorPage(page, startedAt, "前置（11.9）");
+  await expectErrorPage(page, startedAt, "前置（11.9）", "not-found");
   await expectBackToShelf(page, lib);
 });
 
 test("11.11 在 11.10 的错误页点击“返回书架”：URL 变为 /，显示书架的书卡网格", async ({ page, lib }) => {
   const opened = await openInterceptedBook(page, lib);
-  await expectErrorPage(page, opened.startedAt, "前置（11.10）");
+  await expectErrorPage(page, opened.startedAt, "前置（11.10）", "damaged");
   opened.requests.stop();
   await expectBackToShelf(page, lib);
 });
@@ -466,7 +541,7 @@ test("19.2 11.10 的错误页之后，同一会话内经“返回书架”与浏
 }) => {
   const opened = await openInterceptedBook(page, lib);
   const { book } = opened;
-  await expectErrorPage(page, opened.startedAt, "前置（11.10）");
+  await expectErrorPage(page, opened.startedAt, "前置（11.10）", "damaged");
   await step("前置：点击“返回书架”回到书架", async () => {
     await readerError(page).backButton.click();
     await expect(shelf(page).cardTocButtons.first()).toBeVisible();
@@ -481,6 +556,7 @@ test("19.2 11.10 的错误页之后，同一会话内经“返回书架”与浏
   const requests = recordRequests(page);
   await step("浏览器后退回到该书的阅读页（同一文档内导航，不整页重载），等本次加载的 [book-load] 行与正文 <h1>", async () => {
     await page.goBack();
+    // 只比较路径：正文定位后阅读器会以替换方式把 `?ch=` 写回 URL（reader-defect-fixes 需求 7.1）
     await expect
       .poll(() => decodedPath(page.url()), { message: "后退后的路径" })
       .toBe(decodeURIComponent(readerPath(book.id)));
@@ -503,5 +579,49 @@ test("19.2 11.10 的错误页之后，同一会话内经“返回书架”与浏
     expect(again[0]?.source, "再次打开的来源分支").toBe("network");
     expect(lines.filter((l) => l.source === "memory").length, "source=memory 的行数").toBe(0);
     expect(gz.length, `再次打开时 ${book.id}.txt.gz 的请求次数`).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RDF 13.4、13.5：错误说明按类别显示，原始异常只进一行 [load-error] 日志
+// ---------------------------------------------------------------------------
+
+test.describe("RDF 13.4、13.5 阅读器错误页的分类文案与 [load-error] 日志", () => {
+  test(`RDF 13.4、13.5 11.9 的场景（${MISSING_BOOK_ID} 的 _toc.json 收到 SPA 回退的 index.html）：错误说明为 not-found 的文案「${READER_ERROR_TEXTS["not-found"]}」；console 中以“[load-error] ”开头的消息恰为 1 条，含该书 id 与 stage=toc`, async ({
+    page,
+    lib,
+  }) => {
+    await checkMissingBook(lib);
+    const log = recordLoadErrorLog(page);
+    const startedAt = await openMissingBook(page, lib);
+    await expectErrorPage(page, startedAt, "RDF 13.5", "not-found");
+    await endObservationWindow(page);
+    log.stop();
+    await expectSingleLoadErrorLog(log, { stage: "toc", bookId: MISSING_BOOK_ID }, "RDF 13.4");
+  });
+
+  test(`RDF 13.4、13.5 11.10 的场景（_toc.json 正常而 .txt.gz 收到状态 200 的 index.html）：错误说明为 damaged 的文案「${READER_ERROR_TEXTS.damaged}」；console 中以“[load-error] ”开头的消息恰为 1 条，含该书 id 与 stage=text`, async ({
+    page,
+    lib,
+  }) => {
+    const log = recordLoadErrorLog(page);
+    const opened = await openInterceptedBook(page, lib);
+    await expectErrorPage(page, opened.startedAt, "RDF 13.5", "damaged");
+    await endObservationWindow(page);
+    log.stop();
+    opened.requests.stop();
+    await expectSingleLoadErrorLog(log, { stage: "text", bookId: opened.book.id }, "RDF 13.4");
+  });
+
+  test(`RDF 13.4、13.5 _toc.json 的请求以网络错误失败：错误说明为 unavailable 的文案「${READER_ERROR_TEXTS.unavailable}」；console 中以“[load-error] ”开头的消息恰为 1 条，含该书 id 与 stage=toc`, async ({
+    page,
+    lib,
+  }) => {
+    const log = recordLoadErrorLog(page);
+    const opened = await openWithTocAborted(page, lib);
+    await expectErrorPage(page, opened.startedAt, "RDF 13.5", "unavailable");
+    await endObservationWindow(page);
+    log.stop();
+    await expectSingleLoadErrorLog(log, { stage: "toc", bookId: opened.book.id }, "RDF 13.4");
   });
 });

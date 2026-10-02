@@ -9,7 +9,8 @@
  * ## 收集
  *
  * - `onBegin`：记下根套件与其中的用例数（任务 1.5 的 R4：`onBegin` 在 globalSetup 结束之后才被
- *   调用；globalSetup 中止或用例文件加载失败时套件为 0 个用例）。
+ *   调用；globalSetup 中止或用例文件加载失败时套件为 0 个用例），并由 `suite.allTests()` 建
+ *   Review_Report 所用的 `collected`（`collectedShotCases`，RDF 16.1）。
  * - `onTestEnd`：按 `TestCase.id` 记下唯一的结果（`retries: 0`）。
  * - `onError`：按顺序记下错误信息（globalSetup 的重抛、用例文件加载失败、globalTeardown 抛错等）。
  *
@@ -41,6 +42,8 @@
  * - Review_Report 的用例按 `shotCaseKey(profile, mode, shotTestRef(file, title))` 归档：profile 与
  *   mode 先取结果中 `target` fixture 写下的 `profile` / `mode` 注解，没有时取项目的 `use`。
  *   `abortStage` 取 `abort.json` 的阶段；未收集到用例时取"用例收集"，各节注明中止阶段。
+ *   运行未中止、而拍摄用例不在 `onBegin` 收集的用例中时，该节写"用例未被本次运行选中"，附
+ *   `extractFilterArgs(process.argv)` 取出的命令行过滤参数（RDF 16.1）。
  * - reporter 自身的读取或写入错误（状态文件格式无效、Review_Report 写入失败等）以
  *   `reporter：` 开头并入 `onError` 的错误列表，按运行级失败 `run-error` 计（退出码 1）：这时
  *   Run_Summary 已不能完整反映本次运行。
@@ -85,6 +88,7 @@ import {
   type ReviewPng,
   type ReviewReportMeta,
   type ShotCaseResult,
+  type ShotRunFacts,
   type ShotStatus,
   type Violation,
 } from "../review/consistency";
@@ -255,9 +259,10 @@ const perfSection: SectionProvider = async ({ cases, startedAt }) => {
 
 /**
  * "A11y_Scan"（15.4、15.5、15.9，任务 20.5）：整理与渲染都在 `a11y/report.ts` 的纯函数里，这里只把
- * `A11Y_SCANS`（顺序即 11 节的顺序）与本次的 `CaseFacts` 交给它。结果只取本次运行的 `a11y-result`
- * 附件，不读 `e2e/.out/a11y/`（globalSetup 不清空该目录，会混入上一次运行的文件）。违规只做标注，
- * 本函数的结果不参与退出码（1.7）。
+ * `A11Y_SCANS`（顺序即该节 31 个分节的顺序）与本次的 `CaseFacts` 交给它。结果只取本次运行的
+ * `a11y-result` 附件，不读 `e2e/.out/a11y/`（globalSetup 不清空该目录，会混入上一次运行的文件）。
+ * 本函数只写该节，结果不参与退出码；违规由 `a11y.spec.ts` 的断言使所在用例失败（RDF 15.2，取代
+ * EV 1.7 中 A11y_Scan 违规不影响退出码的规定），经用例结果计入退出码。
  */
 const a11ySection: SectionProvider = async ({ cases }) => {
   const facts = await Promise.all(cases.map((c) => withAttachmentBodies(c.facts, A11Y_RESULT_ATTACHMENT)));
@@ -320,6 +325,171 @@ function isListInvocation(argv: readonly string[]): boolean {
     if (arg === "--list") return true;
   }
   return false;
+}
+
+/**
+ * Playwright `test` 命令各选项的取值方式，录自锁定版本 @playwright/test 1.62.1 的
+ * `playwright/lib/program.js`（`testOptions`）：`flag` 不带值，`required` 为 `<值>`，`optional` 为
+ * `[值]`，`variadic` 为 `<值...>`。`extractFilterArgs` 靠它跳过非过滤选项的取值，使取值不被误当作
+ * 位置参数。
+ */
+const TEST_OPTION_ARITY: Readonly<Record<string, "flag" | "required" | "optional" | "variadic">> = {
+  "--browser": "required",
+  "--config": "required",
+  "--debug": "optional",
+  "--fail-on-flaky-tests": "flag",
+  "--forbid-only": "flag",
+  "--fully-parallel": "flag",
+  "--global-timeout": "required",
+  "--grep": "required",
+  "--grep-invert": "required",
+  "--headed": "flag",
+  "--ignore-snapshots": "flag",
+  "--last-failed": "flag",
+  "--last-failed-file": "required",
+  "--list": "flag",
+  "--max-failures": "required",
+  "--no-deps": "flag",
+  "--output": "required",
+  "--only-changed": "optional",
+  "--pass-with-no-tests": "flag",
+  "--project": "variadic",
+  "--quiet": "flag",
+  "--repeat-each": "required",
+  "--reporter": "required",
+  "--retries": "required",
+  "--run-agents": "required",
+  "--shard": "required",
+  "--test-list": "required",
+  "--test-list-invert": "required",
+  "--timeout": "required",
+  "--trace": "required",
+  "--tsconfig": "required",
+  "--ui": "flag",
+  "--ui-host": "required",
+  "--ui-port": "required",
+  "--update-snapshots": "optional",
+  "--update-source-method": "required",
+  "--workers": "required",
+  "-x": "flag",
+};
+
+/** 短选项 → `TEST_OPTION_ARITY` 中的名称（`-x` 只有短形式）。 */
+const TEST_SHORT_OPTIONS: Readonly<Record<string, string>> = {
+  "-c": "--config",
+  "-g": "--grep",
+  "-G": "--grep-invert",
+  "-j": "--workers",
+  "-u": "--update-snapshots",
+  "-x": "-x",
+};
+
+/** RDF 16.1 计为"命令行过滤"的选项（设计第 15 节）；位置参数（文件过滤）另计。 */
+const FILTER_OPTIONS: ReadonlySet<string> = new Set([
+  "--grep",
+  "--grep-invert",
+  "--project",
+  "--last-failed",
+  "--only-changed",
+]);
+
+/** commander 的口径：长度大于 1 且以 `-` 开头的参数按选项解析。 */
+function looksLikeOption(arg: string): boolean {
+  return arg.length > 1 && arg.startsWith("-");
+}
+
+function optionArity(name: string | undefined): (typeof TEST_OPTION_ARITY)[string] | undefined {
+  return name !== undefined && Object.prototype.hasOwnProperty.call(TEST_OPTION_ARITY, name)
+    ? TEST_OPTION_ARITY[name]
+    : undefined;
+}
+
+function shortOptionName(flag: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(TEST_SHORT_OPTIONS, flag) ? TEST_SHORT_OPTIONS[flag] : undefined;
+}
+
+/**
+ * 从主进程的 `process.argv` 中取出本次运行的命令行过滤参数（RDF 16.1，设计第 15 节）：
+ * `-g`/`--grep`、`-G`/`--grep-invert`、`--project`（含 `--name=值` 与短选项连写 `-g值` 的形式，
+ * 连同取值）、`--last-failed`、`--only-changed`（连同可选的 ref），以及位置参数（文件过滤）。
+ * 结果按出现顺序保留各参数的原样（`-g x` 为 `["-g", "x"]`，`--grep=x` 为 `["--grep=x"]`）。纯函数。
+ *
+ * `argv` 的形状为 `[node, <Playwright CLI 脚本>, "test", ...参数]`：`run.mjs` 以
+ * `process.execPath <@playwright/test/cli> test …` 启动，`npx playwright test …` 也是同样的形状。
+ * 前两项总是跳过，随后的 `test` 子命令也跳过。参数按 Playwright 所用 commander 的规则解析：
+ *
+ * - 带值选项（`required`）总是取下一个参数为值；可选值（`optional`）只在下一个参数不像选项时取它；
+ *   `--project` 是可变参数，其后不像选项的参数都是项目名（`--project=a` 形式之后则不再是）。
+ * - 短选项连写：带值的取其余部分为值（`-gfoo`、`-j4`），布尔的（`-x`）把其余部分当作下一个短选项
+ *   （`-xg foo` 等同 `-x -g foo`）。
+ * - `--` 之后的参数 Playwright 不当作文件过滤（`program.js` 的 `testFilters`），这里也不取。
+ * - 不认识的选项不带值、不计入（Playwright 会因未知选项报错退出）。
+ */
+export function extractFilterArgs(argv: readonly string[]): string[] {
+  const args = argv.slice(2);
+  if (args[0] === "test") args.shift();
+  const out: string[] = [];
+  /** 正在接收可变参数（`--project a b`）时为该选项是否计入过滤；否则为 null。 */
+  let variadicKeep: boolean | null = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (variadicKeep !== null && !looksLikeOption(arg)) {
+      if (variadicKeep) out.push(arg);
+      continue;
+    }
+    variadicKeep = null;
+
+    if (!looksLikeOption(arg)) {
+      out.push(arg);
+      continue;
+    }
+
+    // 1. 完整的选项名：`--grep x`、`-g x`、`--last-failed`、`--project a b`
+    const name = arg.startsWith("--") ? arg : shortOptionName(arg);
+    const arity = optionArity(name);
+    if (name !== undefined && arity !== undefined) {
+      const taken = [arg];
+      if (arity === "required" || arity === "variadic") {
+        if (i + 1 < args.length) taken.push(args[++i]);
+      } else if (arity === "optional") {
+        if (i + 1 < args.length && !looksLikeOption(args[i + 1])) taken.push(args[++i]);
+      }
+      const keep = FILTER_OPTIONS.has(name);
+      if (keep) out.push(...taken);
+      if (arity === "variadic") variadicKeep = keep;
+      continue;
+    }
+
+    // 2. 短选项连写：`-gfoo`、`-j4`、`-xg foo`
+    if (arg.length > 2 && arg[1] !== "-") {
+      const head = shortOptionName(arg.slice(0, 2));
+      const headArity = optionArity(head);
+      if (head !== undefined && headArity !== undefined) {
+        if (headArity === "flag") {
+          args[i] = `-${arg.slice(2)}`;
+          i--;
+        } else if (FILTER_OPTIONS.has(head)) {
+          out.push(arg);
+        }
+        continue;
+      }
+    }
+
+    // 3. `--name=值`
+    const eq = arg.indexOf("=");
+    if (arg.startsWith("--") && eq > 2) {
+      const longName = arg.slice(0, eq);
+      const longArity = optionArity(longName);
+      if (longArity !== undefined && longArity !== "flag") {
+        if (FILTER_OPTIONS.has(longName)) out.push(arg);
+        continue;
+      }
+    }
+    // 4. 不认识的选项：不计入
+  }
+  return out;
 }
 
 /** 文件存在、是普通文件，且修改时间不早于 `since`（本次运行生成）。 */
@@ -591,11 +761,24 @@ interface ReviewPlan {
   violations: Violation[];
 }
 
+/**
+ * `ShotRunFacts.collected`（RDF 16.1）：本次收集到的 UI 用例的 `shotCaseKey`，口径与 `planReview`
+ * 归档结果时相同。`onBegin` 时还没有结果注解，profile 与 mode 取项目的 `use`；模式只在项目级声明
+ * （`playwright.config.ts`），与 `target` fixture 之后写下的注解一致。tooling 用例没有 profile，不计入。
+ */
+function collectedShotCases(tests: readonly TestCase[]): Set<string> {
+  const keys = new Set<string>();
+  for (const test of tests) {
+    const target = caseTarget(test, mergedAnnotations(test, null));
+    if (target === null) continue;
+    keys.add(shotCaseKey(target.profile, target.mode, shotTestRef(test.location.file, test.title)));
+  }
+  return keys;
+}
+
 async function planReview(
   cases: readonly CollectedCase[],
-  selected: readonly LibraryProfile[],
-  abortStage: string | null,
-  interrupted: boolean,
+  run: Omit<ShotRunFacts, "cases">,
 ): Promise<ReviewPlan> {
   const captures: { name: string; test: string }[] = [];
   const byCase = new Map<string, ShotCaseResult>();
@@ -620,7 +803,7 @@ async function planReview(
     byCase.set(key, existing === undefined ? entry : { ...existing, shots: [...existing.shots, ...shots] });
   }
 
-  const statuses = resolveShotStatuses(REVIEW_CATALOG, { selected, abortStage, interrupted, cases: byCase });
+  const statuses = resolveShotStatuses(REVIEW_CATALOG, { ...run, cases: byCase });
   const violations = checkReviewConsistency({
     catalog: REVIEW_CATALOG,
     requiredNames: REQUIRED_SHOT_NAMES,
@@ -713,6 +896,8 @@ export default class E2EReporter implements Reporter {
   readonly #listMode: boolean;
   #suite: Suite | null = null;
   #onBeginTests: number | null = null;
+  /** `onBegin` 时收集到的拍摄用例键（RDF 16.1）；`onBegin` 未被调用时为空集。 */
+  #collected: ReadonlySet<string> = new Set<string>();
   readonly #errors: string[] = [];
   readonly #results = new Map<string, TestResult>();
 
@@ -727,7 +912,9 @@ export default class E2EReporter implements Reporter {
 
   onBegin(_config: FullConfig, suite: Suite): void {
     this.#suite = suite;
-    this.#onBeginTests = suite.allTests().length;
+    const tests = suite.allTests();
+    this.#onBeginTests = tests.length;
+    this.#collected = collectedShotCases(tests);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -792,7 +979,13 @@ export default class E2EReporter implements Reporter {
 
     // 4. Review_Report 的拍摄状态与一致性检查（13.11）
     const abortStage = setupAbort?.stage ?? (!collected && abort !== null ? abort.stage : null);
-    const review = await planReview(cases, selected, abortStage, result.status === "interrupted");
+    const review = await planReview(cases, {
+      selected,
+      abortStage,
+      interrupted: result.status === "interrupted",
+      collected: this.#collected,
+      filterArgs: extractFilterArgs(process.argv),
+    });
 
     // 5–6. 第 11 节与第 8 节
     const startedAt = formatLocalTimestamp(startTime);

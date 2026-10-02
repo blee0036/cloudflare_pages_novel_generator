@@ -1,16 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { X, Type, Palette, HardDrive, Trash2, TriangleAlert, Download } from "lucide-react";
 import { ReaderSettings } from "../types";
 import { READER_THEMES } from "../utils/theme";
-import {
-  MAX_MAX_BOOKS,
-  MIN_MAX_BOOKS,
-  clearBookCache,
-  isCacheDegraded,
-  normalizeMaxBooks,
-} from "../utils/bookCache";
+import { clearBookCache, isCacheDegraded, normalizeMaxBooks } from "../utils/bookCache";
 import { listCachedBooks } from "../utils/indexedDB";
 import { CacheUsage, formatByteSize, summarizeCacheUsage } from "../utils/cacheUsage";
+import { SLIDER_SPECS } from "../utils/sliderSettings";
 
 interface SettingDrawerProps {
   isOpen: boolean;
@@ -62,6 +57,18 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
     "按了没反应"，必须有一句话解释。
   */
   const [downloadError, setDownloadError] = useState(false);
+
+  /*
+    字号、行高、版心宽度三个滑杆与旁边说明文字的关联（需求 6.1）。
+
+    用 `<label htmlFor>` 而不是 `aria-label`：可访问名称直接取自读者看得到的那几个字，两处不会
+    各改各的；点击文字也能聚焦滑杆。`<label>` 里只放说明文字（与 `aria-hidden` 的图标），
+    显示的数值留在 `<label>` 之外，否则名称会变成"字号大小 19px"，按名称精确定位就找不到了。
+    `useId()` 是 hook，必须在下面的 `if (!isOpen) return null` 之前调用，所以放在这里。
+  */
+  const fontSizeId = useId();
+  const lineHeightId = useId();
+  const contentWidthId = useId();
 
   /*
     卸载标记。`listCachedBooks()` 是异步的，而抽屉关掉后阅读器整页也可能被卸载（切书、
@@ -141,9 +148,10 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
   if (!isOpen) return null;
 
   /*
-    每次渲染都过一遍规范化：`getStoredSettings()` 只做浅合并、不校验数值，手改过的
-    localStorage 能给出 `-1` 或 `0`，那会让滑杆的 `value` 落在 min/max 之外（受控 input
-    会被浏览器夹回，显示与状态从此不一致）。规范化写在用处，与 `bookCache.ts` 同一口径。
+    滑杆的取值已由 `getStoredSettings()` 归一（`utils/sliderSettings.ts`：夹到区间、吸附到
+    `SLIDER_SPECS` 的网格上），之后的更新也只来自下面这些滑杆与按钮，所以 5 个滑杆的 `value`
+    与旁边显示的数字直接取 `settings` 即为同一个网格值（需求 6.4）。缓存上限这里再过一遍
+    `normalizeMaxBooks`，对归一后的整数是恒等，留着是与 `bookCache.ts` 的淘汰计算同一口径。
   */
   const maxBooks = normalizeMaxBooks(settings.cacheMaxBooks);
 
@@ -162,18 +170,21 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
           <div className="flex items-center space-x-2">
             <h2 className="font-bold text-base">阅读设置</h2>
           </div>
+          {/* 只含图标的按钮：名称由 `aria-label` 给出，`title` 同文作悬停提示（F-009，需求 11.1） */}
           <button
             onClick={onClose}
             className="p-1 rounded-lg hover:bg-[var(--hover)]"
+            aria-label="关闭设置"
+            title="关闭设置"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
         <div className="p-5 space-y-6">
           {/* 1. 主题配色 (Theme Presets) */}
           <div>
-            <label className="text-xs font-semibold opacity-60 flex items-center mb-3">
+            <label className="text-xs font-semibold text-[var(--text-muted)] flex items-center mb-3">
               <Palette className="w-3.5 h-3.5 mr-1.5" />
               阅读背景 / 主题
             </label>
@@ -195,10 +206,11 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
                     key={key}
                     data-theme={key}
                     onClick={() => onUpdateSettings({ theme: key })}
+                    /* 未选中的色块不再叠 `opacity-80`（F-010）：半透明会把色块的底色与抽屉
+                       底色混在一起，深色页面上的明亮色块因此只剩 3.9–4.3:1。选中态由 `ring`
+                       与 `scale` 表示，不依赖其余色块变淡。 */
                     className={`h-11 rounded-xl flex flex-col items-center justify-center transition-all border bg-[var(--bg)] text-[var(--text)] border-[var(--border)] ${
-                      isSelected
-                        ? "ring-2 ring-offset-2 ring-blue-500 scale-105 shadow-md"
-                        : "opacity-80 hover:opacity-100"
+                      isSelected ? "ring-2 ring-offset-2 ring-blue-500 scale-105 shadow-md" : ""
                     }`}
                     title={name}
                   >
@@ -214,8 +226,11 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
           {/* 2. 字号调整 (Font Size) */}
           <div>
             <div className="flex justify-between items-center mb-2">
-              <label className="text-xs font-semibold opacity-60 flex items-center">
-                <Type className="w-3.5 h-3.5 mr-1.5" />
+              <label
+                htmlFor={fontSizeId}
+                className="text-xs font-semibold text-[var(--text-muted)] flex items-center"
+              >
+                <Type className="w-3.5 h-3.5 mr-1.5" aria-hidden="true" />
                 字号大小
               </label>
               <span className="text-xs font-mono font-medium">
@@ -226,7 +241,10 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
               <button
                 onClick={() =>
                   onUpdateSettings({
-                    fontSize: Math.max(14, settings.fontSize - 1),
+                    fontSize: Math.max(
+                      SLIDER_SPECS.fontSize.min,
+                      settings.fontSize - SLIDER_SPECS.fontSize.step,
+                    ),
                   })
                 }
                 className="w-10 h-8 rounded-lg border border-[var(--border)] font-bold text-xs flex items-center justify-center hover:bg-[var(--hover)]"
@@ -234,10 +252,11 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
                 A-
               </button>
               <input
+                id={fontSizeId}
                 type="range"
-                min="14"
-                max="36"
-                step="1"
+                min={SLIDER_SPECS.fontSize.min}
+                max={SLIDER_SPECS.fontSize.max}
+                step={SLIDER_SPECS.fontSize.step}
                 value={settings.fontSize}
                 onChange={(e) =>
                   onUpdateSettings({ fontSize: parseInt(e.target.value, 10) })
@@ -247,7 +266,10 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
               <button
                 onClick={() =>
                   onUpdateSettings({
-                    fontSize: Math.min(36, settings.fontSize + 1),
+                    fontSize: Math.min(
+                      SLIDER_SPECS.fontSize.max,
+                      settings.fontSize + SLIDER_SPECS.fontSize.step,
+                    ),
                   })
                 }
                 className="w-10 h-8 rounded-lg border border-[var(--border)] font-bold text-sm flex items-center justify-center hover:bg-[var(--hover)]"
@@ -259,7 +281,7 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
 
           {/* 3. 字体风格 (Font Family) */}
           <div>
-            <label className="text-xs font-semibold opacity-60 flex items-center mb-2">
+            <label className="text-xs font-semibold text-[var(--text-muted)] flex items-center mb-2">
               字体选择
             </label>
             <div className="grid grid-cols-3 gap-2">
@@ -281,7 +303,9 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
                   className={`py-2 text-xs rounded-lg border font-medium transition-all ${
                     settings.fontFamily === f.key
                       ? "border-[var(--accent)] bg-blue-500/10 font-bold"
-                      : "border-[var(--border)] opacity-70 hover:opacity-100"
+                      : /* 未选中：不透明的 `--text-muted` 取代 `opacity-70`（F-010），
+                           悬停时提到 `--text`，与原先 70% → 100% 的反馈同义；底色不变 */
+                        "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]"
                   }`}
                 >
                   {f.name}
@@ -294,14 +318,17 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
           <div className="space-y-4 pt-2 border-t border-[var(--border)]">
             <div>
               <div className="flex justify-between items-center mb-1.5">
-                <span className="text-xs opacity-60">行高间距</span>
+                <label htmlFor={lineHeightId} className="text-xs text-[var(--text-muted)]">
+                  行高间距
+                </label>
                 <span className="text-xs font-mono">{settings.lineHeight}x</span>
               </div>
               <input
+                id={lineHeightId}
                 type="range"
-                min="1.4"
-                max="2.5"
-                step="0.05"
+                min={SLIDER_SPECS.lineHeight.min}
+                max={SLIDER_SPECS.lineHeight.max}
+                step={SLIDER_SPECS.lineHeight.step}
                 value={settings.lineHeight}
                 onChange={(e) =>
                   onUpdateSettings({ lineHeight: parseFloat(e.target.value) })
@@ -312,14 +339,14 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
 
             <div>
               <div className="flex justify-between items-center mb-1.5">
-                <span className="text-xs opacity-60">字间距</span>
+                <span className="text-xs text-[var(--text-muted)]">字间距</span>
                 <span className="text-xs font-mono">{settings.letterSpacing}px</span>
               </div>
               <input
                 type="range"
-                min="0"
-                max="4"
-                step="0.5"
+                min={SLIDER_SPECS.letterSpacing.min}
+                max={SLIDER_SPECS.letterSpacing.max}
+                step={SLIDER_SPECS.letterSpacing.step}
                 value={settings.letterSpacing}
                 onChange={(e) =>
                   onUpdateSettings({ letterSpacing: parseFloat(e.target.value) })
@@ -331,14 +358,18 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
 
             <div>
               <div className="flex justify-between items-center mb-1.5">
-                <span className="text-xs opacity-60">内容版心宽度</span>
+                <label htmlFor={contentWidthId} className="text-xs text-[var(--text-muted)]">
+                  内容版心宽度
+                </label>
                 <span className="text-xs font-mono">{settings.contentWidth}px</span>
               </div>
+              {/* 步长 20（需求 6.3）：默认值 820 落在网格上，见 `sliderSettings.ts`。 */}
               <input
+                id={contentWidthId}
                 type="range"
-                min="600"
-                max="1200"
-                step="40"
+                min={SLIDER_SPECS.contentWidth.min}
+                max={SLIDER_SPECS.contentWidth.max}
+                step={SLIDER_SPECS.contentWidth.step}
                 value={settings.contentWidth}
                 onChange={(e) =>
                   onUpdateSettings({ contentWidth: parseInt(e.target.value, 10) })
@@ -350,7 +381,7 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
 
           {/* 5. 离线缓存 (Offline Cache) */}
           <div className="space-y-3 pt-2 border-t border-[var(--border)]">
-            <label className="text-xs font-semibold opacity-60 flex items-center">
+            <label className="text-xs font-semibold text-[var(--text-muted)] flex items-center">
               <HardDrive className="w-3.5 h-3.5 mr-1.5" />
               离线缓存
             </label>
@@ -358,7 +389,7 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
             {/* 已缓存本数与占用字节（需求 4.5）。`bytes` 是存储层为这一行存的冗余字段，
                 所以这里不必读取任何 gz 二进制。 */}
             <div className="flex justify-between items-center text-xs">
-              <span className="opacity-60">已缓存</span>
+              <span className="text-[var(--text-muted)]">已缓存</span>
               <span className="font-mono">
                 {usage === null
                   ? "统计中…"
@@ -367,7 +398,7 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
             </div>
 
             {degraded && (
-              <p className="text-[11px] opacity-70 flex items-start leading-snug">
+              <p className="text-[11px] text-[var(--text-muted)] flex items-start leading-snug">
                 <TriangleAlert className="w-3.5 h-3.5 mr-1.5 mt-px shrink-0" />
                 <span>本次会话未能写入离线缓存，阅读不受影响；清空后可再次尝试。</span>
               </p>
@@ -377,14 +408,14 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
                 淘汰发生在下一次写入前，见 `bookCache.ts` 的 `planCacheEviction`。 */}
             <div>
               <div className="flex justify-between items-center mb-1.5">
-                <span className="text-xs opacity-60">缓存上限</span>
+                <span className="text-xs text-[var(--text-muted)]">缓存上限</span>
                 <span className="text-xs font-mono">{maxBooks} 本</span>
               </div>
               <input
                 type="range"
-                min={MIN_MAX_BOOKS}
-                max={MAX_MAX_BOOKS}
-                step="1"
+                min={SLIDER_SPECS.cacheMaxBooks.min}
+                max={SLIDER_SPECS.cacheMaxBooks.max}
+                step={SLIDER_SPECS.cacheMaxBooks.step}
                 value={maxBooks}
                 onChange={(e) =>
                   onUpdateSettings({
@@ -425,7 +456,7 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
               紧跟"离线缓存"也是有意的——两者回答的是同一个问题"把这本书留在我机器上"，
               一个是给浏览器自己用的缓存，一个是给读者拿走的文件。 */}
           <div className="space-y-3 pt-2 border-t border-[var(--border)]">
-            <label className="text-xs font-semibold opacity-60 flex items-center">
+            <label className="text-xs font-semibold text-[var(--text-muted)] flex items-center">
               <Download className="w-3.5 h-3.5 mr-1.5" />
               下载整本
             </label>
@@ -434,8 +465,8 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
                 读者在按之前就该知道硬盘上会出现哪个文件。`break-all` 是因为中文书名不含空格，
                 不给断点就会撑破抽屉宽度。 */}
             <div className="flex justify-between items-start text-xs gap-2">
-              <span className="opacity-60 shrink-0">文件名</span>
-              <span className="font-mono text-right break-all opacity-80">
+              <span className="text-[var(--text-muted)] shrink-0">文件名</span>
+              <span className="font-mono text-right break-all text-[var(--text-muted)]">
                 {downloadFileName}
               </span>
             </div>
@@ -449,7 +480,7 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
               下载 UTF-8 纯文本
             </button>
 
-            <p className="text-[11px] opacity-60 leading-snug">
+            <p className="text-[11px] text-[var(--text-muted)] leading-snug">
               由当前已加载的正文直接生成，不再向服务器请求。
             </p>
 

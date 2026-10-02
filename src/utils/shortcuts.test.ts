@@ -55,7 +55,8 @@ describe("既有快捷键并存（C13 保留部分）", () => {
   });
 
   it("未绑定的键一律不接管", () => {
-    for (const key of ["a", "Enter", "Tab", "PageDown", "ArrowUp", "ArrowDown", "1"]) {
+    // `↑`/`↓`/`PageUp`/`PageDown` 已由需求 4.3 接管（行滚动 / 一屏滚动），不再列在这里。
+    for (const key of ["a", "Enter", "Tab", "1"]) {
       expect(readerAction(press(key), READING)).toBeNull();
     }
   });
@@ -103,6 +104,88 @@ describe("Home / End 章首章末（需求 9.4）", () => {
   it("抽屉打开时让给抽屉列表", () => {
     expect(readerAction(press("Home"), PANEL)).toBeNull();
     expect(readerAction(press("End"), PANEL)).toBeNull();
+  });
+});
+
+/** 需求 4.3 新增的 4 个滚动键（任务 7.2）：正文滚动容器是 `<main>`，浏览器默认按键滚动不保证落到它上面。 */
+const SCROLL_KEYS: [string, ReaderAction][] = [
+  ["ArrowDown", "line-down"],
+  ["ArrowUp", "line-up"],
+  ["PageDown", "screen-down"],
+  ["PageUp", "screen-up"],
+];
+
+describe("↑/↓ 行滚动、PageUp/PageDown 一屏滚动（需求 4.3）", () => {
+  it.each(SCROLL_KEYS)("%s → %s", (key, action) => {
+    expect(readerAction(press(key), READING)).toBe(action);
+  });
+
+  it("焦点在 body、<main> 或正文普通元素上（含 target 缺失）时照常接管", () => {
+    const targets = [
+      null,
+      {},
+      { tagName: "BODY" },
+      { tagName: "MAIN" },
+      { tagName: "DIV" },
+      { tagName: "P", isContentEditable: false },
+    ];
+    for (const target of targets) {
+      for (const [key, action] of SCROLL_KEYS) {
+        expect(readerAction(press(key, { target }), READING)).toBe(action);
+      }
+    }
+  });
+
+  it("焦点在按钮上时照常接管——这 4 个键在按钮上没有激活语义，与 Space 不同", () => {
+    for (const tagName of ["BUTTON", "SUMMARY", "A"]) {
+      for (const [key, action] of SCROLL_KEYS) {
+        expect(readerAction(press(key, { target: { tagName } }), READING)).toBe(action);
+      }
+    }
+  });
+
+  it("Shift 不改变含义", () => {
+    for (const [key, action] of SCROLL_KEYS) {
+      expect(readerAction(press(key, { shiftKey: true }), READING)).toBe(action);
+    }
+  });
+
+  it("抽屉打开时让给抽屉列表", () => {
+    for (const [key] of SCROLL_KEYS) {
+      expect(readerAction(press(key), PANEL)).toBeNull();
+      expect(readerAction(press(key, { shiftKey: true }), PANEL)).toBeNull();
+    }
+  });
+
+  it("焦点在底栏章节滑杆（<input type=\"range\">）等输入类元素上时不接管——方向键归滑杆自己", () => {
+    // `ShortcutTarget` 只读 `tagName`；`type` 写出来只是为了让用例对应真实的滑杆元素。
+    const slider = { tagName: "INPUT", type: "range" };
+    const targets = [
+      slider,
+      { tagName: "INPUT" },
+      { tagName: "TEXTAREA" },
+      { tagName: "SELECT" },
+      { tagName: "DIV", isContentEditable: true },
+    ];
+    for (const target of targets) {
+      for (const [key] of SCROLL_KEYS) {
+        expect(readerAction(press(key, { target }), READING)).toBeNull();
+      }
+    }
+  });
+
+  it("Ctrl / Alt / Meta 组合不接管", () => {
+    for (const [key] of SCROLL_KEYS) {
+      expect(readerAction(press(key, { ctrlKey: true }), READING)).toBeNull();
+      expect(readerAction(press(key, { altKey: true }), READING)).toBeNull();
+      expect(readerAction(press(key, { metaKey: true }), READING)).toBeNull();
+      expect(readerAction(press(key, { ctrlKey: true, shiftKey: true }), READING)).toBeNull();
+    }
+  });
+
+  it("←/→ 不受影响：仍是换章，抽屉打开时也照旧可用", () => {
+    expect(readerAction(press("ArrowLeft"), PANEL)).toBe("prev-chapter");
+    expect(readerAction(press("ArrowRight"), PANEL)).toBe("next-chapter");
   });
 });
 
@@ -168,6 +251,12 @@ describe("isTypingTarget / isSpaceActivatedTarget", () => {
 describe("preventsDefault", () => {
   it("只拦滚动类动作——浏览器对这几个键有默认滚动", () => {
     for (const action of ["page-down", "page-up", "chapter-start", "chapter-end"] as const) {
+      expect(preventsDefault(action)).toBe(true);
+    }
+  });
+
+  it("行滚动与一屏滚动也拦——否则浏览器默认按键滚动会造成第二次位移（需求 4.3）", () => {
+    for (const action of ["line-down", "line-up", "screen-down", "screen-up"] as const) {
       expect(preventsDefault(action)).toBe(true);
     }
   });

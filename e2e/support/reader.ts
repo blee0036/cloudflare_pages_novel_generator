@@ -6,7 +6,8 @@
  * | `bookUnderTest(lib, id)` | 取 `_toc.json` 推导的 `TocFacts` 与 gz 字节数；gz ≥ `BIG_BOOK_GZ_BYTES` 时把本用例超时设为 `TIMEOUTS.bigBookTest`，并给出等待加载的上限（6.8） |
  * | `readerPath(id, ch?)` | `/read/<id>`（可带 `?ch=`），书 id 经百分号编码 |
  * | `openReader(page, bookLog, book, ch?)` | 导航到阅读器，等本次导航的 `[book-load]` 行与正文 `<h1>` |
- * | `expectCurrentChapter(page, facts, index)` | 8.1 的"当前章节"判定（其余各条所说的当前章节均按此判定） |
+ * | `expectCurrentChapter(page, facts, index)` | 8.1 的"当前章节"判定（其余各条所说的当前章节均按此判定），并等到 URL 的 `ch` 写回为该下标（reader-defect-fixes 需求 7.1） |
+ * | `urlChapterParams(page)` | 页面 URL 中 `ch` 查询参数的全部取值（读 `page.url()`） |
  * | `readChapterPosition(page)` | 读"第 N / M 章"的 N、M |
  * | `openTocDrawer(page)` | 点顶栏"章节目录 (快捷键: T)"打开目录抽屉 |
  * | `readTocList(page)` | 目录抽屉列表的度量快照：等已挂载行集合连续 2 帧不变后返回每行的下标、标签、文本、标题文本及其是否可见、`tabIndex`、`aria-current` 与位置，以及列表内容的总高度 |
@@ -18,11 +19,14 @@
  * | `openSearchDrawer(page)` | 点顶栏"全书内容检索 (快捷键: F)"打开检索抽屉 |
  * | `readSearchResults(page)` | 检索抽屉结果列表的度量快照：每条的章节名、命中文字及其前后片段 |
  * | `readMainScroll(page)` / `setMainScrollTop(page, top)` | 读 / 设正文滚动容器（`<main>`）的滚动位置 |
- * | `readDocumentScroll(page)` / `setDocumentScrollTop(page, top)` | 读 / 设文档滚动元素的滚动位置（实测实际滚动的是文档，见 Findings_Log F-002） |
+ * | `readDocumentScroll(page)` / `setDocumentScrollTop(page, top)` | 读 / 设文档滚动元素的滚动位置（书架页由文档滚动；阅读器正文分支里文档不可滚） |
+ * | `expectDocumentNotScrollable(page)` | 需求 2.1：文档滚动元素的最大可滚距离 ≤ 1 px（阅读器的滚动断言之前调用，reader-defect-fixes 14.2） |
  * | `waitFrames(page, n?)` | 等 n 个动画帧（"不变"类断言前的等待；不能与 Controlled_Clock 同用） |
- * | `readJudgeParagraph(page)` | 9.5 的判定段落序号及其所依据的几何量（判定线、可视高度、正文高度、实际滚动元素）（任务 10.5 起；10.6 复用） |
- * | `judgeScrollTarget(reading, k)` | 使判定段落成为第 k 段的目标 `scrollTop`（对实际滚动元素） |
- * | `scrollJudgeParagraphTo(page, k)` | 把判定段落滚到第 k 段：设定实际滚动元素的 `scrollTop`，等到 `scroll` 事件，核对序号为 k |
+ * | `readJudgeParagraph(page)` | 9.5 的判定段落序号及其所依据的几何量（判定线、可视高度、正文高度、`<main>` 的滚动位置）（任务 10.5 起；10.6 复用） |
+ * | `judgeScrollTarget(reading, k)` | 使判定段落成为第 k 段的目标 `<main>.scrollTop` |
+ * | `scrollJudgeParagraphTo(page, k)` | 把判定段落滚到第 k 段：核对文档不可滚，设定 `<main>` 的 `scrollTop`，等到 `scroll` 事件，核对序号为 k |
+ * | `readParagraphStarts(page, lib, bookId, chapter)` / `paragraphRange(starts, k)` | 当前章各正文段落的章内起点（由全书文本与渲染出的段落文本推导），与第 k 段的章内偏移范围（reader-defect-fixes 需求 3.2、3.4） |
+ * | `expectOffsetInParagraph(starts, k, offset, what)` | 断言章内偏移落在第 k 段的范围内：不小于该段起点、小于下一段起点（需求 3.2、3.4） |
  * | `openBookmarkList(page)` | 打开目录抽屉并切到"我的书签"页签（任务 10.6 起） |
  * | `readBookmarkEntries(page)` | "我的书签"列表的度量快照：每条的章节名与预览文字（任务 10.6 起） |
  *
@@ -118,10 +122,20 @@ function countExactText(page: Page, text: string): Promise<number> {
   }, text);
 }
 
+/** 页面 URL 中 `ch` 查询参数的全部取值（按出现顺序；没有时为空数组）。读 `page.url()`，不经页面脚本。 */
+export function urlChapterParams(page: Page): string[] {
+  return new URL(page.url()).searchParams.getAll("ch");
+}
+
 /**
  * 断言当前章节为下标 `index` 的节点（8.1）：正文区（`<main>`，不含顶栏与底栏）的一级标题文本
  * 等于该节点标题；"第 N / M 章"的 N 为该节点在非卷节点中的序号（从 1 起）、M 为非卷节点数；
  * 正文区内去掉首尾空白后与标题完全相同的元素恰好 1 个。`index` 须为正文章节。
+ *
+ * 另轮询 URL：`ch` 参数恰有一个，值为 `String(index)`（十进制、无前导零）。阅读器在每次定位（首次
+ * 定位与各种换章）后以替换历史记录的方式把当前章写回 URL（reader-defect-fixes 需求 7.1、D2）；写回在
+ * 定位提交之后的 effect 里发起，路由状态的更新又包在 transition 中（React Router 7），比正文渲染晚
+ * 一拍，所以用轮询等。本函数返回后读到的 `page.url()` 即写回之后的 URL。
  */
 export async function expectCurrentChapter(page: Page, facts: TocFacts, index: number): Promise<void> {
   const ordinal = facts.bodyOrdinals[index];
@@ -131,7 +145,7 @@ export async function expectCurrentChapter(page: Page, facts: TocFacts, index: n
   const title = facts.titles[index];
   const position = `第 ${ordinal + 1} / ${facts.bodyCount} 章`;
   const view = reader(page);
-  await step(`8.1 当前章节为下标 ${index}「${title}」（${position}）`, async () => {
+  await step(`8.1 当前章节为下标 ${index}「${title}」（${position}），URL 的 ch 为 ${index}`, async () => {
     await expect(view.chapterHeading, "正文区的一级标题应为该节点标题（8.1）").toHaveText(title);
     await expect(view.chapterPosition, "“第 N / M 章”应为该节点的正文序号与非卷节点数（8.1）").toHaveText(
       position,
@@ -141,6 +155,11 @@ export async function expectCurrentChapter(page: Page, facts: TocFacts, index: n
         message: `正文区内与标题「${title}」完全相同的元素应恰好 1 个（8.1）`,
       })
       .toBe(1);
+    await expect
+      .poll(() => urlChapterParams(page), {
+        message: `URL 的 ch 应写回为当前章节的下标 ${index}（恰有一个 ch 参数；reader-defect-fixes 需求 7.1）`,
+      })
+      .toEqual([String(index)]);
   });
 }
 
@@ -646,8 +665,9 @@ export function setMainScrollTop(page: Page, top: number): Promise<number> {
 /**
  * 读文档滚动元素（`document.scrollingElement`）的滚动位置（只读）。
  *
- * 按设计，正文滚动容器是 `<main>`；但实测 `<main>` 的高度随内容增长、自身不滚动，实际滚动的是文档
- * （Findings_Log F-002）。需要"滚动位置不变"一类判断且不应依赖 F-002 的用例，可同时读两者。
+ * 书架页由文档滚动。阅读器正文分支里 `<main>` 是唯一的滚动容器，文档不可滚动（reader-defect-fixes
+ * 需求 2.1），阅读器的滚动读写一律经 `readMainScroll` / `setMainScrollTop`；那里用本函数只为
+ * `expectDocumentNotScrollable` 的核对与"文档 `scrollTop` 为 0"一类读数。
  */
 export function readDocumentScroll(page: Page): Promise<MainScroll> {
   return page.evaluate(() => {
@@ -656,13 +676,38 @@ export function readDocumentScroll(page: Page): Promise<MainScroll> {
   });
 }
 
-/** 直接设定文档滚动元素的 `scrollTop`，返回赋值后的值（见 `readDocumentScroll`、`setMainScrollTop`）。 */
+/** 直接设定文档滚动元素的 `scrollTop`，返回赋值后的值（书架页；见 `readDocumentScroll`）。 */
 export function setDocumentScrollTop(page: Page, top: number): Promise<number> {
   return page.evaluate((value) => {
     const el = document.scrollingElement ?? document.documentElement;
     el.scrollTop = value;
     return el.scrollTop;
   }, top);
+}
+
+/** 需求 2.1：文档滚动元素的最大可滚距离 `scrollHeight − clientHeight` 的上限（px）。 */
+export const DOCUMENT_SCROLL_SLACK_PX = 1;
+
+/**
+ * 需求 2.1 / 14.2：断言文档滚动元素不可滚动，即 `scrollHeight − clientHeight ≤ 1` px（一次读数，不轮询）。
+ *
+ * 阅读器正文分支里 `<main>` 是唯一的正文滚动容器（reader-defect-fixes 设计第 3 节）。"滚到第 k 段"、
+ * EV 需求 10 的起始状态与"`scrollTop` 不变"类比较只读写 `<main>`，在滚动或比较之前调用本函数：
+ * 文档若可滚，读者看到的滚动就不一定发生在 `<main>` 上，这些读数也就不再代表阅读位置。
+ * 只读几何量，不依赖 `requestAnimationFrame`，可与 Controlled_Clock 同用。
+ */
+export async function expectDocumentNotScrollable(page: Page): Promise<void> {
+  await step(
+    `2.1 文档滚动元素不可滚动（scrollHeight − clientHeight ≤ ${DOCUMENT_SCROLL_SLACK_PX} px）`,
+    async () => {
+      const doc = await readDocumentScroll(page);
+      expect(
+        doc.scrollHeight - doc.clientHeight,
+        `文档滚动元素的最大可滚距离（scrollTop ${doc.scrollTop}、clientHeight ${doc.clientHeight}、` +
+          `scrollHeight ${doc.scrollHeight}）`,
+      ).toBeLessThanOrEqual(DOCUMENT_SCROLL_SLACK_PX);
+    },
+  );
 }
 
 /**
@@ -687,19 +732,15 @@ export async function waitFrames(page: Page, count = 2): Promise<void> {
 // 9.5：判定段落是 `<article>` 中章节标题区之后的正文 `<p>` 里，边界框上边 ≤ 滚动容器（`<main>`）
 // 边界框上边 + 56 px（顶栏高度）+ 1 px 取整余量的最后一个；无此段时取第 0 段；序号从 0 起算。
 //
-// 这里的"`<main>` 边界框上边"取 `<main>` 边界框与视口交集的上边，即 `max(main.top, 0)`（视口坐标）：
+// `<main>` 是唯一的正文滚动容器（reader-defect-fixes 需求 2.1、2.2）：它占满一屏（边界框上边为视口
+// 顶边），正文在它里面滚动，文档本身不可滚。判定线因此落在视口 56 px 处（顶栏下沿）加 1 px，即读者
+// 看到的"视口首个可见段落"，与应用自己的判定（`ReaderPage` 的 `scrollTop + TOP_BIAS`）同义。
+// "滚动容器可视高度"（9.8）取 `<main>` 的 `clientHeight`；"正文高度"取正文首段上边到末段下边的距离。
+// 滚动一律对 `<main>` 赋值；`scrollJudgeParagraphTo` 先以 `expectDocumentNotScrollable` 核对需求 2.1。
 //
-// - 按设计 `<main>` 是铺满视口、自身滚动的容器，边界框上边恒为 0，与交集的上边相同，定义不受影响。
-// - 实测（Findings_Log F-002）`<main>` 随内容增高、滚动的是文档：`<main>` 的边界框随文档一起上移，
-//   各段与它的相对位置不随滚动变化。按字面取边界框上边时判定线跟着内容走，判定段落恒为第 0 段
-//   （首段在 `<main>` 的 64 px 上内边距与章节标题区之下），"把判定段落滚到第 k 段"无从做起，
-//   度量的就只是 F-002 本身而不是阅读位置。取交集的上边，判定线在两种布局下都落在顶栏下沿
-//   （视口 56 px 处）加 1 px，即读者看到的"视口首个可见段落"，与应用自己的判定
-//   （`ReaderPage` 的 `scrollTop + TOP_BIAS`）同义。
-//
-// "滚动容器可视高度"（9.8）按同一口径取交集的高度；"正文高度"取正文首段上边到末段下边的距离。
-// 滚动时操作实际在滚动的元素：`<main>` 可滚动（`overflow-y` 为 auto/scroll 且有可滚距离）时是它，
-// 否则是文档滚动元素（`document.scrollingElement`）。F-002 修复后无需改动这里。
+// 历史：EV 验收时 `<main>` 随内容增高、实际滚动的是文档（Findings_Log F-002，已修复（reader-defect-fixes））。
+// 当时这里按"实际在滚动的元素"二选一，并把"`<main>` 边界框上边"取为它与视口交集的上边；修复后两处
+// 变通都已删除，改为按 9.5 的字面定义只读写 `<main>`（需求 14.2）。
 //
 // 这些函数只读几何量、直接赋值 `scrollTop`，不依赖 `requestAnimationFrame`，可与 Controlled_Clock
 // 同用：`scroll` 事件由浏览器的渲染步骤派发，不受时钟控制。
@@ -710,36 +751,26 @@ export const JUDGE_TOP_BAR_PX = 56;
 /** 9.5：判定线的取整余量。 */
 export const JUDGE_ROUNDING_PX = 1;
 
-/** 实际在滚动的元素。按设计是 `<main>`；实测是文档（F-002）。 */
-export type ReaderScroller = "main" | "document";
-
 /** 判定段落的一次读数（几何量均为视口坐标，单位 px）。 */
 export interface JudgeReading {
   /** 判定段落序号（从 0 起）。 */
   index: number;
   /** 正文段落数（`<article>` 内章节标题区之后的 `<p>`）。 */
   count: number;
-  /** 判定线：`visibleTop + 56 + 1`。 */
+  /** 判定线：`mainTop + 56 + 1`。 */
   line: number;
   /** `<main>` 边界框上边。 */
   mainTop: number;
-  /** `<main>` 边界框与视口交集的上边：`max(mainTop, 0)`。 */
-  visibleTop: number;
-  /** 滚动容器可视高度：`<main>` 边界框与视口交集的高度（9.8）。 */
+  /** 滚动容器可视高度：`<main>` 的 `clientHeight`（9.8）。 */
   visibleHeight: number;
   /** 正文高度：正文首段上边到末段下边（9.8）；没有段落时为 0。 */
   bodyHeight: number;
   /** 各正文段落的边界框上边，按文档顺序。 */
   tops: number[];
-  /** 实际在滚动的元素；`<main>` 与文档都不可滚动时为 null。 */
-  scroller: ReaderScroller | null;
-  /** `scroller` 的 `scrollTop`（为 null 时取文档的）。 */
+  /** `<main>` 的 `scrollTop`。 */
   scrollTop: number;
-  /** `scroller` 的最大可滚距离 `scrollHeight − clientHeight`（为 null 时为 0）。 */
+  /** `<main>` 的最大可滚距离 `scrollHeight − clientHeight`。 */
   maxScrollTop: number;
-  /** `<main>` 与文档滚动元素各自的 `scrollTop`。 */
-  mainScrollTop: number;
-  documentScrollTop: number;
 }
 
 interface JudgeProbe {
@@ -769,11 +800,8 @@ export async function readJudgeParagraph(page: Page): Promise<JudgeReading> {
           (!header.contains(p) && (header.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0),
       );
 
-      const viewportHeight = document.documentElement.clientHeight;
-      const mainRect = mainEl.getBoundingClientRect();
-      const visibleTop = Math.max(mainRect.top, 0);
-      const visibleBottom = Math.min(mainRect.bottom, viewportHeight);
-      const line = visibleTop + topBar + rounding;
+      const mainTop = mainEl.getBoundingClientRect().top;
+      const line = mainTop + topBar + rounding;
 
       const rects = body.map((p) => p.getBoundingClientRect());
       const tops = rects.map((r) => r.top);
@@ -782,28 +810,16 @@ export async function readJudgeParagraph(page: Page): Promise<JudgeReading> {
         if (top <= line) index = i;
       });
 
-      const doc = document.scrollingElement ?? document.documentElement;
-      const overflow = getComputedStyle(mainEl).overflowY;
-      const mainScrolls =
-        (overflow === "auto" || overflow === "scroll") && mainEl.scrollHeight - mainEl.clientHeight >= 1;
-      const docScrolls = doc.scrollHeight - doc.clientHeight >= 1;
-      const scroller = mainScrolls ? "main" : docScrolls ? "document" : null;
-      const el = scroller === "main" ? mainEl : doc;
-
       return {
         index,
         count: body.length,
         line,
-        mainTop: mainRect.top,
-        visibleTop,
-        visibleHeight: Math.max(0, visibleBottom - visibleTop),
+        mainTop,
+        visibleHeight: mainEl.clientHeight,
         bodyHeight: rects.length > 0 ? rects[rects.length - 1].bottom - rects[0].top : 0,
         tops,
-        scroller,
-        scrollTop: el.scrollTop,
-        maxScrollTop: scroller === null ? 0 : el.scrollHeight - el.clientHeight,
-        mainScrollTop: mainEl.scrollTop,
-        documentScrollTop: doc.scrollTop,
+        scrollTop: mainEl.scrollTop,
+        maxScrollTop: mainEl.scrollHeight - mainEl.clientHeight,
       };
     }, probe);
   } finally {
@@ -812,65 +828,63 @@ export async function readJudgeParagraph(page: Page): Promise<JudgeReading> {
 }
 
 /**
- * 使判定段落成为第 `k` 段所需的 `scrollTop`（对 `reading.scroller`）：把第 k 段的上边放到可视区上边
- * 之下 56 px 处（判定线之上 1 px；第 k + 1 段的上边随之在判定线之下）。与应用恢复位置时的
- * `tops[k] − TOP_BIAS` 同义。可能超出 `[0, maxScrollTop]`，由调用方判断能否滚到。
+ * 使判定段落成为第 `k` 段所需的 `<main>.scrollTop`：把第 k 段的上边放到 `<main>` 上边之下 56 px 处
+ * （判定线之上 1 px；第 k + 1 段的上边随之在判定线之下）。与应用恢复位置时的 `tops[k] − TOP_BIAS`
+ * 同义。可能超出 `[0, maxScrollTop]`，由调用方判断能否滚到。
  */
 export function judgeScrollTarget(reading: JudgeReading, k: number): number {
   const top = reading.tops[k];
   if (top === undefined) throw new Error(`第 ${k} 段不存在（共 ${reading.count} 段）`);
-  return reading.scrollTop + Math.round(top - (reading.visibleTop + JUDGE_TOP_BAR_PX));
+  return reading.scrollTop + Math.round(top - (reading.mainTop + JUDGE_TOP_BAR_PX));
 }
 
 /** `scrollJudgeParagraphTo` 在页面上记录"已收到 scroll 事件"的属性名。 */
 const SCROLL_SEEN_FLAG = "__e2eJudgeScrollSeen";
 
 /**
- * 把判定段落滚到第 `k` 段：对实际滚动元素直接赋值 `judgeScrollTarget` 算出的 `scrollTop`（不经滚轮或
- * 键盘，没有平滑滚动），等到该元素（文档滚动时为 `document`）的 `scroll` 事件，再读一次判定段落并
- * 断言序号为 `k`。返回滚动后的读数。目标超出可滚范围、或滚后序号不为 `k` 时失败（测试自身的问题，16.6）。
+ * 把判定段落滚到第 `k` 段：先核对文档不可滚动（需求 2.1，`expectDocumentNotScrollable`），再对 `<main>`
+ * 直接赋值 `judgeScrollTarget` 算出的 `scrollTop`（不经滚轮或键盘，没有平滑滚动），等到 `<main>` 的
+ * `scroll` 事件，再读一次判定段落并断言序号为 `k`。返回滚动后的读数。目标超出可滚范围、或滚后序号
+ * 不为 `k` 时失败（测试自身的问题，16.6）。
  */
 export async function scrollJudgeParagraphTo(page: Page, k: number): Promise<JudgeReading> {
-  return step(`把判定段落滚到第 ${k} 段（设定实际滚动元素的 scrollTop，等到 scroll 事件）`, async () => {
+  return step(`把判定段落滚到第 ${k} 段（设定 <main> 的 scrollTop，等到 scroll 事件）`, async () => {
+    await expectDocumentNotScrollable(page);
     const before = await readJudgeParagraph(page);
-    if (before.scroller === null) throw new Error("<main> 与文档都没有可滚距离，无法滚动正文");
+    if (before.maxScrollTop < 1) throw new Error("<main> 没有可滚距离，无法滚动正文");
     const target = judgeScrollTarget(before, k);
     if (target < 0 || target > before.maxScrollTop) {
-      throw new Error(
-        `第 ${k} 段滚不到判定线：目标 scrollTop ${target} 不在 [0, ${before.maxScrollTop}] 内（${before.scroller}）`,
-      );
+      throw new Error(`第 ${k} 段滚不到判定线：目标 scrollTop ${target} 不在 [0, ${before.maxScrollTop}] 内`);
     }
     const applied = await reader(page).main.evaluate(
-      (mainEl, { scroller, top, flag }) => {
-        const el = scroller === "main" ? mainEl : (document.scrollingElement ?? document.documentElement);
-        const eventTarget: EventTarget = scroller === "main" ? mainEl : document;
+      (mainEl, { top, flag }) => {
         const w = window as unknown as Record<string, unknown>;
         w[flag] = false;
-        eventTarget.addEventListener(
+        mainEl.addEventListener(
           "scroll",
           () => {
             w[flag] = true;
           },
           { once: true },
         );
-        const from = el.scrollTop;
-        el.scrollTop = top;
-        return { from, to: el.scrollTop };
+        const from = mainEl.scrollTop;
+        mainEl.scrollTop = top;
+        return { from, to: mainEl.scrollTop };
       },
-      { scroller: before.scroller, top: target, flag: SCROLL_SEEN_FLAG },
+      { top: target, flag: SCROLL_SEEN_FLAG },
     );
     if (applied.to !== applied.from) {
       await expect
         .poll(
           () => page.evaluate((flag) => (window as unknown as Record<string, unknown>)[flag] === true, SCROLL_SEEN_FLAG),
-          { message: `设定 ${before.scroller} 的 scrollTop = ${target} 后应收到 scroll 事件` },
+          { message: `设定 <main> 的 scrollTop = ${target} 后应收到 scroll 事件` },
         )
         .toBe(true);
     }
     const after = await readJudgeParagraph(page);
     expect(
       after.index,
-      `判定段落应为第 ${k} 段（${after.scroller} scrollTop ${applied.from} → ${applied.to}，判定线 ${after.line}，` +
+      `判定段落应为第 ${k} 段（<main> scrollTop ${applied.from} → ${applied.to}，判定线 ${after.line}，` +
         `第 ${k} 段上边 ${after.tops[k]}）`,
     ).toBe(k);
     return after;
@@ -953,6 +967,101 @@ export function findOccurrences(
     from = at + needle.length;
   }
   return { keyword, count, offsets };
+}
+
+// ---------------------------------------------------------------------------
+// 段落的章内偏移范围（reader-defect-fixes 需求 3.2、3.4；任务 7.6）
+// ---------------------------------------------------------------------------
+//
+// 书签记录与进度记录里的 `charOffset` 是章内字符偏移（相对 `_toc.json` 中该章的 `start`，UTF-16 码元）。
+// 需求 3.2、3.4 要求它落在第 k 段的范围内：不小于第 k 段的起点、小于第 k + 1 段的起点。
+//
+// 期望值不取自应用的切分函数，由测试独立推导：该章的原文取测试进程解压的全书文本（`bookText`）在
+// `[start, end)` 上的切片（不去首尾空白），按 `\n` 切成行，每行去掉首尾空白（含全角缩进与 `\r`）后
+// 非空的即一个候选段落，其起点为该行首个非空白字符在章内的位置。再读 `<article>` 内渲染出的各 `<p>` 的
+// 文本，按文档顺序依次对齐到文本相同的下一个候选段落（标题行若未渲染为段落，就在对齐时被跳过）。
+// 对不齐（某段文本在其后的候选段落中找不到）说明渲染的不是该章，或推导有误，直接抛错（16.6）。
+
+/** 当前章各正文段落的章内起点。 */
+export interface ParagraphStarts {
+  /** 第 i 个正文段落（`<article>` 内第 i 个 `<p>`）首字在章内的偏移，严格递增。 */
+  starts: number[];
+  /** 该章的长度（`end − start`），即末段范围的上界。 */
+  chapterLength: number;
+}
+
+/**
+ * 读当前章各正文段落的章内起点（见上方说明）。`chapter` 须为当前显示的章节；调用前正文须已渲染，
+ * 且没有检索高亮以外的改写（高亮的 `<mark>` 不改变 `<p>` 的 `textContent`）。
+ */
+export async function readParagraphStarts(
+  page: Page,
+  lib: Lib,
+  bookId: string,
+  chapter: number,
+): Promise<ParagraphStarts> {
+  const [toc, book, texts] = await Promise.all([
+    lib.toc(bookId),
+    bookText(lib, bookId),
+    reader(page).paragraphs.evaluateAll((ps) => ps.map((p) => p.textContent ?? "")),
+  ]);
+  const node = toc.chapters[chapter];
+  if (node === undefined) throw new Error(`${bookId} 没有下标 ${chapter} 的节点`);
+  const source = book.text.slice(node.start, node.end);
+
+  const lines: { offset: number; text: string }[] = [];
+  let pos = 0;
+  for (const raw of source.split("\n")) {
+    const text = raw.trim();
+    if (text !== "") lines.push({ offset: pos + (raw.length - raw.trimStart().length), text });
+    pos += raw.length + 1;
+  }
+
+  const starts: number[] = [];
+  let next = 0;
+  texts.forEach((text, i) => {
+    while (next < lines.length && lines[next].text !== text) next++;
+    if (next >= lines.length) {
+      throw new Error(
+        `${bookId} 下标 ${chapter}：第 ${i} 段「${text.slice(0, 20)}」在该章原文的后续行中找不到（共 ${lines.length} 行非空）`,
+      );
+    }
+    starts.push(lines[next].offset);
+    next++;
+  });
+  return { starts, chapterLength: node.end - node.start };
+}
+
+/** 第 `k` 段的章内偏移范围 `[start, end)`：`end` 为第 k + 1 段的起点，末段为章长。 */
+export function paragraphRange(paragraphs: ParagraphStarts, k: number): { start: number; end: number } {
+  const start = paragraphs.starts[k];
+  if (start === undefined) throw new Error(`第 ${k} 段不存在（共 ${paragraphs.starts.length} 段）`);
+  return { start, end: paragraphs.starts[k + 1] ?? paragraphs.chapterLength };
+}
+
+/**
+ * 需求 3.2、3.4：断言章内偏移 `offset` 落在第 `k` 段的范围内，即不小于该段起点、小于下一段起点。
+ * `what` 是偏移的来历（如"书签记录的 charOffset"），用于步骤名与报错信息。
+ */
+export async function expectOffsetInParagraph(
+  paragraphs: ParagraphStarts,
+  k: number,
+  offset: unknown,
+  what: string,
+): Promise<void> {
+  const { start, end } = paragraphRange(paragraphs, k);
+  await step(`${what} 落在第 ${k} 段的范围内（章内偏移 [${start}, ${end})）`, () => {
+    test.info().annotations.push({
+      type: "paragraph-range",
+      description: `${what} ${String(offset)}；第 ${k} 段起点 ${start}、第 ${k + 1} 段起点 ${end}`,
+    });
+    expect(typeof offset, `${what} 应为数值`).toBe("number");
+    const value = offset as number;
+    // 落在哪一段（诊断用）：起点不大于偏移的最后一段
+    const at = paragraphs.starts.reduce((found, s, i) => (s <= value ? i : found), -1);
+    expect(value, `${what} 应不小于第 ${k} 段的起点（实际落在第 ${at} 段）`).toBeGreaterThanOrEqual(start);
+    expect(value, `${what} 应小于第 ${k + 1} 段的起点（实际落在第 ${at} 段）`).toBeLessThan(end);
+  });
 }
 
 // ---------------------------------------------------------------------------

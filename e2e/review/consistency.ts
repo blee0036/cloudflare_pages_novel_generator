@@ -16,8 +16,9 @@
  * - 开头两行：`- 运行开始时间：<startedAt>`（与 `results.json` 的 `startedAt` 为同一字符串，
  *   验收阶段 7 据此比对）与 `- 本次执行的 Library_Profile：fixture、real`（没有时写"无"）。
  * - 之后按 catalog 顺序每张一节，标题行为 `## <名称>`。
- * - 已拍摄的节：恰有 1 行 `- PNG：![<名称>](<名称>.png)`（相对报告，二者同在 `e2e/.out/review/`），
- *   13.1 的全部元数据（`shotMetadata`）、用例名与最终结果，以及带编号的准则；每条准则下恰有
+ * - 已拍摄的节：恰有 1 行 `- PNG：![A](<D>)`（RDF 16.3 的 CommonMark 合法形式）：A 为名称经
+ *   `escapeLinkText` 转义，D 为相对报告的文件名 `<名称>.png`（二者同在 `e2e/.out/review/`）经
+ *   `escapeLinkDestination` 转义并以尖括号包裹；13.1 的全部元数据（`shotMetadata`）、用例名与最终结果，以及带编号的准则；每条准则下恰有
  *   1 行判定栏 `VERDICT_FIELD`。
  * - 未拍摄的节：没有 PNG 行与判定栏；有 1 行 `- 未拍摄原因：<describeUncapturedReason>`、
  *   元数据与用例名。
@@ -115,15 +116,23 @@ export const EXPECTED_PNG_IHDR = "PNG IHDR";
  */
 export type CaseOutcome = "passed" | "failed" | "unexpectedPass" | "skipped" | "expectedFail" | "notRun";
 
-/** 13.4 的四类原因。 */
+/** 13.4 的四类原因，加上 reader-defect-fixes 需求 16.1 的"未被本次运行选中"。 */
 export type UncapturedReason =
   /** 所属 Library_Profile 未在本次运行中执行。 */
   | { readonly kind: "profile-not-run"; readonly profile: LibraryProfile }
+  /**
+   * 运行没有中止，而拍摄用例因命令行过滤（`-g`、文件参数、`--project` 等）未被本次运行收集
+   * （RDF 16.1）；`filter` 为本次运行的过滤参数（reporter 的 `extractFilterArgs`），可为空。
+   */
+  | { readonly kind: "not-selected"; readonly filter: readonly string[] }
   /** 用例被跳过；`reason` 为 Run_Summary 中的跳过原因（如 `[4.3] …`、`[16.4 F-003] …`）。 */
   | { readonly kind: "skipped"; readonly reason: string }
   /** 用例在拍摄前失败或超时；`step` 为 `step-at-end` 的步骤名（或"无具名步骤"）。 */
   | { readonly kind: "failed-before-shot"; readonly step: string; readonly timedOut: boolean }
-  /** 运行在拍摄前中止：`abort.json` 存在（附中止阶段），或该用例未执行（被中断 / 未收集）。 */
+  /**
+   * 运行在拍摄前中止：`abort.json` 存在（附中止阶段），或该用例已被收集、但被中断或未执行
+   * （RDF 16.1：未被收集的用例归 `not-selected`）。
+   */
   | { readonly kind: "aborted"; readonly cause: "abort"; readonly stage: string }
   | { readonly kind: "aborted"; readonly cause: "interrupted" | "not-executed" };
 
@@ -171,6 +180,13 @@ export interface ShotRunFacts {
   readonly interrupted: boolean;
   /** 键为 `shotCaseKey(profile, mode, ref)`：用例所在项目的 Library_Profile、服务器模式与用例。 */
   readonly cases: ReadonlyMap<string, ShotCaseResult>;
+  /**
+   * 本次运行收集到的用例（reporter 在 `onBegin` 中由 `suite.allTests()` 建立），键同 `cases`
+   * （`shotCaseKey`）。`onBegin` 未被调用时为空集（此时运行已中止，`abortStage` 非 null）。
+   */
+  readonly collected: ReadonlySet<string>;
+  /** 本次运行的命令行过滤参数（`extractFilterArgs(process.argv)`），按出现顺序；没有时为空数组。 */
+  readonly filterArgs: readonly string[];
 }
 
 /** `ShotRunFacts.cases` 的键。 */
@@ -183,14 +199,18 @@ export function shotCaseKey(profile: LibraryProfile, mode: ReviewShotDef["mode"]
  * 1. `def.by` 在 `def.profile` / `def.mode` 的项目中的结果带有该名称的 `review-shot` 附件 → 已拍摄；
  * 2. `abort.json` 存在 → 运行在拍摄前中止（设计：中止的运行中全部未拍摄的节都写这一条）；
  * 3. `def.profile` 未被选中 → Library_Profile 未执行；
- * 4. 没有该用例的结果或 `notRun` → 运行在拍摄前中止（被中断 / 该用例未执行）；
+ * 4. 没有该用例的结果或 `notRun`（RDF 16.1）：
+ *    - 该用例不在 `collected` 中（命令行过滤未选中；运行未中止已由第 2 步保证）→ 未被本次运行
+ *      选中（附 `filterArgs`）；
+ *    - 在 `collected` 中 → 运行在拍摄前中止（被中断 / 该用例未执行）；
  * 5. `skipped` → 用例被跳过（附跳过原因）；
  * 6. `failed` / `expectedFail`（实际失败或超时）→ 拍摄前失败或超时（附步骤名）；
  * 7. 其余（`passed` / `unexpectedPass`：用例跑完却没有拍摄）→ 原因为 null。
  */
 export function resolveShotStatus(def: ReviewShotDef, facts: ShotRunFacts): ShotStatus {
   const test = formatShotTest(def.by);
-  const result = facts.cases.get(shotCaseKey(def.profile, def.mode, def.by));
+  const key = shotCaseKey(def.profile, def.mode, def.by);
+  const result = facts.cases.get(key);
   if (result !== undefined && result.shots.includes(def.name)) {
     return { captured: true, test, result: result.outcome, timedOut: result.timedOut };
   }
@@ -198,6 +218,7 @@ export function resolveShotStatus(def: ReviewShotDef, facts: ShotRunFacts): Shot
   if (facts.abortStage !== null) return uncaptured({ kind: "aborted", cause: "abort", stage: facts.abortStage });
   if (!facts.selected.includes(def.profile)) return uncaptured({ kind: "profile-not-run", profile: def.profile });
   if (result === undefined || result.outcome === "notRun") {
+    if (!facts.collected.has(key)) return uncaptured({ kind: "not-selected", filter: [...facts.filterArgs] });
     return uncaptured({ kind: "aborted", cause: facts.interrupted ? "interrupted" : "not-executed" });
   }
   switch (result.outcome) {
@@ -228,11 +249,18 @@ export function resolveShotStatuses(
   return out;
 }
 
-/** 13.4 的原因文字。 */
+/** `not-selected` 的过滤参数为空时（如 `test.only`、`--shard` 造成的未收集）的写法。 */
+export const NO_FILTER_ARGS = "无";
+
+/** 13.4 的原因文字（`not-selected` 为 RDF 16.1：过滤参数以空格分隔，没有时写 `NO_FILTER_ARGS`）。 */
 export function describeUncapturedReason(reason: UncapturedReason): string {
   switch (reason.kind) {
     case "profile-not-run":
       return `所属 Library_Profile（${reason.profile}）未在本次运行中执行`;
+    case "not-selected": {
+      const filter = reason.filter.length > 0 ? reason.filter.join(" ") : NO_FILTER_ARGS;
+      return `用例未被本次运行选中（命令行过滤：${filter}）`;
+    }
     case "skipped":
       return `用例被跳过：${reason.reason}`;
     case "failed-before-shot":
@@ -488,6 +516,25 @@ function oneLine(text: string): string {
   return text.replace(/\s*[\r\n]+\s*/g, " ");
 }
 
+/**
+ * CommonMark 链接文本（图片的替代文本）的反斜杠转义（RDF 16.3）：`\`、`[`、`]` 前各加 `\`。
+ * 转义后没有未转义的方括号，替代文本不会提前结束，也不会与名称里的 `[` 配对；原有的 `\` 先成为
+ * `\\`，不会与其后的标点组成转义。按 CommonMark 反解（`\` 后跟 ASCII 标点即该标点）后得回原文。
+ * 调用方先经 `oneLine` 去掉换行。
+ */
+export function escapeLinkText(s: string): string {
+  return s.replace(/[\\[\]]/g, "\\$&");
+}
+
+/**
+ * CommonMark 尖括号形式的链接目标（RDF 16.3）：`\`、`<`、`>` 前各加 `\`，整体以 `<` `>` 包裹。
+ * 尖括号形式允许空格与圆括号，只要求其中没有换行（调用方先经 `oneLine`）与未转义的 `<`、`>`。
+ * 按 CommonMark 反解后，`<` `>` 之间得回原文。
+ */
+export function escapeLinkDestination(s: string): string {
+  return `<${s.replace(/[\\<>]/g, "\\$&")}>`;
+}
+
 function statusOf(def: ReviewShotDef, statuses: ReadonlyMap<string, ShotStatus>): ShotStatus {
   return statuses.get(def.name) ?? { captured: false, test: formatShotTest(def.by), reason: null };
 }
@@ -504,7 +551,9 @@ function renderSection(def: ReviewShotDef, status: ShotStatus, roles: FixtureRol
   const lines: string[] = [`${REPORT_TEXT.sectionHeading}${oneLine(def.name)}`, ""];
   if (status.captured) {
     lines.push(`${REPORT_TEXT.status}${REPORT_TEXT.capturedStatus}`);
-    lines.push(`${REPORT_TEXT.png}![${oneLine(def.name)}](${oneLine(reviewShotFileName(def.name))})`);
+    const alt = escapeLinkText(oneLine(def.name));
+    const destination = escapeLinkDestination(oneLine(reviewShotFileName(def.name)));
+    lines.push(`${REPORT_TEXT.png}![${alt}](${destination})`);
   } else {
     lines.push(`${REPORT_TEXT.status}${REPORT_TEXT.uncapturedStatus}`);
     lines.push(`${REPORT_TEXT.reason}${oneLine(reasonText(status))}`);

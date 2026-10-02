@@ -12,24 +12,30 @@
  * 每个用例都是新的浏览器上下文，localStorage 中没有书签键，即"当前章没有书签"（9.5、9.7 的 WHILE）。
  * 用例开始时经 UI 核对这一前提：顶栏按钮名为"添加书签"，"我的书签"计数为 0、显示"暂无书签"。
  *
- * ## 判定段落与 F-002
+ * ## 判定段落
  *
- * 判定段落按需求 9.5 的定义，由 `e2e/support/reader.ts` 的 `readJudgeParagraph` 读取（"`<main>` 边界框
- * 上边"取 `<main>` 边界框与视口交集的上边，理由见 reader.ts 的"判定段落"一节）；"滚到第 k 段"对实际
- * 在滚动的元素赋值 `scrollTop` 并等到 `scroll` 事件（`scrollJudgeParagraphTo`）。实测滚动的是文档而
- * 不是 `<main>`（Findings_Log F-002）。
+ * 判定段落按需求 9.5 的定义，由 `e2e/support/reader.ts` 的 `readJudgeParagraph` 读取；"滚到第 k 段"对正文
+ * 滚动容器 `<main>` 赋值 `scrollTop` 并等到它的 `scroll` 事件（`scrollJudgeParagraphTo`）。滚动之前与书签
+ * 跳转后读判定段落之前，都核对文档本身不可滚动（`expectDocumentNotScrollable`，reader-defect-fixes
+ * 需求 2.1、14.2）。
  *
- * 审读 `src/pages/ReaderPage.tsx`（未改动）：添加书签时记下的章内偏移取自 `liveCharOffset()`，即
- * `<main>` 的 `scroll` 事件在 rAF 里算出的待落盘偏移，没有时退回 `charOffset` state（打开本章时为 0）；
- * 预览取该偏移所在段落的前 100 字。书签跳转把偏移交给 `jumpTo`，偏移为 0 时直接显示章首，否则在
- * 测量后赋值 `<main>.scrollTop`。文档滚动不触发 `<main>` 的 `scroll` 事件，所以书签记的是章首，预览
- * 为第 0 段，跳回来也是章首：9.5 的"预览为第 k 段的前缀"与 9.6 的"判定段落序号等于 k"不成立。它们与
- * F-002 同一根因，按 16.7 各自拆成标题注明 F-002 的预期失败用例；同一场景里不受影响的断言（9.5 的计数、
- * 章节名、非空预览与按钮名称切换，9.6 的章节）留在普通用例中。普通用例同样执行各条 WHEN 的全部操作。
+ * 应用添加书签时记下的章内偏移取自 `liveCharOffset()`，即 `<main>` 的 `scroll` 事件在 rAF 里算出的待落盘
+ * 偏移，没有时退回 `charOffset` state（打开本章时为 0）；预览取该偏移所在段落的前 100 字。书签跳转把偏移
+ * 交给 `jumpTo`，偏移为 0 时直接显示章首，否则在测量后赋值 `<main>.scrollTop`。同一场景的断言分在两个用例
+ * 中：9.5 的计数、章节名、非空预览与按钮名称切换 / 预览为第 k 段的前缀，9.6 的章节 / 判定段落序号等于 k；
+ * 两个用例都执行该条 WHEN 的全部操作。
  *
- * 9.6 的"在另一章"以 `page.goto("/read/<id>?ch=<另一章>")` 进入（一次新的导航，文档与 `<main>` 的
- * `scrollTop` 都从 0 开始，书签从 localStorage 读回）。不用阅读器内的换章：F-002 之下换章不复位文档
- * 的滚动位置，点击书签后的判定段落会取决于上一章留下的滚动量，而不是书签跳转本身。
+ * `RDF 3.2`（reader-defect-fixes 需求 3.2 的偏移范围）：同样执行 9.5 的 WHEN，再读书签键中本章的那条记录，
+ * 断言其 `charOffset` 不小于第 k 段的章内起点、小于第 k + 1 段的起点。各段起点由测试独立推导
+ * （`readParagraphStarts`：测试进程解压的全书文本按行切分，与渲染出的 `<p>` 文本依次对齐），不取自应用。
+ *
+ * 历史：EV 验收时实际滚动的是文档而不是 `<main>`（Findings_Log F-002，已修复（reader-defect-fixes））：
+ * 书签记的是章首，预览为第 0 段，跳回来也是章首，9.5 的"预览为第 k 段的前缀"与 9.6 的"判定段落序号等于 k"
+ * 按 16.7 拆成预期失败用例。修复后它们改为普通用例，用例划分与断言保持不变。
+ *
+ * 9.6 的"在另一章"以 `page.goto("/read/<id>?ch=<另一章>")` 进入：一次新的导航，`<main>` 的 `scrollTop` 从 0
+ * 开始，书签从 localStorage 读回，点击书签后的判定段落只取决于书签跳转本身。（EV 验收时不用阅读器内换章
+ * 的另一个理由是 F-002 之下换章不复位文档的滚动位置；该缺陷已修复（reader-defect-fixes）。）
  *
  * ## 时间（6.4、6.5）
  *
@@ -50,11 +56,14 @@ import { NAMES, bookmarksTabName, reader, tocDrawer } from "../../support/locato
 import {
   bookUnderTest,
   expectCurrentChapter,
+  expectDocumentNotScrollable,
+  expectOffsetInParagraph,
   judgeScrollTarget,
   openBookmarkList,
   openReader,
   readBookmarkEntries,
   readJudgeParagraph,
+  readParagraphStarts,
   scrollJudgeParagraphTo,
   type BookUnderTest,
   type BookmarkEntrySnapshot,
@@ -231,8 +240,7 @@ async function addBookmarkAtK(page: Page, plan: BookmarkPlan): Promise<BookmarkA
     test.info().annotations.push({
       type: "bookmark-plan",
       description:
-        `段落 ${reading.count}、k = ${picked}；实际滚动元素 ${reading.scroller ?? "无"}` +
-        `（最大可滚距离 ${reading.maxScrollTop}）`,
+        `段落 ${reading.count}、k = ${picked}；<main> 最大可滚距离 ${reading.maxScrollTop}`,
     });
     expect(picked, `应有 1 ≤ k ≤ ⌊${reading.count} / 2⌋ 且能滚到判定线的段落`).toBeGreaterThanOrEqual(1);
     return picked;
@@ -262,7 +270,7 @@ async function addBookmarkAtK(page: Page, plan: BookmarkPlan): Promise<BookmarkA
     const view = reader(page);
     await view.addBookmarkButton.click();
     await expect(view.bookmarkButton, "顶栏书签按钮的可访问名称").toHaveAccessibleName(NAMES.removeBookmark);
-    // 度量：记下书签记录的章内偏移，供判断预览与跳转落在哪一段（F-002 的证据）
+    // 度量：记下书签记录的章内偏移，供判断预览与跳转落在哪一段（失败时的诊断依据）
     const records = await storedFor(page, plan);
     test.info().annotations.push({
       type: "bookmark-record",
@@ -323,7 +331,7 @@ test.describe("9.5 添加书签", () => {
     const plan = await bookmarkPlan(lib);
     const initial = await openChapterWithoutBookmark(page, bookLog, clock, plan);
     await addBookmarkAtK(page, plan);
-    // 第 k 段前缀的断言受 F-002 影响，拆到下面的预期失败用例（16.7）
+    // 第 k 段前缀的断言在下一个用例中（EV 因 F-002 按 16.7 拆出；已修复（reader-defect-fixes），拆分保留）
     const entry = await readNewEntry(page, plan, initial + 1);
     await step("9.5 新条目显示预览文字（非空）", async () => {
       expect(entry.preview, "新条目应渲染预览文字").not.toBeNull();
@@ -332,16 +340,12 @@ test.describe("9.5 添加书签", () => {
     await shot("bookmark-list");
   });
 
-  test("9.5 F-002 添加书签：新条目的预览文字为判定段落第 k 段文本的非空前缀", async ({
+  test("9.5 添加书签：新条目的预览文字为判定段落第 k 段文本的非空前缀", async ({
     page,
     lib,
     bookLog,
     clock,
   }) => {
-    test.fail(
-      true,
-      "F-002 正文 <main> 不是滚动容器：文档滚动不触发 <main> 的 scroll 事件，添加书签取到的仍是章首偏移，预览为第 0 段",
-    );
     const plan = await bookmarkPlan(lib);
     const initial = await openChapterWithoutBookmark(page, bookLog, clock, plan);
     const { k, texts } = await addBookmarkAtK(page, plan);
@@ -356,6 +360,26 @@ test.describe("9.5 添加书签", () => {
           `实际是第 ${prefixOf.length > 0 ? prefixOf.join("、") : "（无）"} 段的前缀`,
       ).toBe(true);
     });
+  });
+
+  test("RDF 3.2 判定段落滚到第 k 段后添加书签：书签记录的 charOffset 落在第 k 段的范围内（不小于该段起点、小于第 k + 1 段起点）", async ({
+    page,
+    lib,
+    bookLog,
+    clock,
+  }) => {
+    const plan = await bookmarkPlan(lib);
+    await openChapterWithoutBookmark(page, bookLog, clock, plan);
+    const { k } = await addBookmarkAtK(page, plan);
+    const record = await step(`读书签键 ${BOOKMARKS_KEY_PREFIX}${plan.book.id} 中本章的记录（恰 1 条）`, async () => {
+      const records = await storedFor(page, plan);
+      expect(records.length, "书签键中本章的记录数").toBe(1);
+      return records[0];
+    });
+    const paragraphs = await step("由全书文本与渲染出的段落文本推导本章各段的章内起点", () =>
+      readParagraphStarts(page, lib, plan.book.id, plan.chapter),
+    );
+    await expectOffsetInParagraph(paragraphs, k, record.charOffset, "RDF 3.2 书签记录的 charOffset");
   });
 });
 
@@ -380,21 +404,18 @@ test.describe("9.6 书签跳转", () => {
     await expectCurrentChapter(page, plan.book.facts, plan.chapter);
   });
 
-  test("9.6 F-002 在另一章点击「我的书签」中 9.5 添加的条目：判定段落序号等于添加书签时的 k", async ({
+  test("9.6 在另一章点击「我的书签」中 9.5 添加的条目：判定段落序号等于添加书签时的 k", async ({
     page,
     lib,
     bookLog,
     clock,
   }) => {
-    test.fail(
-      true,
-      "F-002 正文 <main> 不是滚动容器：书签记下的是章首偏移（添加时 <main> 未收到 scroll 事件），跳转后停在章首",
-    );
     const plan = await bookmarkPlan(lib);
     await openChapterWithoutBookmark(page, bookLog, clock, plan);
     const { k } = await addBookmarkAtK(page, plan);
     await jumpFromOtherChapter(page, bookLog, plan);
     await expectCurrentChapter(page, plan.book.facts, plan.chapter);
+    await expectDocumentNotScrollable(page);
     await step(`9.6 判定段落序号为 ${k}`, async () => {
       let last: JudgeReading | null = null;
       try {
@@ -413,7 +434,7 @@ test.describe("9.6 书签跳转", () => {
           test.info().annotations.push({
             type: "bookmark-jump",
             description:
-              `跳转后判定段落 ${r.index}；<main> scrollTop ${r.mainScrollTop}、文档 scrollTop ${r.documentScrollTop}、` +
+              `跳转后判定段落 ${r.index}；<main> scrollTop ${r.scrollTop}（最大 ${r.maxScrollTop}）、` +
               `判定线 ${r.line}、第 ${k} 段上边 ${r.tops[k]}`,
           });
         }

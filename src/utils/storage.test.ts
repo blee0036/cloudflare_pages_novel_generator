@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_PROGRESS_RECORDS,
@@ -6,6 +7,7 @@ import {
   getAllReadingHistory,
   getBookProgress,
   getBookmarks,
+  getStoredSettings,
   isChapterBookmarked,
   planProgressEviction,
   readBookmarks,
@@ -13,7 +15,16 @@ import {
   removeBookmark,
   saveBookProgress,
   saveBookmarks,
+  saveStoredSettings,
 } from "./storage";
+import {
+  SLIDER_SPECS,
+  SliderKey,
+  SliderSpec,
+  normalizeSliderSettings,
+} from "./sliderSettings";
+import { DEFAULT_MAX_BOOKS, MAX_MAX_BOOKS, MIN_MAX_BOOKS } from "./bookCache";
+import { READER_THEMES } from "./theme";
 
 /**
  * 最小 localStorage 替身。`storage.ts` 只用到 `getItem` / `setItem` / `removeItem` /
@@ -42,6 +53,7 @@ function memoryStorage(): Storage {
 
 const host = globalThis as unknown as { localStorage?: Storage };
 
+const SETTINGS_KEY = "koodo_novel_reader_settings";
 const PROGRESS_PREFIX = "koodo_novel_progress_";
 const BOOKMARKS_PREFIX = "koodo_novel_bookmarks_";
 
@@ -67,6 +79,175 @@ beforeEach(() => {
 afterEach(() => {
   delete host.localStorage;
   vi.restoreAllMocks();
+});
+
+describe("getStoredSettings 的滑杆归一（需求 6.5，D4）", () => {
+  const DEFAULTS = {
+    theme: "sepia",
+    fontSize: 19,
+    lineHeight: 1.85,
+    letterSpacing: 1,
+    fontFamily: "system",
+    contentWidth: 820,
+    cacheMaxBooks: 10,
+  };
+
+  it("没有记录、记录坏掉或不是对象时，返回的默认值不变", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(getStoredSettings()).toEqual(DEFAULTS);
+
+    host.localStorage!.setItem(SETTINGS_KEY, "{ 不是 JSON");
+    expect(getStoredSettings()).toEqual(DEFAULTS);
+
+    putRaw(SETTINGS_KEY, 42);
+    expect(getStoredSettings()).toEqual(DEFAULTS);
+  });
+
+  it("非数值、越界、不在网格上的取值都归一；缺失字段补默认值，遗留键被丢弃", () => {
+    putRaw(SETTINGS_KEY, {
+      theme: "dark",
+      fontSize: "20", // 字符串不是有限数 → 默认值
+      lineHeight: 1.83, // 1.80 与 1.85 之间，离 1.85 更近
+      letterSpacing: -3, // 越下界 → 0
+      contentWidth: 830, // 820 与 840 正中 → 取较小者
+      cacheMaxBooks: 9999, // 越上界 → 50
+      viewMode: "scroll",
+    });
+
+    expect(getStoredSettings()).toEqual({
+      ...DEFAULTS,
+      theme: "dark",
+      lineHeight: 1.85,
+      letterSpacing: 0,
+      contentWidth: 820,
+      cacheMaxBooks: 50,
+    });
+  });
+
+  it("JSON 存不下 NaN / Infinity，落盘后是 null，同样回到默认值", () => {
+    host.localStorage!.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({ fontSize: NaN, lineHeight: Infinity, contentWidth: null }),
+    );
+
+    const s = getStoredSettings();
+    expect(s.fontSize).toBe(19);
+    expect(s.lineHeight).toBe(1.85);
+    expect(s.contentWidth).toBe(820);
+  });
+
+  it("网格上的值原样保留，旧步长 40 可达的版心宽度无需迁移，浮点尾差被消除", () => {
+    putRaw(SETTINGS_KEY, {
+      fontSize: 36,
+      lineHeight: 1.4 + 9 * 0.05, // 1.8500000000000003
+      letterSpacing: 2.5,
+      contentWidth: 600 + 40 * 7, // 880：旧网格上的点也在新网格上
+      cacheMaxBooks: 1,
+    });
+
+    const s = getStoredSettings();
+    expect(s.fontSize).toBe(36);
+    expect(s.lineHeight).toBe(1.85);
+    expect(s.letterSpacing).toBe(2.5);
+    expect(s.contentWidth).toBe(880);
+    expect(s.cacheMaxBooks).toBe(1);
+  });
+
+  it("cacheMaxBooks 的规格与 bookCache 的常量一致（两模块间不能 import，字面量靠这里钉住）", () => {
+    expect(SLIDER_SPECS.cacheMaxBooks).toEqual({
+      min: MIN_MAX_BOOKS,
+      max: MAX_MAX_BOOKS,
+      step: 1,
+      fallback: DEFAULT_MAX_BOOKS,
+    });
+  });
+});
+
+describe("设置的读写往返（需求 6.4、6.5）", () => {
+  /** `ReaderSettings` 的白名单字段：读出的对象必须恰好是这 7 个键。 */
+  const SETTING_KEYS = [
+    "theme",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing",
+    "fontFamily",
+    "contentWidth",
+    "cacheMaxBooks",
+  ];
+  const SLIDER_KEYS = Object.keys(SLIDER_SPECS) as SliderKey[];
+
+  /**
+   * 一个滑杆字段在"磁盘"上可能的原始值。均匀取任意 JSON 值几乎碰不到网格点与正中点，
+   * 所以按来源混合：网格点（`min + k·step` 带浮点尾差）、两网格点正中（平局取较小者）、
+   * 区间内外的任意实数、落盘后变成 `null` 的非有限数、数字字符串、任意 JSON 值。
+   * 字段缺失由外层 `fc.record` 的 `requiredKeys: []` 覆盖。
+   */
+  const rawSliderValue = (spec: SliderSpec): fc.Arbitrary<unknown> => {
+    const last = Math.round((spec.max - spec.min) / spec.step);
+    const span = spec.max - spec.min;
+    return fc.oneof(
+      fc.integer({ min: 0, max: last }).map((k) => spec.min + k * spec.step),
+      fc.integer({ min: 0, max: last - 1 }).map((k) => spec.min + (k + 0.5) * spec.step),
+      fc.double({ min: spec.min - span, max: spec.max + span, noNaN: true }),
+      fc.constantFrom(NaN, Infinity, -Infinity),
+      fc.double({ min: spec.min, max: spec.max, noNaN: true }).map(String),
+      fc.jsonValue(),
+    );
+  };
+
+  /** `theme` / `fontFamily` 不归一，合法键、任意字符串、任意 JSON 值都要原样往返。 */
+  const rawEnum = (valid: readonly string[]) =>
+    fc.oneof(fc.constantFrom(...valid), fc.string(), fc.jsonValue());
+
+  /** 旧版本遗留键（`viewMode`）与任意多余键；与白名单重名的键交给上面的字段生成器。 */
+  const extraKeys = fc.dictionary(
+    fc
+      .oneof(fc.constant("viewMode"), fc.string({ minLength: 1, maxLength: 12 }))
+      .filter((k) => !SETTING_KEYS.includes(k)),
+    fc.jsonValue(),
+    { maxKeys: 4 },
+  );
+
+  const rawSettings = fc
+    .tuple(
+      fc.record(
+        {
+          theme: rawEnum(READER_THEMES.map((t) => t.key)),
+          fontFamily: rawEnum(["system", "serif", "kaiti"]),
+          fontSize: rawSliderValue(SLIDER_SPECS.fontSize),
+          lineHeight: rawSliderValue(SLIDER_SPECS.lineHeight),
+          letterSpacing: rawSliderValue(SLIDER_SPECS.letterSpacing),
+          contentWidth: rawSliderValue(SLIDER_SPECS.contentWidth),
+          cacheMaxBooks: rawSliderValue(SLIDER_SPECS.cacheMaxBooks),
+        },
+        { requiredKeys: [] },
+      ),
+      extraKeys,
+    )
+    .map(([known, extra]) => ({ ...extra, ...known }));
+
+  // Feature: reader-defect-fixes, Property 2: 设置读出后再存回再读出不变
+  // **Validates: Requirements 6.4, 6.5**
+  it("对任意落盘的设置对象：读出值的 5 个滑杆字段是归一的不动点，存回后再读出深等于读出值", () => {
+    fc.assert(
+      fc.property(rawSettings, (raw) => {
+        putRaw(SETTINGS_KEY, raw);
+        const s1 = getStoredSettings();
+
+        // 白名单：多余键与遗留键不进返回值，缺失字段已补齐
+        expect(Object.keys(s1).sort()).toEqual([...SETTING_KEYS].sort());
+
+        const fixed = normalizeSliderSettings(s1);
+        for (const key of SLIDER_KEYS) {
+          expect(fixed[key]).toBe(s1[key]);
+        }
+
+        saveStoredSettings(s1);
+        expect(getStoredSettings()).toStrictEqual(s1);
+      }),
+      { numRuns: 100 },
+    );
+  });
 });
 
 describe("readProgress", () => {

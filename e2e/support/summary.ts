@@ -379,6 +379,10 @@ export function aggregate(rows: readonly CaseRow[], selected: readonly Profile[]
 /**
  * 退出码（1.7、17.5、17.7）：中止于"浏览器检查"为 3；其余中止、任一运行级失败、任一失败或意外通过
  * 为 1；否则为 0。跳过、预期失败与未执行都不改变退出码（属性 12）。
+ *
+ * A11y_Scan 违规不单列为运行级失败：`a11y.spec.ts` 的断言使所在用例失败（reader-defect-fixes 需求
+ * 15.2，取代 EV 1.7 中 A11y_Scan 违规不影响退出码的规定），由"任一失败"计入。Perf_Metrics 超预算
+ * 仍不改变退出码（1.7、14.4）。
  */
 export function exitCode(
   rows: readonly CaseRow[],
@@ -934,9 +938,18 @@ function countsText(counts: Record<Outcome, number>, notRun: number): string {
   return `${OUTCOMES.map((o) => `${OUTCOME_LABELS[o]} ${counts[o]}`).join("、")}；${OUTCOME_LABELS.notRun} ${notRun}`;
 }
 
-function numbered(items: readonly string[][]): string[] {
+/**
+ * 有序列表（需求 16.2）：每项为 `[首行, ...续行]`，第 i 项（1 起）的首行写作 `${i}. 首行`，
+ * 续行缩进等于该项列表标记 `${i}. ` 的宽度（第 10 项起为 4 格），续行才仍属于该项。
+ * 没有条目时为 `[NONE_TEXT]`。导出供 tooling 测试（属性 9）使用。
+ */
+export function numbered(items: readonly (readonly string[])[]): string[] {
   if (items.length === 0) return [NONE_TEXT];
-  return items.flatMap(([head, ...rest], i) => [`${i + 1}. ${head}`, ...rest.map((line) => `   ${line}`)]);
+  return items.flatMap(([head, ...rest], i) => {
+    const marker = `${i + 1}. `;
+    const indent = " ".repeat(marker.length);
+    return [`${marker}${head}`, ...rest.map((line) => `${indent}${line}`)];
+  });
 }
 
 function renderOverview(m: RunSummaryModel): string[] {

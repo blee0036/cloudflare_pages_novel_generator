@@ -6,9 +6,17 @@
  *   RS-03 `bookshelf-skeleton`（默认主题：不 seedTheme）。
  * - 7.16：`books.json` 为非成功状态（HTTP 500）或网络错误时，骨架移除，显示失败说明与"重新加载"，
  *   不显示书卡与"最近阅读"。为使"不显示最近阅读"有区分度，首次导航前写入 1 条有效的阅读进度，
- *   书架正常加载时它会出现在"最近阅读"里（7.17 的用例在重新加载成功后核对这一点）。
+ *   书架正常加载时它会出现在"最近阅读"里（7.17 的用例在重新加载成功后核对这一点）。失败说明按
+ *   reader-defect-fixes 需求 13.11 断言为 `unavailable` 的书架文案（`SHELF_ERROR_TEXTS`）。历史：EV 验收时
+ *   失败说明是原始 `err.message`，HTTP 500 一例断言其含 `(HTTP 500)`（Findings_Log F-012，已修复
+ *   （reader-defect-fixes））。
  * - 7.17：在 7.16 的失败状态下点击"重新加载"，`books.json` 恰好再请求 1 次并正常返回，随后显示书卡
  *   网格，失败说明与"重新加载"消失。
+ * - reader-defect-fixes 需求 13.10、13.11（F-012）：`books.json` 分别返回状态 404、返回状态 500、以网络
+ *   错误失败时，失败说明分别为 `not-found`、`unavailable`、`unavailable` 的书架文案，其余同 7.16；
+ *   失败状态显示后再等 2 个动画帧为观测窗口终点，其间 console 中以 `[load-error] ` 开头的消息恰为
+ *   1 条（`console.error`），含 `stage=catalog`、所抛值的名称与消息，以及响应状态（有响应时；
+ *   `e2e/support/load-error.ts`）。
  *
  * 列轨道数取自网格容器计算样式的 `grid-template-columns`（测量性 DOM 读取，设计"测试支撑"末条）：
  * 骨架网格是骨架区块内的网格容器，书卡网格是第一张书卡书名的最近网格祖先。
@@ -18,7 +26,9 @@ import type { ReadingProgress } from "../../../src/types";
 import { PAGE_SIZE } from "../../../src/utils/pagination";
 import { SHOT_TESTS } from "../../review/catalog";
 import { expect, seedProgress, test, type Lib } from "../../support/fixtures";
-import { recentReads, shelf } from "../../support/locators";
+import { expectSingleLoadErrorLog, recordLoadErrorLog } from "../../support/load-error";
+import { SHELF_ERROR_TEXTS, recentReads, shelf } from "../../support/locators";
+import { waitFrames } from "../../support/reader";
 import { VIEWPORTS } from "../../support/settings";
 import { step } from "../../support/step";
 
@@ -157,29 +167,36 @@ interface FailureKind {
   label: string;
   /** 让本次 `books.json` 请求失败。 */
   fail(route: Route): Promise<void>;
-  /** 非成功状态时的 HTTP 状态码（失败说明里会带出）；网络错误为 null。 */
+  /** 非成功状态时的 HTTP 状态码（`[load-error]` 日志里会带出）；网络错误为 null。 */
   status: number | null;
+  /** Load_Error_Category：失败说明应为 `SHELF_ERROR_TEXTS` 中该类别的一句（RDF 需求 13.11）。 */
+  category: keyof typeof SHELF_ERROR_TEXTS;
 }
 
-const FAILURE_STATUS = 500;
+/** 以非成功状态应答（纯文本响应体，不是 JSON）。 */
+function httpFailure(status: number, body: string, category: FailureKind["category"]): FailureKind {
+  return {
+    label: `HTTP ${status}`,
+    status,
+    category,
+    fail: (route) => route.fulfill({ status, contentType: "text/plain; charset=utf-8", body }),
+  };
+}
 
-const FAILURES: readonly FailureKind[] = [
-  {
-    label: `HTTP ${FAILURE_STATUS}`,
-    status: FAILURE_STATUS,
-    fail: (route) =>
-      route.fulfill({
-        status: FAILURE_STATUS,
-        contentType: "text/plain; charset=utf-8",
-        body: "Internal Server Error",
-      }),
-  },
-  {
-    label: "网络错误",
-    status: null,
-    fail: (route) => route.abort("failed"),
-  },
-];
+const HTTP_404 = httpFailure(404, "Not Found", "not-found");
+const HTTP_500 = httpFailure(500, "Internal Server Error", "unavailable");
+const NETWORK_ERROR: FailureKind = {
+  label: "网络错误",
+  status: null,
+  category: "unavailable",
+  fail: (route) => route.abort("failed"),
+};
+
+/** EV 7.16、7.17 的两种失败。 */
+const FAILURES: readonly FailureKind[] = [HTTP_500, NETWORK_ERROR];
+
+/** RDF 13.10、13.11 的三种失败（13.11 的顺序）。 */
+const CLASSIFIED_FAILURES: readonly FailureKind[] = [HTTP_404, HTTP_500, NETWORK_ERROR];
 
 /**
  * 首次导航前写入 1 条有效的阅读进度（书取自 `roles.json` 的 `recent`，章节为该书第一个正文章节），
@@ -215,14 +232,19 @@ function failFirst(kind: FailureKind): (route: Route) => Promise<void> {
   };
 }
 
-/** 7.16 的失败状态：失败说明与"重新加载"可见，骨架、书卡与"最近阅读"都不在。 */
+/**
+ * 7.16 的失败状态：失败说明与"重新加载"可见，骨架、书卡与"最近阅读"都不在。失败说明恰为该类别的
+ * 书架文案（RDF 需求 13.11；标题与按钮不变，13.9）。
+ */
 async function expectFailureState(page: Page, kind: FailureKind): Promise<void> {
   const view = shelf(page);
-  await step("显示加载失败说明与“重新加载”", async () => {
+  const expectedText = SHELF_ERROR_TEXTS[kind.category];
+  await step(`显示“加载遇到问题”、${kind.category} 的书架文案「${expectedText}」与“重新加载”`, async () => {
     await expect(view.errorHeading).toBeVisible();
-    if (kind.status !== null) {
-      await expect(view.errorHttpDetail).toContainText(`(HTTP ${kind.status})`);
-    }
+    await expect(view.errorDetail, "失败说明（书架文案三句之一）").toHaveCount(1);
+    await expect(view.errorDetail, `失败说明应恰为 ${kind.category} 的书架文案（RDF 13.11）`).toHaveText(
+      expectedText,
+    );
     await expect(view.reloadButton).toBeVisible();
   });
   await step("骨架、书卡与“最近阅读”均不显示", async () => {
@@ -286,3 +308,36 @@ for (const kind of FAILURES) {
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// RDF 13.10、13.11：失败说明按类别显示，原始异常只进一行 [load-error] 日志
+// ---------------------------------------------------------------------------
+
+test.describe("RDF 13.10、13.11 书架加载失败的分类文案与 [load-error] 日志", () => {
+  for (const kind of CLASSIFIED_FAILURES) {
+    const text = SHELF_ERROR_TEXTS[kind.category];
+    const statusClause = kind.status === null ? "status=-（没有响应）" : `status=${kind.status}`;
+    test(`RDF 13.10、13.11 books.json ${kind.label}：失败说明为 ${kind.category} 的书架文案「${text}」，不显示书卡与最近阅读；console 中以“[load-error] ”开头的消息恰为 1 条，含 stage=catalog 与 ${statusClause}`, async ({
+      page,
+      lib,
+    }) => {
+      await seedOneProgress(page, lib);
+      const requests = countBooksJsonRequests(page);
+      const log = recordLoadErrorLog(page);
+
+      await withBooksJsonRoute(page, failFirst(kind), async () => {
+        await step("打开书架", async () => {
+          await page.goto("/");
+        });
+        await expectFailureState(page, kind);
+        await step("观测窗口终点：失败状态显示后等 2 个动画帧", async () => {
+          await waitFrames(page, 2);
+        });
+        expect(requests.count, "books.json 只请求了 1 次").toBe(1);
+      });
+      log.stop();
+
+      await expectSingleLoadErrorLog(log, { stage: "catalog", bookId: null, status: kind.status }, "RDF 13.10");
+    });
+  }
+});

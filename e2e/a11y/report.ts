@@ -1,6 +1,13 @@
 /**
- * Run_Summary 第 11 节"A11y_Scan"的整理与渲染（需求 1.7、15.4、15.5、15.9；设计"无障碍冒烟
- * （需求 15）"的最后一段；任务 20.5）。
+ * Run_Summary 第 11 节"A11y_Scan"的整理与渲染（需求 15.4、15.5、15.9；设计"无障碍冒烟
+ * （需求 15）"的最后一段；任务 20.5。节点明细：reader-defect-fixes（RDF）需求 15.3、15.4，
+ * 任务 6.1）。另有违规时的用例失败信息 `formatA11yViolations`（RDF 15.2，任务 17.1）。
+ *
+ * ## 节点明细
+ *
+ * 违规在规则表之后逐条规则列出节点明细表：每个节点的 `target`、`html`（`summarizeAxe` 已截到
+ * 200 字符以内）、`failureSummary`，`color-contrast` 另列前景色、背景色、实测与要求的对比度、
+ * 字号与字重（RDF 15.4）。incomplete 仍只列规则 id 与节点数，明细只在结果文件中（RDF 15.3）。
  *
  * 本文件全是纯函数：不读写文件、不访问网络、不修改参数。reporter（`support/reporter.ts`）把
  * `A11Y_SCANS` 与本次的 `CaseFacts` 交给 `buildA11ySection`，再把 `renderA11ySection` 的结果作为
@@ -26,9 +33,12 @@
  * - 用例跳过 → 跳过，附跳过原因；
  * - 其余（失败、超时、通过却没有附件、附件无法解析）→ 扫描失败，附原因。
  *
- * ## 退出码
+ * ## 判定与退出码（RDF 15.2、15.3）
  *
- * 违规与 incomplete 只做标注（1.7、15.8）：本文件的结果不参与退出码与用例结果。
+ * 本文件只整理与渲染，结果不参与退出码与用例结果。违规的阻断在用例里：`a11y.spec.ts` 在
+ * `runA11yScan` 返回 `ok` 后断言违规为空，失败信息由 `formatA11yViolations` 生成；用例失败再经
+ * `summary.ts` 的 `exitCode` 使退出码为 1。这取代 EV 1.7、15.8 中 A11y_Scan 违规不影响用例结果与
+ * 退出码的规定。incomplete 只列出，不使用例失败。
  */
 import { repoRelative } from "../support/library";
 import { A11Y_TAGS, VIEWPORTS } from "../support/settings";
@@ -56,9 +66,12 @@ import {
 } from "./scans";
 import {
   FINDINGS_FLAG_LABEL,
+  HTML_MAX_LENGTH,
   IMPACTS,
   isFlaggedImpact,
+  type A11yContrastData,
   type A11yIncomplete,
+  type A11yNodeDetail,
   type A11yScanResult,
   type A11yView,
   type A11yViolation,
@@ -70,6 +83,9 @@ export const A11Y_SPEC_FILE = "e2e/tests/fixture/a11y.spec.ts";
 
 /** 扫描定义所在的文件（summary 中注明）。 */
 const SCANS_FILE = "e2e/a11y/scans.ts";
+
+/** 结果文件（`scans.ts` 的 `a11yResultFile`，相对仓库根；summary 中注明 incomplete 明细所在）。 */
+const RESULT_FILE_PATTERN = "e2e/.out/a11y/<name>.json";
 
 // ---------------------------------------------------------------------------
 // 模型
@@ -155,9 +171,61 @@ function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** `A11yContrastData` 的字符串字段（`contrastRatio` 另行核对）。 */
+const CONTRAST_STRING_FIELDS = ["fgColor", "bgColor", "expectedContrastRatio", "fontSize", "fontWeight"] as const;
+
+/** 解析一个节点明细（`A11yNodeDetail`）；只保留已知字段。`where` 为错误信息中的位置，如 `violations[0].details[3]`。 */
+function parseNodeDetail(raw: unknown, where: string): Parsed<A11yNodeDetail> {
+  if (!isRecord(raw)) return { ok: false, error: `${where} 不是对象` };
+  const { target, html, failureSummary, contrast } = raw;
+  if (!Array.isArray(target) || !target.every((t) => typeof t === "string")) {
+    return { ok: false, error: `${where}.target 不是字符串数组` };
+  }
+  if (typeof html !== "string") return { ok: false, error: `${where}.html 不是字符串` };
+  if (typeof failureSummary !== "string") return { ok: false, error: `${where}.failureSummary 不是字符串` };
+  const detail: A11yNodeDetail = { target: [...target], html, failureSummary };
+  if (contrast !== undefined) {
+    if (!isRecord(contrast)) return { ok: false, error: `${where}.contrast 不是对象` };
+    for (const key of CONTRAST_STRING_FIELDS) {
+      if (typeof contrast[key] !== "string") return { ok: false, error: `${where}.contrast.${key} 不是字符串` };
+    }
+    const { contrastRatio } = contrast;
+    if (typeof contrastRatio !== "number" || !Number.isFinite(contrastRatio)) {
+      return { ok: false, error: `${where}.contrast.contrastRatio 不是有限数` };
+    }
+    const c = contrast as Record<(typeof CONTRAST_STRING_FIELDS)[number], string>;
+    const data: A11yContrastData = {
+      fgColor: c.fgColor,
+      bgColor: c.bgColor,
+      contrastRatio,
+      expectedContrastRatio: c.expectedContrastRatio,
+      fontSize: c.fontSize,
+      fontWeight: c.fontWeight,
+    };
+    detail.contrast = data;
+  }
+  return { ok: true, value: detail };
+}
+
+/** 解析一条规则的 `details`：须为数组，长度等于该规则的 `nodes`（RDF 15.4：与节点逐一对应）。 */
+function parseDetails(raw: unknown, where: string, nodes: number): Parsed<A11yNodeDetail[]> {
+  if (!Array.isArray(raw)) return { ok: false, error: `${where}.details 不是数组` };
+  if (raw.length !== nodes) {
+    return { ok: false, error: `${where}.details 有 ${raw.length} 项，与 nodes（${nodes}）不符` };
+  }
+  const details: A11yNodeDetail[] = [];
+  for (const [j, item] of raw.entries()) {
+    const parsed = parseNodeDetail(item, `${where}.details[${j}]`);
+    if (!parsed.ok) return parsed;
+    details.push(parsed.value);
+  }
+  return { ok: true, value: details };
+}
+
 /**
  * 解析 `a11y-result` 附件的正文（`A11yScanResult`）；格式不符时给出原因，从不抛错。
- * 违规的 `flagged` 按影响级别重新判定（15.5）。
+ * 违规的 `flagged` 按影响级别重新判定（15.5）。违规与 incomplete 的每条规则须带 `details`，
+ * 长度等于 `nodes`（RDF 15.4）。
  */
 export function parseA11yResult(text: string): Parsed<A11yScanResult> {
   let data: unknown;
@@ -191,7 +259,9 @@ export function parseA11yResult(text: string): Parsed<A11yScanResult> {
       return { ok: false, error: `violations[${i}].impact 不是 ${IMPACTS.join("、")} 或 null：${JSON.stringify(impact)}` };
     }
     if (!isCount(nodes)) return { ok: false, error: `violations[${i}].nodes 不是非负整数` };
-    vs.push({ id, impact: level, nodes, flagged: isFlaggedImpact(level) });
+    const details = parseDetails(raw.details, `violations[${i}]`, nodes);
+    if (!details.ok) return details;
+    vs.push({ id, impact: level, nodes, flagged: isFlaggedImpact(level), details: details.value });
   }
   const inc: A11yIncomplete[] = [];
   for (const [i, raw] of incomplete.entries()) {
@@ -199,7 +269,9 @@ export function parseA11yResult(text: string): Parsed<A11yScanResult> {
     const { id, nodes } = raw;
     if (typeof id !== "string") return { ok: false, error: `incomplete[${i}].id 不是字符串` };
     if (!isCount(nodes)) return { ok: false, error: `incomplete[${i}].nodes 不是非负整数` };
-    inc.push({ id, nodes });
+    const details = parseDetails(raw.details, `incomplete[${i}]`, nodes);
+    if (!details.ok) return details;
+    inc.push({ id, nodes, details: details.value });
   }
 
   const result: A11yScanResult = { name, view, theme, status, violations: vs, incomplete: inc, axeVersion };
@@ -389,6 +461,71 @@ function incompleteRow(i: A11yIncomplete): string {
   return mdTableRow([mdCell(mdCode(i.id)), String(i.nodes)]);
 }
 
+/** 节点明细中空字段的写法（空串写成行内代码会是两个孤立的反引号）。 */
+const EMPTY_FIELD = "—";
+
+/** 跨 frame 的 `target`（多项）之间的连接写法；每项各自是一段行内代码。 */
+const TARGET_SEPARATOR = " → ";
+
+/** 节点明细表的列（RDF 15.3、15.4）。 */
+export const NODE_DETAIL_COLUMNS = ["节点", "target", "html", "failureSummary"] as const;
+
+/** 对比度数据的列（RDF 15.4），只在该规则至少一个节点带对比度数据时出现。 */
+export const CONTRAST_COLUMNS = ["前景色", "背景色", "实测对比度", "要求的对比度", "字号", "字重"] as const;
+
+/** 右对齐的数值列。 */
+const NUMERIC_DETAIL_COLUMNS: ReadonlySet<string> = new Set(["节点", "实测对比度"]);
+
+/** 写成表格单元格的行内代码；空串写 `EMPTY_FIELD`。 */
+function codeCell(text: string): string {
+  return text === "" ? EMPTY_FIELD : mdCell(mdCode(text));
+}
+
+/** 写成表格单元格的普通文字；空串写 `EMPTY_FIELD`。 */
+function textCell(text: string): string {
+  return text === "" ? EMPTY_FIELD : mdCell(text);
+}
+
+function targetCell(target: readonly string[]): string {
+  const parts = target.filter((t) => t !== "");
+  return parts.length === 0 ? EMPTY_FIELD : parts.map((t) => mdCell(mdCode(t))).join(TARGET_SEPARATOR);
+}
+
+function contrastCells(c: A11yContrastData | undefined): string[] {
+  if (c === undefined) return CONTRAST_COLUMNS.map(() => EMPTY_FIELD);
+  return [
+    textCell(c.fgColor),
+    textCell(c.bgColor),
+    String(c.contrastRatio),
+    textCell(c.expectedContrastRatio),
+    textCell(c.fontSize),
+    textCell(c.fontWeight),
+  ];
+}
+
+/**
+ * 一条违规规则的节点明细（RDF 15.3、15.4）：一行说明，再接一张表，每个节点一行，按 axe 的节点顺序。
+ * 该规则任一节点带对比度数据（`color-contrast`）时表格另加 `CONTRAST_COLUMNS`，没有数据的节点
+ * 在这几列写 `EMPTY_FIELD`。`failureSummary` 中的换行折成空格。
+ */
+function violationDetailLines(v: A11yViolation): string[] {
+  const head = `- 违规 ${mdCode(v.id)}（${v.impact ?? IMPACT_MISSING}）的节点明细`;
+  if (v.details.length === 0) return [`${head}：没有节点`];
+  const withContrast = v.details.some((d) => d.contrast !== undefined);
+  const columns: string[] = [...NODE_DETAIL_COLUMNS, ...(withContrast ? CONTRAST_COLUMNS : [])];
+  const align = columns.map((c) => (NUMERIC_DETAIL_COLUMNS.has(c) ? "---:" : "---"));
+  const rows = v.details.map((d, i) =>
+    mdTableRow([
+      String(i + 1),
+      targetCell(d.target),
+      codeCell(d.html),
+      codeCell(d.failureSummary),
+      ...(withContrast ? contrastCells(d.contrast) : []),
+    ]),
+  );
+  return [`${head}，共 ${v.details.length} 个：`, "", mdTableRow(columns), mdTableRow(align), ...rows];
+}
+
 function okLines(r: OkResult): string[] {
   const lines = [`- 违规数：${r.violations.length}`];
   if (r.violations.length > 0) {
@@ -399,6 +536,8 @@ function okLines(r: OkResult): string[] {
       ...r.violations.map(violationRow),
       "",
     );
+    // RDF 15.3、15.4：违规逐条规则列出节点明细；incomplete 不列（明细只在结果文件中）
+    for (const v of r.violations) lines.push(...violationDetailLines(v), "");
   }
   lines.push(`- incomplete（axe 判为需人工复核）：${r.incomplete.length}`);
   if (r.incomplete.length > 0) {
@@ -451,7 +590,11 @@ export function renderA11ySection(d: A11ySectionData): string[] {
     `- 结果：${countsText(d)}`,
     `- 违规：完成的扫描共报出 ${violations.length} 条违规规则，其中 critical 或 serious ${flagged} 条，` +
       `标"${FINDINGS_FLAG_LABEL}"（15.5）；incomplete ${incomplete} 条规则`,
-    "- 违规与 incomplete 只做标注，不影响用例结果与退出码（1.7、15.8）；扫描失败、跳过与未执行的扫描" +
+    `- 节点明细（RDF 15.3、15.4）：违规逐条规则列出每个节点的 target、html（至多 ${HTML_MAX_LENGTH} 字符）与 ` +
+      `failureSummary，${mdCode(COLOR_CONTRAST_RULE)} 另列前景色、背景色、实测与要求的对比度、字号与字重；` +
+      `incomplete 只列规则 id 与节点数，节点明细只写在结果文件 ${mdCode(RESULT_FILE_PATTERN)} 中`,
+    "- 判定（RDF 15.2、15.3）：任一违规即判该扫描的用例失败，失败信息列出规则 id、影响级别与节点明细；" +
+      "incomplete 只列出，不使用例失败；扫描失败、跳过与未执行的扫描" +
       `没有 axe 结果，违规数写"${NO_RESULT_TEXT}"，不计为 0（15.9）`,
   ];
 
@@ -463,4 +606,95 @@ export function renderA11ySection(d: A11ySectionData): string[] {
     lines.push("", "### 附件问题", "", ...d.problems.map((p) => `- ${mdOneLine(p)}`));
   }
   return lines;
+}
+
+// ---------------------------------------------------------------------------
+// 用例失败信息（RDF 15.2）
+// ---------------------------------------------------------------------------
+
+/** 失败信息中节点字段的缩进（规则行为 0 格，节点行 3 格，字段行 5 格，字段续行 7 格）。 */
+const NODE_INDENT = "   ";
+const FIELD_INDENT = "     ";
+const FIELD_CONTINUATION_INDENT = "       ";
+
+/** 折成一行：含换行的空白段换成一个空格，两端去空白。 */
+function plainOneLine(text: string): string {
+  return text.replace(/\s*[\r\n]+\s*/g, " ").trim();
+}
+
+/** 纯文本字段值：空串写 `EMPTY_FIELD`。 */
+function plainField(text: string): string {
+  return text === "" ? EMPTY_FIELD : text;
+}
+
+function plainTarget(target: readonly string[]): string {
+  const parts = target.filter((t) => t !== "");
+  return parts.length === 0 ? EMPTY_FIELD : parts.join(TARGET_SEPARATOR);
+}
+
+/** `failureSummary` 保留 axe 的分行：首行接在字段名之后，其余非空行各占一行、缩进 7 格。 */
+function failureSummaryLines(summary: string): string[] {
+  const [first, ...rest] = summary
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+  if (first === undefined) return [`${FIELD_INDENT}failureSummary：${EMPTY_FIELD}`];
+  return [`${FIELD_INDENT}failureSummary：${first}`, ...rest.map((l) => `${FIELD_CONTINUATION_INDENT}${l}`)];
+}
+
+function contrastLine(c: A11yContrastData): string {
+  const fields: [string, string][] = [
+    ["前景色", plainField(c.fgColor)],
+    ["背景色", plainField(c.bgColor)],
+    ["实测对比度", String(c.contrastRatio)],
+    ["要求的对比度", plainField(c.expectedContrastRatio)],
+    ["字号", plainField(c.fontSize)],
+    ["字重", plainField(c.fontWeight)],
+  ];
+  return `${FIELD_INDENT}对比度：${fields.map(([k, v]) => `${k} ${v}`).join("；")}`;
+}
+
+function nodeLines(d: A11yNodeDetail, index: number, total: number): string[] {
+  return [
+    `${NODE_INDENT}节点 ${index + 1}/${total}`,
+    `${FIELD_INDENT}target：${plainTarget(d.target)}`,
+    `${FIELD_INDENT}html：${plainField(plainOneLine(d.html))}`,
+    ...failureSummaryLines(d.failureSummary),
+    ...(d.contrast === undefined ? [] : [contrastLine(d.contrast)]),
+  ];
+}
+
+function ruleSummary(v: A11yViolation): string {
+  return `${v.id}（${v.impact ?? IMPACT_MISSING}，${v.nodes} 个节点）`;
+}
+
+/**
+ * RDF 15.2：扫描报出违规时 `a11y.spec.ts` 断言失败所用的说明（纯文本，不是 Markdown）。
+ *
+ * - 首行概括扫描名、视图与主题、违规规则数，以及每条规则的 id、影响级别与节点数。reporter 把错误
+ *   信息首行写进 Run_Summary 的失败用例清单，首行因此自成一句。
+ * - 其后空一行，逐条规则（按 axe 的顺序）列出规则 id、影响级别与节点数，再按节点顺序列出每个
+ *   节点的 `target`（跨 frame 的多项以 `TARGET_SEPARATOR` 连接）、`html`（`summarizeAxe` 已截到
+ *   200 字符以内，换行折成空格）、`failureSummary`（保留 axe 的分行）；带对比度数据的节点
+ *   （`color-contrast`）另列前景色、背景色、实测与要求的对比度、字号与字重（RDF 15.4）。
+ * - 空字段写 `EMPTY_FIELD`；影响级别缺失写"未给出"。
+ * - incomplete 不列出（不使用例失败，RDF 15.3；明细在结果文件中）。
+ * - 没有违规时只有首行（"报出 0 条违规规则"）。
+ *
+ * 纯函数：不修改参数，不抛错。
+ */
+export function formatA11yViolations(result: A11yScanResult): string {
+  const { violations } = result;
+  const where = `${A11Y_VIEW_LABELS[result.view]} · ${describeTheme(result.theme)}`;
+  let head = `A11y_Scan ${result.name}（${where}）报出 ${violations.length} 条违规规则`;
+  if (violations.length === 0) return head;
+  head += `：${violations.map(ruleSummary).join("、")}；任一违规即判用例失败（RDF 15.2）`;
+
+  const lines = [head];
+  violations.forEach((v, i) => {
+    lines.push("", `${i + 1}. ${v.id}（${v.impact ?? IMPACT_MISSING}），${v.nodes} 个节点`);
+    if (v.details.length === 0) lines.push(`${NODE_INDENT}（没有节点明细）`);
+    v.details.forEach((d, j) => lines.push(...nodeLines(d, j, v.details.length)));
+  });
+  return lines.join("\n");
 }

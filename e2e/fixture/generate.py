@@ -11,7 +11,7 @@ r"""Fixture_Generator：把 `books.py` 的规格合成为源压缩包，交给�
 ## 流程
 
     依赖检查 → 摘要 → 写源 zip → run(source_dir, books_dir, data_dir, manifest_path)
-            → 核对管线结果（3.6）→ 校验 3.3 (a)–(i) → roles.json → record.json
+            → 核对管线结果（3.6）→ 校验 3.3 (a)–(j) → roles.json → record.json
 
 1. **依赖检查**（需求 1.9）：`REQUIRED_DEPENDENCIES` 从 `scripts/preprocess.py` 的**源码**里读
    （`ast`），不导入它——导入即触发它自己的检查并 `SystemExit`，而这里要在调用管线之前、
@@ -29,9 +29,9 @@ r"""Fixture_Generator：把 `books.py` 的规格合成为源压缩包，交给�
    管线的全部输出写入 `pipeline.log`，终端只留本脚本的进度与结论。
 5. **核对管线结果**（需求 3.6）：退出码非 0，或 `books.json` 里缺了夹具源定义的书，就逐本
    列出源文件名与管线报告的原因。`books.json` 里多出夹具源没有定义的书同样算失败。
-6. **校验 3.3 (a)–(i)**（需求 3.8）：对着 `roles.json` 将要指向的那几本书逐项核对，另核对
-   `roles.json` 里的检索词（`volumesKeyword`、`fewKeyword`、`noHitKeyword`）与 crlf 书。
-   期望值一律从产物读出，不硬编码书 id 或节点数。
+6. **校验 3.3 (a)–(j)**（需求 3.8；(j) 为 reader-defect-fixes 需求 10.2 新增）：对着
+   `roles.json` 将要指向的那几本书逐项核对，另核对 `roles.json` 里的检索词（`volumesKeyword`、
+   `fewKeyword`、`noHitKeyword`）与 crlf 书。期望值一律从产物读出，不硬编码书 id 或节点数。
 7. 全部通过才写 `roles.json` 与 `record.json`（`{ digest, pipelineVersion, bookCount }`）。
 
 ## 输出目录（需求 3.2）
@@ -440,7 +440,7 @@ def run_pipeline(layout: Layout) -> PipelineResult:
 
 @dataclass(frozen=True)
 class Problem:
-    """一条未满足项。`item` 为 `管线`、`(a)`–`(i)` 或 `roles.<键>`。"""
+    """一条未满足项。`item` 为 `管线`、`(a)`–`(j)` 或 `roles.<键>`。"""
 
     item: str
     book: str
@@ -656,6 +656,41 @@ def _check_long_chapter(lib: Library) -> List[str]:
     return [f'下标 {index} 的章节 {count} 段，需要 ≥ {MIN_PARAGRAPHS}']
 
 
+#: 3.3 (j) 的"一行由 ≥ 58 个连续 `=` 构成"：去掉首尾空白（缩进）之后整行都是该字符。
+_LONG_RUN_LINE = re.compile(
+    re.escape(fixture.LONG_RUN_CHAR) + '{' + str(fixture.LONG_RUN_MIN) + ',}'
+)
+
+
+def long_run_chapter(lib: Library) -> Optional[int]:
+    """longRun 书第 `LONG_RUN_CHAPTER` 个正文章节（0 起，不计卷节点）的目录下标；不存在时 `None`。"""
+    chapters = lib.chapters(fixture.ROLES.long_run)
+    content = [i for i, c in enumerate(chapters) if not _is_volume(c)]
+    return content[fixture.LONG_RUN_CHAPTER] if fixture.LONG_RUN_CHAPTER < len(content) else None
+
+
+def long_run_lines(text: str, chapter: Mapping[str, object]) -> int:
+    """章节范围内由 ≥ `LONG_RUN_MIN` 个连续 `LONG_RUN_CHAR` 构成的行数。"""
+    body = text[int(chapter['start']):int(chapter['end'])]      # type: ignore[call-overload]
+    return sum(1 for line in body.splitlines() if _LONG_RUN_LINE.fullmatch(line.strip()))
+
+
+def _check_long_run(lib: Library) -> List[str]:
+    """(j)：`roles.longRun.chapterIndex` 指向的正文章节内恰有一行由 ≥ 58 个连续 `=` 构成。"""
+    index = long_run_chapter(lib)
+    wanted = f'第 {fixture.LONG_RUN_CHAPTER + 1} 个正文章节'
+    if index is None:
+        return [f'目录里没有{wanted}']
+    chapter = lib.chapters(fixture.ROLES.long_run)[index]
+    count = long_run_lines(lib.text(fixture.ROLES.long_run), chapter)
+    if count == 1:
+        return []
+    return [
+        f'{wanted}（下标 {index}）里由 ≥ {fixture.LONG_RUN_MIN} 个连续 '
+        f'{fixture.LONG_RUN_CHAR} 构成的行有 {count} 行，需要恰好 1 行'
+    ]
+
+
 def _check_role_keywords(lib: Library) -> List[Problem]:
     """`roles.json` 里的检索词与 crlf 书：design `FixtureRoles`、需求 9.1 / 9.11 / 10.3 / 15.1。"""
     problems: List[Problem] = []
@@ -690,13 +725,14 @@ _REQUIREMENT_CHECKS = (
     ('(g)', fixture.ROLES.same_author[0], _check_same_author),
     ('(h)', fixture.ROLES.long_text, _check_cap_keyword),
     ('(i)', fixture.ROLES.long_text, _check_long_chapter),
+    ('(j)', fixture.ROLES.long_run, _check_long_run),
 )
 
 _READ_ERRORS = (OSError, ValueError, KeyError, TypeError, EOFError, gzip.BadGzipFile)
 
 
 def check_library(lib: Library) -> List[Problem]:
-    """需求 3.8：逐项核对 3.3 (a)–(i)，再核对 `roles.json` 的检索词。"""
+    """需求 3.8：逐项核对 3.3 (a)–(j)，再核对 `roles.json` 的检索词。"""
     problems: List[Problem] = []
     if len(lib.entries) < MIN_BOOKS:
         problems.append(Problem('(a)', '', f'books.json 共 {len(lib.entries)} 本，需要 ≥ {MIN_BOOKS}'))
@@ -757,12 +793,14 @@ def generate(layout: Layout, digest: str, *, from_scratch: bool, tag: str = '[�
 
     chapter_index = long_text_chapter(lib)
     assert chapter_index is not None                  # (i) 已通过
-    _write_json(layout.roles, fixture.build_roles(lib.id_of, chapter_index))
+    run_index = long_run_chapter(lib)
+    assert run_index is not None                      # (j) 已通过
+    _write_json(layout.roles, fixture.build_roles(lib.id_of, chapter_index, run_index))
     _write_json(
         layout.record,
         {'digest': digest, 'pipelineVersion': PIPELINE_VERSION, 'bookCount': len(entries)},
     )
-    return Outcome(True, f'{len(entries)} 本，3.3 (a)–(i) 全部满足', [], result)
+    return Outcome(True, f'{len(entries)} 本，3.3 (a)–(j) 全部满足', [], result)
 
 
 def _report_failure(outcome: Outcome, layout: Layout, tag: str = '[夹具生成失败]') -> None:

@@ -111,11 +111,14 @@ export const SearchDrawer: React.FC<SearchDrawerProps> = ({
             <Search className="w-4 h-4 text-[var(--accent)]" />
             <h2 className="font-bold text-base">全书内容检索</h2>
           </div>
+          {/* 只含图标的按钮：名称由 `aria-label` 给出，`title` 同文作悬停提示（F-009，需求 11.1） */}
           <button
             onClick={onClose}
             className="p-1 rounded-lg hover:bg-[var(--hover)]"
+            aria-label="关闭检索"
+            title="关闭检索"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
@@ -134,14 +137,14 @@ export const SearchDrawer: React.FC<SearchDrawerProps> = ({
             {keyword && (
               <button
                 onClick={() => setKeyword("")}
-                className="text-xs opacity-50 hover:opacity-100 shrink-0 ml-1"
+                className="text-xs text-[var(--text-muted)] hover:text-[var(--text)] shrink-0 ml-1"
               >
                 清除
               </button>
             )}
           </div>
           {keyword && (
-            <div className="mt-2 text-xs opacity-60 flex items-center justify-between px-1">
+            <div className="mt-2 text-xs text-[var(--text-muted)] flex items-center justify-between px-1">
               <span>找到 {searchResults.length} 条匹配</span>
               {searchResults.length >= MAX_RESULTS && (
                 <span className="text-[10px] text-amber-500">
@@ -155,11 +158,11 @@ export const SearchDrawer: React.FC<SearchDrawerProps> = ({
         {/* Results List */}
         <div className="flex-1 overflow-y-auto divide-y divide-[var(--border)] p-2">
           {!keyword.trim() ? (
-            <div className="py-20 text-center opacity-40 text-xs px-6">
+            <div className="py-20 text-center text-[var(--text-muted)] text-xs px-6">
               输入关键词即可在整本小说几百万字中毫秒级全文检索
             </div>
           ) : searchResults.length === 0 ? (
-            <div className="py-20 text-center opacity-50 text-xs">
+            <div className="py-20 text-center text-[var(--text-muted)] text-xs">
               未在全书中找到与 "{keyword}" 相关的内容
             </div>
           ) : (
@@ -174,17 +177,20 @@ export const SearchDrawer: React.FC<SearchDrawerProps> = ({
                 }}
                 className="w-full text-left p-3 rounded-xl hover:bg-[var(--hover)] transition-all group flex flex-col space-y-1.5"
               >
-                {/* Chapter badge */}
-                <div className="flex items-center justify-between text-[11px] font-semibold opacity-70 group-hover:opacity-100">
+                {/* Chapter badge：不透明的 `--text-muted` 取代 `opacity-70`（F-010），
+                    悬停反馈由整行的 `hover:bg-[var(--hover)]` 承担 */}
+                <div className="flex items-center justify-between text-[11px] font-semibold text-[var(--text-muted)]">
                   <span className="truncate pr-2">{res.chapterTitle}</span>
                   <ChevronRight className="w-3.5 h-3.5 opacity-40 group-hover:opacity-100 shrink-0" />
                 </div>
-                {/* Snippet */}
-                <p className="text-xs leading-relaxed opacity-90 line-clamp-2">
+                {/* Snippet。不再叠 `opacity-90`：它同时冲淡命中的底色与字色，black 主题下
+                    `--text` 对命中底色只剩 4.12:1；去掉后为 4.63:1（F-010）。 */}
+                <p className="text-xs leading-relaxed line-clamp-2">
                   <span>...{res.snippetBefore}</span>
-                  {/* 命中底色是固定的琥珀色（不随主题走，五套主题下都读得清），
-                      字色取主题强调色 */}
-                  <mark className="px-0.5 rounded font-bold bg-[rgba(234,179,8,0.3)] text-[var(--accent)]">
+                  {/* 命中底色是固定的琥珀色（不随主题走）。字色取 `--text` 而非主题强调色：
+                      琥珀底上 `--accent` 在四套主题下不足 4.5:1，`--text` 五套均 ≥ 4.63:1
+                      （F-010，design §11） */}
+                  <mark className="px-0.5 rounded font-bold bg-[rgba(234,179,8,0.3)] text-[var(--text)]">
                     {res.matchedText}
                   </mark>
                   <span>{res.snippetAfter}...</span>

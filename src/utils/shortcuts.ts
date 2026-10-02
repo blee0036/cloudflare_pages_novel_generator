@@ -42,7 +42,8 @@ export interface ShortcutContext {
    * 有没有抽屉/面板处于打开状态（目录、检索、设置）。
    *
    * 打开时**滚动类快捷键一律让给浏览器**：抽屉是覆盖全屏的浮层，各自带可滚列表，此时
-   * `Space`/`Home`/`End` 应该滚那个列表（原生行为），而不是滚它背后那篇读者看不见的正文。
+   * `Space`/`Home`/`End`/`↑`/`↓`/`PageUp`/`PageDown` 应该滚那个列表（原生行为），而不是
+   * 滚它背后那篇读者看不见的正文。
    * 章节导航（`←`/`→`）与面板开关（`T`/`F`/`S`/`Esc`）不受影响——它们原本就能在抽屉打开时用。
    */
   readonly panelOpen: boolean;
@@ -59,6 +60,10 @@ export type ReaderAction =
   | "page-up"
   | "chapter-start"
   | "chapter-end"
+  | "line-down"
+  | "line-up"
+  | "screen-down"
+  | "screen-up"
   | "toggle-toc"
   | "toggle-search"
   | "toggle-settings"
@@ -95,6 +100,8 @@ export function isSpaceActivatedTarget(target: ShortcutTarget | null | undefined
  *
  * `Space` 最要紧——不拦住的话浏览器会在我们赋值 `scrollTop` 之后再滚一次默认滚动容器，
  * 表现为"按一下跳两屏"或正文抖一下。`Home`/`End` 同理（默认滚到文档两端）。
+ * `↑`/`↓`/`PageUp`/`PageDown` 也一样：滚动已由我们赋值完成，浏览器的默认按键滚动若再落到
+ * 某个可滚元素上，就是第二次位移（需求 4.3）。
  *
  * 反过来，章节导航与面板开关**不**拦：`←`/`→` 的默认行为是横向滚动（这里没有横向可滚），
  * 字母键没有默认行为，`Esc` 还要留给浏览器停止加载等固有语义。少拦一个键比多拦一个安全。
@@ -104,7 +111,11 @@ export function preventsDefault(action: ReaderAction): boolean {
     action === "page-down" ||
     action === "page-up" ||
     action === "chapter-start" ||
-    action === "chapter-end"
+    action === "chapter-end" ||
+    action === "line-down" ||
+    action === "line-up" ||
+    action === "screen-down" ||
+    action === "screen-up"
   );
 }
 
@@ -153,6 +164,19 @@ export function readerAction(
       return context.panelOpen ? null : "chapter-start";
     case "End":
       return context.panelOpen ? null : "chapter-end";
+
+    // 行滚动 / 一屏滚动（需求 4.3）。正文滚动容器是 `<main>` 而不是文档（D1），浏览器的
+    // 默认按键滚动不保证落到它上面，所以由阅读器接管。规则与 `Home`/`End` 相同：输入类
+    // 元素（含底栏章节滑杆 `<input type="range">`，方向键归滑杆自己）与 Ctrl/Alt/Meta 已在
+    // 上面排除；抽屉打开时让给抽屉列表；`Shift` 不改变含义。
+    case "ArrowDown":
+      return context.panelOpen ? null : "line-down";
+    case "ArrowUp":
+      return context.panelOpen ? null : "line-up";
+    case "PageDown":
+      return context.panelOpen ? null : "screen-down";
+    case "PageUp":
+      return context.panelOpen ? null : "screen-up";
 
     default:
       return null;

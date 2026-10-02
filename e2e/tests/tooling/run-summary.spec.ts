@@ -26,6 +26,9 @@
  * "未生成""未收集"各一例。`RunFacts` 手写，产物与第 11 节按 reporter 的组装方式取得
  * （`missingArtifactReason`、`extraSectionNotRun`）；期望的节序、产物路径与原因文字按设计原文写在
  * 本文件里，断言只取标题、行标签与关键短语。
+ *
+ * 文件末尾是 reader-defect-fixes 的属性 9（`numbered()` 的续行缩进，需求 16.2、16.4）及一个边界例子。
+ * 标记宽度按"序号位数加点号与一个空格"写成独立的表，不取自实现。
  */
 import { test, type TestStatus } from "@playwright/test";
 import type { FullResult } from "@playwright/test/reporter";
@@ -40,6 +43,7 @@ import {
   ARTIFACT_LABELS,
   ARTIFACT_PATHS,
   EXTRA_SECTION_KEYS,
+  NONE_TEXT,
   PROFILE_LABELS,
   RUN_STAGES,
   SUMMARY_HEADINGS,
@@ -52,6 +56,7 @@ import {
   extraSectionNotRun,
   isCollected,
   missingArtifactReason,
+  numbered,
   profileOf,
   renderSummary,
   resolveAbort,
@@ -916,5 +921,98 @@ test.describe("renderSummary 例子（需求 17.1、17.4、17.7）", () => {
     assertBlankRow(collect, "fixture", "未收集");
     assert.deepEqual(sectionBody(collect, H.runLevel), ["无"], "收集失败的 onError 已由中止信息吸收");
     assert.equal(artifactLine(collect, "a11y"), `- ${ARTIFACT_LABELS.a11y}：未生成（运行中止于"${RUN_STAGES.collect}"阶段）`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// numbered() 的续行缩进（reader-defect-fixes 属性 9；需求 16.2、16.4）
+// ---------------------------------------------------------------------------
+
+/**
+ * 第 i 项列表标记 `${i}. ` 的宽度：序号位数加点号与一个空格。1–9 为 3，10–99 为 4，100–200 为 5
+ * （需求 16.2 的 n ≤ 200）。
+ */
+function markerWidth(i: number): number {
+  assert.ok(Number.isInteger(i) && i >= 1 && i <= 200, `序号 ${i} 超出 1–200`);
+  return i < 10 ? 3 : i < 100 ? 4 : 5;
+}
+
+/** 去掉 CommonMark 的行结束符（LF、CR），得到"不含换行的任意字符串"。 */
+function withoutLineBreaks(s: string): string {
+  return s.replace(/[\r\n]/g, "");
+}
+
+/**
+ * 不含换行的一行：可打印 ASCII、任意 Unicode 码点，以及本身以空白、列表标记或缩进代码形式开头的行
+ * （这些行的前导空白应原样保留在标记宽度的空格之后）。
+ */
+const listLineArb: fc.Arbitrary<string> = fc.oneof(
+  { weight: 3, arbitrary: fc.string({ maxLength: 16 }) },
+  { weight: 2, arbitrary: fc.string({ unit: "binary", maxLength: 8 }).map(withoutLineBreaks) },
+  {
+    weight: 1,
+    arbitrary: fc.constantFrom("", " ", "  前导两格", "    四格缩进", "\t制表符开头", "- 子项", "10. 像标记的续行", "trace：`e2e/.out/x.zip`"),
+  },
+);
+
+/** 一个条目：首行与 0–4 个续行。 */
+const listItemArb: fc.Arbitrary<readonly [string, string[]]> = fc.tuple(listLineArb, fc.array(listLineArb, { maxLength: 4 }));
+
+/** 条目数 1–200：一位、两位、三位序号各占三分之一，使 10 项与 100 项起的标记宽度都常被覆盖。 */
+const listCountArb = fc.oneof(
+  fc.integer({ min: 1, max: 9 }),
+  fc.integer({ min: 10, max: 99 }),
+  fc.integer({ min: 100, max: 200 }),
+);
+
+const listItemsArb = listCountArb.chain((n) => fc.array(listItemArb, { minLength: n, maxLength: n }));
+
+test.describe("编号列表（需求 16.2）", () => {
+  // Feature: reader-defect-fixes, Property 9: 编号列表的续行缩进等于列表标记宽度
+  // **Validates: Requirements 16.2, 16.4**
+  test("RDF 16.2 属性 9：第 i 项首行为 `${i}. 首行`，每个续行恰为标记宽度的空格加原文，行数等于首行与续行之和", () => {
+    const widths = new Set<number>();
+    fc.assert(
+      fc.property(listItemsArb, (pairs) => {
+        const items = pairs.map(([head, rest]) => [head, ...rest]);
+        const before = structuredClone(items);
+        const out = numbered(items);
+        assert.deepEqual(items, before, "numbered 修改了参数");
+
+        const total = items.reduce((acc, item) => acc + item.length, 0);
+        assert.equal(out.length, total, "输出行数应等于全部首行与续行之和");
+
+        let k = 0;
+        items.forEach(([head, ...rest], j) => {
+          const i = j + 1;
+          const width = markerWidth(i);
+          widths.add(width);
+          const marker = `${i}. `;
+          assert.equal(marker.length, width, `第 ${i} 项的标记宽度`);
+          assert.equal(out[k], `${marker}${head}`, `第 ${i} 项的首行（输出第 ${k} 行）`);
+          k++;
+          rest.forEach((line, c) => {
+            const label = `第 ${i} 项第 ${c + 1} 个续行（输出第 ${k} 行）`;
+            assert.equal(out[k], " ".repeat(width) + line, `${label}：应为 ${width} 个空格加原文 ${JSON.stringify(line)}`);
+            // 原文不以空格开头时，前导空格恰为标记宽度：续行属于该项，且不构成相对该项的缩进代码块
+            if (!line.startsWith(" ")) {
+              assert.equal(/^ */.exec(out[k])?.[0].length, width, `${label}：前导空格数`);
+            }
+            k++;
+          });
+        });
+      }),
+      { numRuns: 100 },
+    );
+    assert.deepEqual([...widths].sort(), [3, 4, 5], "100 次输入应覆盖一位、两位、三位序号的标记宽度");
+  });
+
+  test("RDF 16.2 例子：没有条目时为「无」；第 9 项的续行缩进 3 格，第 10 项起 4 格", () => {
+    assert.deepEqual(numbered([]), [NONE_TEXT]);
+    assert.equal(NONE_TEXT, "无");
+    const items = Array.from({ length: 10 }, (_, j) => [`第 ${j + 1} 项`, "续行"]);
+    const out = numbered(items);
+    assert.equal(out.length, 20);
+    assert.deepEqual(out.slice(16), ["9. 第 9 项", "   续行", "10. 第 10 项", "    续行"]);
   });
 });

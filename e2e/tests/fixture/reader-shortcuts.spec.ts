@@ -14,47 +14,46 @@
  * 前言规定的起始状态有两部分：(a) "正文滚动容器"（`<main>` 地标）的最大可滚距离 ≥ 2 × `clientHeight`，
  * `scrollTop` 介于 2 px 与"最大可滚距离 − 2 px"之间；(b) 章节既非首也非末、三个抽屉均关闭、焦点在 `<body>`。
  *
- * 实测 `<main>` 不是滚动容器（Findings_Log F-002）：它随内容增高，`scrollHeight` 等于 `clientHeight`，
- * 实际滚动的是文档。(a) 因此在 `<main>` 上无从建立。`readerStart` 的做法：
+ * `readerStart` 的做法：
  *
- * - 按设计把 `<main>` 的 `scrollTop` 设为其 `clientHeight`（F-002 之下被夹回 0）。
- * - 实际在滚动的元素（`readJudgeParagraph` 的 `scroller`：`<main>` 可滚动时是它，否则是文档）不是 `<main>`
- *   时，把该元素的 `scrollTop` 也设为其 `clientHeight`，并对它硬性核对 (a) 的两个不等式。这样读者看到的
- *   正文确实停在章中，10.16–10.22 的"`scrollTop` 不变"不会因为停在 0 或最大值而恒真。F-002 修复后
- *   实际滚动元素就是 `<main>`，文档不再滚动，这里无需改动。
+ * - 先核对文档滚动元素不可滚动（reader-defect-fixes 需求 2.1、14.2，`expectDocumentNotScrollable`），
+ *   再按设计经 `getByRole("main")` 把 `<main>` 的 `scrollTop` 设为其 `clientHeight`，并对 `<main>` 硬性核对
+ *   (a) 的两个不等式。正文因此确实停在章中，10.16–10.22 的"`scrollTop` 不变"不会因为停在 0 或最大值而恒真。
  * - (b) 照常建立并核对：三个抽屉的打开标志计数均为 0；`document.activeElement.blur()` 后焦点在 `<body>`。
- * - `<main>` 本身是否满足 (a) 不在 `readerStart` 中断言，由下面 10.11、10.13–10.15 的 F-002 用例以
- *   `expect.soft` 断言。
+ *
+ * 历史：EV 验收时 `<main>` 不是滚动容器、实际滚动的是文档（Findings_Log F-002，已修复（reader-defect-fixes））。
+ * 当时 `readerStart` 改对文档建立 (a)，`<main>` 上的 (a) 由 10.11、10.13–10.15 的预期失败用例以 `expect.soft`
+ * 断言；修复后 (a) 直接在 `<main>` 上建立并核对，那几个用例改为普通用例。
  *
  * 起始状态的读数记在注解 `shortcut-start` 里，每次按键前后的读数记在 `shortcut-reading` 里。
  *
- * ## "章节不变"与 F-005
+ * ## "章节不变"与 URL 的 `ch`
  *
- * 前言把"章节不变"定义为 URL 的 `ch` 不变。审读 `src/pages/ReaderPage.tsx`（未改动）：阅读器只读取
- * `?ch=`（同书内改 `?ch=` 会跳章），阅读器内换章（`←` / `→`、翻页换章、目录、书签）从不写回 URL，
- * 所以 URL 的 `ch` 在换章后也不变。只比 URL 的"章节不变"在这里恒真，于是本文件的"章节不变"同时比较
- * URL 的 `ch` 与 8.1 所判定的当前章节（正文 `<h1>` 与"第 N / M 章"的文本）。10.9、10.10、10.12 的
- * "URL 的 `ch` 变为上一个 / 下一个正文章节"因此不成立，记为 F-005，按 16.7 拆成标题注明 F-005 的
- * 预期失败用例；同一条里"渲染该章"的断言在普通用例中。
+ * 前言把"章节不变"定义为 URL 的 `ch` 不变。阅读器在每次定位（首次定位与各种换章）后以替换历史记录的
+ * 方式把当前章写回 URL 的 `ch`（reader-defect-fixes 需求 7.1、D2），所以 URL 的 `ch` 随换章改变。本文件的
+ * "章节不变"同时比较 URL 的 `ch` 与 8.1 所判定的当前章节（正文 `<h1>` 与"第 N / M 章"的文本）。
+ * 10.9、10.10、10.12 的"URL 的 `ch` 变为上一个 / 下一个正文章节"在单独的用例中断言：写回在换章提交之后的
+ * effect 里发起，路由状态的更新包在 transition 中，所以以正文切到目标章节为同步点后轮询 URL；同一条里
+ * "渲染该章"的断言在另一个用例中。
  *
- * ## 翻页类快捷键与 F-002（10.11–10.15）
+ * 历史：EV 验收时阅读器只读取 `?ch=`，阅读器内换章从不写回 URL（Findings_Log F-005，已修复
+ * （reader-defect-fixes））。那时只比 URL 的"章节不变"恒真，于是同时比较两者；10.9、10.10、10.12 的 URL 一项
+ * 按 16.7 拆成标题注明 F-005 的预期失败用例。修复后它们改为普通用例，用例划分、断言对象与期望值不变，URL 的
+ * 读取由一次读数改为轮询（写回晚于正文渲染）。
  *
- * 审读 `ReaderPage.tsx` 与 `src/utils/pageScroll.ts`（未改动）：`Space` / `Shift+Space` / `Home` / `End` 都
- * `preventDefault()`（拦下浏览器的默认滚动），再只读写 `<main>`（`contentContainerRef`）的滚动几何。
- * `<main>` 没有可滚距离，于是 `Space` 在章中任何位置都被判为"已到章末"而直接换到下一章（没有翻页），
- * `Shift+Space` 被判为"已在章首"而什么也不做，`Home` / `End` 的赋值无效；文档（读者实际看到的滚动）不因
- * 这四个键而滚动。实测读数见 Findings_Log F-002 的"任务 11.4 核实"。
+ * ## 翻页类快捷键（10.11–10.15）
  *
- * 10.11–10.15 的滚动断言按需求对 `<main>` 地标进行。它们与 F-002 同一根因，按 16.7 拆成标题注明 F-002 的
- * 预期失败用例：先以 `expect.soft` 断言起始状态 (a) 在 `<main>` 上成立，再按键并断言该条对 `<main>` 的滚动
- * 要求（10.11 另断言章节不变：F-002 之下 `Space` 换了章）。不含 (a) 时，`Home` 后 `<main>.scrollTop` 为 0、
- * `End` 后与最大可滚距离（0）相差 0，都会在 F-002 之下空洞地成立。同一条里与 F-002 无关的断言在普通用例中：
- * 10.13–10.15 的章节不变。10.11 没有不受影响的断言，只有预期失败用例。
+ * `Space` / `Shift+Space` / `Home` / `End` 都 `preventDefault()`（拦下浏览器的默认滚动），再只读写 `<main>`
+ * （`contentContainerRef`）的滚动几何。10.11–10.15 的滚动断言按需求对 `<main>` 地标进行，起始状态 (a) 已由
+ * `readerStart` 在 `<main>` 上核对；按键后、断言滚动之前再核对一次文档不可滚动（需求 2.1）。同一条里的滚动
+ * 断言与"章节不变"分在两个用例中（10.11 的章节不变与滚动断言在同一用例）。
  *
- * 10.12 是 IF–THEN："剩余可滚距离 ≤ 2 px（先按 `End`）时按 `Space` 换到下一章"。普通用例先按 `End` 并对
- * `<main>` 核对条件（剩余可滚距离 ≤ 2 px），再按 `Space` 断言渲染下一个正文章节；URL 一项在 F-005 用例中。
- * F-002 之下条件恒成立（`<main>` 的剩余可滚距离恒为 0），所以普通用例通过，但这时任何位置按 `Space` 都会
- * 换章（见 10.11 的 F-002 用例），不另设 F-002 用例。
+ * 10.12 是 IF–THEN："剩余可滚距离 ≤ 2 px（先按 `End`）时按 `Space` 换到下一章"。用例先按 `End` 并对
+ * `<main>` 核对条件（剩余可滚距离 ≤ 2 px），再按 `Space` 断言渲染下一个正文章节；URL 一项在单独的用例中。
+ *
+ * 历史：EV 验收时 `<main>` 没有可滚距离（Findings_Log F-002，已修复（reader-defect-fixes））：`Space` 在章中
+ * 任何位置都被判为"已到章末"而直接换章，`Shift+Space` 不动，`Home` / `End` 的赋值无效，10.11、10.13–10.15
+ * 的滚动断言按 16.7 拆成标题注明 F-002 的预期失败用例。修复后它们改为普通用例，用例划分与断言保持不变。
  *
  * ## 其余各条
  *
@@ -71,9 +70,9 @@
  * - 10.22：选顶栏"添加书签"按钮（`Space` 激活它只切换书签，不跳章、不滚动正文；`readerAction` 对 `BUTTON`
  *   上的 `Space` 不接管）。聚焦后按 `Space`，断言按钮名称变为"已添加书签 (点击移除)"，章节与 `scrollTop` 不变。
  *
- * "`scrollTop` 不变"一律同时比较 `<main>` 与文档滚动元素的 `scrollTop`（与 `reader-search.spec.ts` 的
- * 9.3、9.11 相同），不依赖 F-002。"不变"类断言在按键后等 2 个动画帧（`waitFrames`）再读一次比较，
- * 不用固定时长（设计"补充场景的定位与断言"）；"变为"类断言用会重试的 `expect`。
+ * "`scrollTop` 不变"比较 `<main>` 的 `scrollTop`，比较前核对文档不可滚动（需求 2.1、14.2；与
+ * `reader-search.spec.ts` 的 9.3、9.11 相同）。"不变"类断言在按键后等 2 个动画帧（`waitFrames`）再读一次
+ * 比较，不用固定时长（设计"补充场景的定位与断言"）；"变为"类断言用会重试的 `expect`。
  */
 import type { Page } from "@playwright/test";
 import { expect, test, type BookLog, type Lib } from "../../support/fixtures";
@@ -81,16 +80,13 @@ import { NAMES, overlayMarkers, reader, searchDrawer } from "../../support/locat
 import {
   bookUnderTest,
   expectCurrentChapter,
+  expectDocumentNotScrollable,
   openReader,
-  readDocumentScroll,
-  readJudgeParagraph,
   readMainScroll,
-  setDocumentScrollTop,
   setMainScrollTop,
   waitFrames,
   type BookUnderTest,
   type MainScroll,
-  type ReaderScroller,
 } from "../../support/reader";
 import { step } from "../../support/step";
 
@@ -133,15 +129,6 @@ const MODIFIED_KEYS: readonly (KeyCase & { action: string })[] = [
   { label: "Space", key: "Space", action: "下翻" },
   { label: "F", key: "F", action: "打开检索抽屉" },
 ];
-
-/** 预期失败的说明（标题与说明都引用 Finding 编号，16.7）。 */
-const F002_SPACE =
-  "F-002 正文 <main> 不是滚动容器：<main> 没有可滚距离，Space 在章中被判为“已到章末”而直接换到下一章，没有翻页";
-const F002_SHIFT_SPACE =
-  "F-002 正文 <main> 不是滚动容器：起始状态无法在 <main> 上建立，Shift+Space 被判为“已在章首”而不动（默认滚动已被拦下）";
-const F002_EDGE =
-  "F-002 正文 <main> 不是滚动容器：起始状态无法在 <main> 上建立（scrollTop 恒为 0），Home / End 只赋值 <main>.scrollTop，文档不滚动";
-const F005_URL = "F-005 阅读器内换章不写回 URL：URL 的 ch 保持打开时的值";
 
 // ---------------------------------------------------------------------------
 // 用书、章节与读数
@@ -199,7 +186,7 @@ interface DrawerState {
 
 const ALL_CLOSED: DrawerState = { toc: false, search: false, settings: false };
 
-/** 一次读数：URL 的 `ch`、8.1 的当前章节、`<main>` 与文档的滚动几何、三个抽屉的开闭。 */
+/** 一次读数：URL 的 `ch`、8.1 的当前章节、`<main>` 的滚动几何、三个抽屉的开闭。 */
 interface ReaderSnapshot {
   /** URL 的 `ch` 查询参数；没有时为 null。 */
   ch: string | null;
@@ -208,7 +195,6 @@ interface ReaderSnapshot {
   /** "第 N / M 章"的文本（8.1）。 */
   position: string;
   main: MainScroll;
-  document: MainScroll;
   drawers: DrawerState;
 }
 
@@ -220,12 +206,11 @@ function urlCh(page: Page): Promise<string | null> {
 async function readSnapshot(page: Page): Promise<ReaderSnapshot> {
   const view = reader(page);
   const markers = overlayMarkers(page);
-  const [ch, heading, position, main, doc, toc, search, settings] = await Promise.all([
+  const [ch, heading, position, main, toc, search, settings] = await Promise.all([
     urlCh(page),
     view.chapterHeading.textContent(),
     view.chapterPosition.textContent(),
     readMainScroll(page),
-    readDocumentScroll(page),
     markers.tocDrawer.count(),
     markers.searchDrawer.count(),
     markers.settingsDrawer.count(),
@@ -235,7 +220,6 @@ async function readSnapshot(page: Page): Promise<ReaderSnapshot> {
     heading: (heading ?? "").trim(),
     position: (position ?? "").trim(),
     main,
-    document: doc,
     drawers: { toc: toc > 0, search: search > 0, settings: settings > 0 },
   };
 }
@@ -254,16 +238,11 @@ function describeDrawers(d: DrawerState): string {
 function describeSnapshot(s: ReaderSnapshot): string {
   return (
     `ch=${s.ch ?? "（无）"}「${s.heading}」${s.position}；<main> ${describeScroll(s.main)}；` +
-    `文档 ${describeScroll(s.document)}；${describeDrawers(s.drawers)}`
+    describeDrawers(s.drawers)
   );
 }
 
-/** `<main>` 与文档的 `scrollTop`（"`scrollTop` 不变"两者都比，不依赖 F-002）。 */
-function positions(s: ReaderSnapshot): { main: number; document: number } {
-  return { main: s.main.scrollTop, document: s.document.scrollTop };
-}
-
-/** "章节不变"比较的内容：URL 的 `ch`（前言的定义）与 8.1 的当前章节（见文件头"章节不变"与 F-005）。 */
+/** "章节不变"比较的内容：URL 的 `ch`（前言的定义）与 8.1 的当前章节（见文件头"章节不变"与 URL 的 `ch`）。 */
 function chapterOf(s: ReaderSnapshot): { ch: string | null; heading: string; position: string } {
   return { ch: s.ch, heading: s.heading, position: s.position };
 }
@@ -274,13 +253,11 @@ function chapterOf(s: ReaderSnapshot): { ch: string | null; heading: string; pos
 
 interface ReaderStart {
   plan: ShortcutPlan;
-  /** 建立起始状态时实际在滚动的元素（F-002 之下为文档）。 */
-  scroller: ReaderScroller;
   /** 起始状态的读数。 */
   state: ReaderSnapshot;
 }
 
-/** 起始状态 (a) 对某个滚动元素的两个不等式；返回不满足的项（空数组即满足）。 */
+/** 起始状态 (a) 对 `<main>` 的两个不等式；返回不满足的项（空数组即满足）。 */
 function startStateProblems(m: MainScroll): string[] {
   const max = m.scrollHeight - m.clientHeight;
   const problems: string[] = [];
@@ -302,27 +279,18 @@ async function readerStart(page: Page, bookLog: BookLog, plan: ShortcutPlan): Pr
   await openReader(page, bookLog, book, chapter);
   await expectCurrentChapter(page, book.facts, chapter);
 
-  const scroller = await step(
-    "起始状态：把正文滚到章中（<main> 与实际滚动元素的 scrollTop 各设为其 clientHeight）",
-    async () => {
-      const judge = await readJudgeParagraph(page);
-      if (judge.scroller === null) throw new Error("<main> 与文档都没有可滚距离，起始章节不够长");
-      const main = await readMainScroll(page);
-      // 设计原文：经 getByRole("main").evaluate 把 scrollTop 设为 clientHeight（F-002 之下被夹回 0）
-      await setMainScrollTop(page, main.clientHeight);
-      if (judge.scroller === "document") {
-        await setDocumentScrollTop(page, (await readDocumentScroll(page)).clientHeight);
-      }
-      await waitFrames(page);
-      const actual = judge.scroller === "main" ? await readMainScroll(page) : await readDocumentScroll(page);
-      expect(
-        startStateProblems(actual),
-        `实际滚动元素（${judge.scroller}）应满足起始状态：最大可滚距离 ≥ ${START_SCREENS} × clientHeight，` +
-          `scrollTop 介于 ${EDGE_PX} px 与最大可滚距离 − ${EDGE_PX} px 之间（${describeScroll(actual)}）`,
-      ).toEqual([]);
-      return judge.scroller;
-    },
-  );
+  await step("起始状态：把正文滚到章中（<main> 的 scrollTop 设为其 clientHeight）", async () => {
+    await expectDocumentNotScrollable(page);
+    // 设计原文：经 getByRole("main").evaluate 把 scrollTop 设为 clientHeight
+    await setMainScrollTop(page, (await readMainScroll(page)).clientHeight);
+    await waitFrames(page);
+    const main = await readMainScroll(page);
+    expect(
+      startStateProblems(main),
+      `正文滚动容器 <main> 应满足起始状态：最大可滚距离 ≥ ${START_SCREENS} × clientHeight，` +
+        `scrollTop 介于 ${EDGE_PX} px 与最大可滚距离 − ${EDGE_PX} px 之间（${describeScroll(main)}）`,
+    ).toEqual([]);
+  });
 
   await step("起始状态：三个抽屉均关闭", async () => {
     const markers = overlayMarkers(page);
@@ -333,11 +301,8 @@ async function readerStart(page: Page, bookLog: BookLog, plan: ShortcutPlan): Pr
   await blurToBody(page, "起始状态：document.activeElement.blur()，焦点回到 <body>");
 
   const state = await readSnapshot(page);
-  test.info().annotations.push({
-    type: "shortcut-start",
-    description: `实际滚动元素 ${scroller}；${describeSnapshot(state)}`,
-  });
-  return { plan, scroller, state };
+  test.info().annotations.push({ type: "shortcut-start", description: describeSnapshot(state) });
+  return { plan, state };
 }
 
 /** `document.activeElement.blur()`，并核对焦点在 `<body>` 上。 */
@@ -380,31 +345,22 @@ async function expectSameChapter(after: ReaderSnapshot, before: ReaderSnapshot, 
   });
 }
 
-/** `scrollTop` 不变：`<main>` 与文档的 `scrollTop` 都与 `before` 相同。 */
-async function expectSameScroll(after: ReaderSnapshot, before: ReaderSnapshot, item: string): Promise<void> {
-  await step(
-    `${item} scrollTop 不变（<main> ${before.main.scrollTop}、文档 ${before.document.scrollTop}）`,
-    () => {
-      expect(positions(after), "<main> 与文档的 scrollTop").toEqual(positions(before));
-    },
-  );
+/** `scrollTop` 不变：先核对文档不可滚动（需求 2.1），再比较 `<main>` 的 `scrollTop` 与 `before` 相同。 */
+async function expectSameScroll(
+  page: Page,
+  after: ReaderSnapshot,
+  before: ReaderSnapshot,
+  item: string,
+): Promise<void> {
+  await expectDocumentNotScrollable(page);
+  await step(`${item} scrollTop 不变（<main> ${before.main.scrollTop}）`, () => {
+    expect(after.main.scrollTop, "<main> 的 scrollTop").toBe(before.main.scrollTop);
+  });
 }
 
 async function expectDrawers(after: ReaderSnapshot, expected: DrawerState, item: string): Promise<void> {
   await step(`${item} ${describeDrawers(expected)}`, () => {
     expect(after.drawers, "三个抽屉的开闭").toEqual(expected);
-  });
-}
-
-/** F-002 用例的第一步：起始状态 (a) 在 `<main>` 上成立（soft，之后照常按键与度量）。 */
-async function expectMainStartState(start: ReaderStart): Promise<void> {
-  await step("起始状态：正文滚动容器 <main> 的最大可滚距离 ≥ 2 × clientHeight，scrollTop 介于 2 px 与最大可滚距离 − 2 px", () => {
-    expect
-      .soft(
-        startStateProblems(start.state.main),
-        `<main> 应满足起始状态（${describeScroll(start.state.main)}；实际滚动元素 ${start.scroller}）`,
-      )
-      .toEqual([]);
   });
 }
 
@@ -438,12 +394,11 @@ test.describe("10.9 10.10 ← / → 换章", () => {
       await expectCurrentChapter(page, facts, start.plan[nav.side]);
     });
 
-    test(`${nav.item} F-005 按 ${nav.key.label}：URL 的 ch 变为${nav.label}正文章节的下标`, async ({
+    test(`${nav.item} 按 ${nav.key.label}：URL 的 ch 变为${nav.label}正文章节的下标`, async ({
       page,
       lib,
       bookLog,
     }) => {
-      test.fail(true, F005_URL);
       const start = await readerStart(page, bookLog, await shortcutPlan(lib));
       const { facts } = start.plan.book;
       const target = start.plan[nav.side];
@@ -453,12 +408,24 @@ test.describe("10.9 10.10 ← / → 换章", () => {
         await waitFrames(page);
       });
       await step(`${nav.item} URL 的 ch 为 ${target}`, async () => {
-        const ch = await urlCh(page);
-        test.info().annotations.push({
-          type: "shortcut-reading",
-          description: `${nav.key.label}：按键前 URL ch=${start.state.ch ?? "（无）"}，换章后 ch=${ch ?? "（无）"}（期望 ${target}）`,
-        });
-        expect(ch, "URL 的 ch").toBe(String(target));
+        let last: string | null = null;
+        try {
+          await expect
+            .poll(
+              async () => {
+                last = await urlCh(page);
+                return last;
+              },
+              { message: "URL 的 ch" },
+            )
+            .toBe(String(target));
+        } finally {
+          const ch = last as string | null;
+          test.info().annotations.push({
+            type: "shortcut-reading",
+            description: `${nav.key.label}：按键前 URL ch=${start.state.ch ?? "（无）"}，换章后 ch=${ch ?? "（无）"}（期望 ${target}）`,
+          });
+        }
       });
     });
   }
@@ -474,16 +441,15 @@ const HOME: KeyCase = { label: "Home", key: "Home" };
 const END: KeyCase = { label: "End", key: "End" };
 
 test.describe("10.11 10.12 Space 下翻", () => {
-  test("10.11 F-002 按 Space：<main> 的 scrollTop 增大，增量不超过 clientHeight、不小于 min(clientHeight / 2, 剩余可滚距离)（容差 1 px），章节不变", async ({
+  test("10.11 按 Space：<main> 的 scrollTop 增大，增量不超过 clientHeight、不小于 min(clientHeight / 2, 剩余可滚距离)（容差 1 px），章节不变", async ({
     page,
     lib,
     bookLog,
   }) => {
-    test.fail(true, F002_SPACE);
     const start = await readerStart(page, bookLog, await shortcutPlan(lib));
-    await expectMainStartState(start);
     const before = start.state;
     const after = await pressAndRead(page, before, SPACE);
+    await expectDocumentNotScrollable(page);
     await step("10.11 <main> 的 scrollTop 增量在 (0, clientHeight] 内且不小于 min(clientHeight / 2, 按键前剩余可滚距离)", () => {
       const { clientHeight, scrollTop, scrollHeight } = before.main;
       const remaining = scrollHeight - clientHeight - scrollTop;
@@ -505,6 +471,7 @@ test.describe("10.11 10.12 Space 下翻", () => {
   }) => {
     const start = await readerStart(page, bookLog, await shortcutPlan(lib));
     const atEnd = await pressAndRead(page, start.state, END);
+    await expectDocumentNotScrollable(page);
     await step("10.12 条件：<main> 的剩余可滚距离 ≤ 2 px", () => {
       const { scrollTop, clientHeight, scrollHeight } = atEnd.main;
       expect(scrollHeight - clientHeight - scrollTop, `<main> ${describeScroll(atEnd.main)}`).toBeLessThanOrEqual(
@@ -515,8 +482,7 @@ test.describe("10.11 10.12 Space 下翻", () => {
     await expectCurrentChapter(page, start.plan.book.facts, start.plan.next);
   });
 
-  test("10.12 F-005 先按 End 再按 Space：URL 的 ch 变为下一个正文章节的下标", async ({ page, lib, bookLog }) => {
-    test.fail(true, F005_URL);
+  test("10.12 先按 End 再按 Space：URL 的 ch 变为下一个正文章节的下标", async ({ page, lib, bookLog }) => {
     const start = await readerStart(page, bookLog, await shortcutPlan(lib));
     const { facts } = start.plan.book;
     const target = start.plan.next;
@@ -527,7 +493,7 @@ test.describe("10.11 10.12 Space 下翻", () => {
       await waitFrames(page);
     });
     await step(`10.12 URL 的 ch 为 ${target}`, async () => {
-      expect(await urlCh(page), "URL 的 ch").toBe(String(target));
+      await expect.poll(() => urlCh(page), { message: "URL 的 ch" }).toBe(String(target));
     });
   });
 });
@@ -543,16 +509,15 @@ test.describe("10.13 Shift+Space 上翻", () => {
     await expectSameChapter(after, start.state, "10.13");
   });
 
-  test("10.13 F-002 按 Shift+Space：<main> 的 scrollTop 减小，减量不超过 clientHeight、不小于 min(clientHeight / 2, 按键前 scrollTop)（容差 1 px）", async ({
+  test("10.13 按 Shift+Space：<main> 的 scrollTop 减小，减量不超过 clientHeight、不小于 min(clientHeight / 2, 按键前 scrollTop)（容差 1 px）", async ({
     page,
     lib,
     bookLog,
   }) => {
-    test.fail(true, F002_SHIFT_SPACE);
     const start = await readerStart(page, bookLog, await shortcutPlan(lib));
-    await expectMainStartState(start);
     const before = start.state;
     const after = await pressAndRead(page, before, SHIFT_SPACE);
+    await expectDocumentNotScrollable(page);
     await step("10.13 <main> 的 scrollTop 减量在 (0, clientHeight] 内且不小于 min(clientHeight / 2, 按键前 scrollTop)", () => {
       const { clientHeight, scrollTop } = before.main;
       const delta = scrollTop - after.main.scrollTop;
@@ -577,15 +542,14 @@ test.describe("10.14 10.15 Home / End", () => {
     await expectSameChapter(after, start.state, "10.14");
   });
 
-  test("10.14 F-002 按 Home：<main> 的 scrollTop 由起始状态（介于 2 px 与最大可滚距离 − 2 px）变为 0", async ({
+  test("10.14 按 Home：<main> 的 scrollTop 由起始状态（介于 2 px 与最大可滚距离 − 2 px）变为 0", async ({
     page,
     lib,
     bookLog,
   }) => {
-    test.fail(true, F002_EDGE);
     const start = await readerStart(page, bookLog, await shortcutPlan(lib));
-    await expectMainStartState(start);
     const after = await pressAndRead(page, start.state, HOME);
+    await expectDocumentNotScrollable(page);
     await step("10.14 <main> 的 scrollTop 为 0", () => {
       expect(after.main.scrollTop, `<main> ${describeScroll(after.main)}`).toBe(0);
     });
@@ -597,15 +561,14 @@ test.describe("10.14 10.15 Home / End", () => {
     await expectSameChapter(after, start.state, "10.15");
   });
 
-  test("10.15 F-002 按 End：<main> 的 scrollTop 由起始状态变为与 scrollHeight − clientHeight 相差 ≤ 2 px", async ({
+  test("10.15 按 End：<main> 的 scrollTop 由起始状态变为与 scrollHeight − clientHeight 相差 ≤ 2 px", async ({
     page,
     lib,
     bookLog,
   }) => {
-    test.fail(true, F002_EDGE);
     const start = await readerStart(page, bookLog, await shortcutPlan(lib));
-    await expectMainStartState(start);
     const after = await pressAndRead(page, start.state, END);
+    await expectDocumentNotScrollable(page);
     await step("10.15 <main> 的 scrollTop 与 scrollHeight − clientHeight 相差 ≤ 2 px", () => {
       const { scrollTop, clientHeight, scrollHeight } = after.main;
       expect(Math.abs(scrollHeight - clientHeight - scrollTop), `<main> ${describeScroll(after.main)}`).toBeLessThanOrEqual(
@@ -665,7 +628,7 @@ test.describe("10.16–10.18 T / F / S 打开抽屉", () => {
       });
       await expectDrawers(after, drawer.open, drawer.item);
       await expectSameChapter(after, start.state, drawer.item);
-      await expectSameScroll(after, start.state, drawer.item);
+      await expectSameScroll(page, after, start.state, drawer.item);
     });
   }
 });
@@ -684,7 +647,7 @@ test.describe("10.19 Esc 关闭抽屉", () => {
       const after = await pressAndRead(page, opened, { label: "Esc", key: "Escape" });
       await expectDrawers(after, ALL_CLOSED, "10.19");
       await expectSameChapter(after, start.state, "10.19");
-      await expectSameScroll(after, start.state, "10.19");
+      await expectSameScroll(page, after, start.state, "10.19");
     });
   }
 });
@@ -709,7 +672,7 @@ test.describe("10.20 焦点在检索框里", () => {
     });
     const opened = await readSnapshot(page);
     await expectDrawers(opened, { ...ALL_CLOSED, search: true }, "10.20 前提：");
-    await expectSameScroll(opened, start.state, "10.20 前提：打开检索抽屉后");
+    await expectSameScroll(page, opened, start.state, "10.20 前提：打开检索抽屉后");
 
     for (const key of INPUT_KEYS) {
       await step(`按 ${key.label} 前焦点仍在检索框`, async () => {
@@ -717,7 +680,7 @@ test.describe("10.20 焦点在检索框里", () => {
       });
       const after = await pressAndRead(page, opened, key);
       await expectSameChapter(after, opened, `10.20 ${key.label}：`);
-      await expectSameScroll(after, opened, `10.20 ${key.label}：`);
+      await expectSameScroll(page, after, opened, `10.20 ${key.label}：`);
       await expectDrawers(after, opened.drawers, `10.20 ${key.label}：仍只有`);
     }
 
@@ -743,7 +706,7 @@ test.describe("10.21 Ctrl / Alt / Meta 组合不接管", () => {
         const start = await readerStart(page, bookLog, await shortcutPlan(lib));
         const after = await pressAndRead(page, start.state, combo);
         await expectSameChapter(after, start.state, "10.21");
-        await expectSameScroll(after, start.state, "10.21");
+        await expectSameScroll(page, after, start.state, "10.21");
         await expectDrawers(after, ALL_CLOSED, "10.21");
       });
     }
@@ -768,12 +731,12 @@ test.describe("10.22 焦点在按钮上", () => {
       await expect(view.addBookmarkButton).toBeFocused();
     });
     const focused = await readSnapshot(page);
-    await expectSameScroll(focused, start.state, "10.22 前提：聚焦按钮后");
+    await expectSameScroll(page, focused, start.state, "10.22 前提：聚焦按钮后");
     const after = await pressAndRead(page, focused, SPACE);
     await step("10.22 按钮照常激活：可访问名称变为“已添加书签 (点击移除)”", async () => {
       await expect(view.bookmarkButton).toHaveAccessibleName(NAMES.removeBookmark);
     });
     await expectSameChapter(after, focused, "10.22");
-    await expectSameScroll(after, focused, "10.22");
+    await expectSameScroll(page, after, focused, "10.22");
   });
 });

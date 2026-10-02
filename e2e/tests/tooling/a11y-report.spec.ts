@@ -10,24 +10,45 @@
  * 影响级别、标记原文与"违规数 0"按需求原文写成字面量；`CaseFacts` 手写，形状与 reporter 的
  * `toCaseFacts` 相同，附件按 Playwright 交给 reporter 的样子带 `body`。只跑 real 时该节写"未运行"，
  * 由 `run-summary.spec.ts` 的"未运行"一例覆盖。
+ *
+ * reader-defect-fixes（RDF）任务 6.4（需求 15.3、15.6）另加两例：`A11Y_SCANS` 恰为 31 次，名称、
+ * 顺序、视图、主题与规则集按需求原文写成字面量（EV 15.1、15.2 的 11 次不变，RDF 15.6 的 20 次
+ * Contrast_Extension_Scan 的书与进入路径同 15.1 中同一视图）；违规节点明细表的渲染（对比度列、
+ * 缺数据与空字段写"—"、多项 target、单元格中的 `|`、反引号与标签、failureSummary 的换行），
+ * incomplete 带明细时仍只列规则 id 与节点数。
+ *
+ * RDF 任务 17.2（需求 15.2、15.3）另加 `formatA11yViolations` 的例子：违规时 `a11y.spec.ts` 断言失败
+ * 所用的纯文本说明按字面量逐行核对（首行概括、逐条规则与节点的 target、html、failureSummary、
+ * 对比度数据，空字段写"—"、影响级别缺失写"未给出"）；incomplete 不进入说明；不修改参数；首行
+ * 单独成句（reporter 只取错误信息首行写进失败用例清单）；Run_Summary 中违规使所在用例失败、
+ * incomplete 只列出。
  */
 import { expect, test } from "@playwright/test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { A11Y_SPEC_FILE, buildA11ySection, renderA11ySection, type A11ySectionData } from "../../a11y/report";
 import {
+  A11Y_SPEC_FILE,
+  buildA11ySection,
+  formatA11yViolations,
+  renderA11ySection,
+  type A11ySectionData,
+} from "../../a11y/report";
+import {
+  A11Y_CONTRAST_EXT_VIEWS,
   A11Y_RESULT_ATTACHMENT,
   A11Y_SCANS,
+  EXTENSION_THEMES,
   a11yScan,
   a11yTestTitle,
   describeA11yScan,
   type A11yScanName,
 } from "../../a11y/scans";
-import type { A11yScanResult } from "../../a11y/summarize";
-import { THEME_UNSET, describeTheme } from "../../support/theme";
+import type { A11yNodeDetail, A11yScanResult } from "../../a11y/summarize";
+import { THEME_UNSET, appDefaultTheme, describeTheme } from "../../support/theme";
 import {
   buildRunSummary,
+  firstLine,
   renderSummary,
   SUMMARY_HEADINGS,
   type CaseAnnotation,
@@ -100,6 +121,23 @@ function okResult(name: A11yScanName, parts: Partial<Pick<A11yScanResult, "viola
   };
 }
 
+/**
+ * 手写违规与 incomplete 用的 `n` 个节点明细（RDF 15.4：长度须等于 `nodes`），target 为
+ * `#<prefix><序号>`，不带对比度数据。
+ */
+function details(prefix: string, n: number): A11yNodeDetail[] {
+  return Array.from({ length: n }, (_, i) => ({
+    target: [`#${prefix}${i + 1}`],
+    html: `<p id="${prefix}${i + 1}">`,
+    failureSummary: "Fix any of the following:\n  x",
+  }));
+}
+
+/** `details(prefix, n)` 中第 `i` 个（从 1 起）节点在明细表中的一行（failureSummary 的换行折成空格）。 */
+function detailRow(prefix: string, i: number): string {
+  return `| ${i} | \`#${prefix}${i}\` | \`<p id="${prefix}${i}">\` | \`Fix any of the following: x\` |`;
+}
+
 function noAxeResult(name: A11yScanName, status: "failed" | "skipped", reason: string): A11yScanResult {
   const def = a11yScan(name);
   return { name: def.name, view: def.view, theme: def.theme, status, reason, violations: [], incomplete: [], axeVersion: "" };
@@ -135,21 +173,51 @@ function section(cases: CaseFacts[]): { data: A11ySectionData; lines: string[] }
   return { data, lines: renderA11ySection(data) };
 }
 
+/** 只跑 fixture 的一次运行：`cases` 为全部用例，`lines` 为 A11y_Scan 一节的正文，其余各节与产物取不涉及的写法。 */
+function runFacts(cases: CaseFacts[], lines: string[], status: RunFacts["status"]): RunFacts {
+  return {
+    startTime: new Date("2025-06-01T12:00:00.000Z"),
+    durationMs: 60_000,
+    status,
+    selected: ["fixture"],
+    onBeginTests: cases.length,
+    errors: [],
+    setupAbort: null,
+    cases,
+    snapshot: { start: { ok: true, count: 10, ms: 5 }, end: { ok: true, count: 10, ms: 5 }, diff: null },
+    fixtureFailed: null,
+    realPrecheck: null,
+    reviewViolations: [],
+    artifacts: {
+      htmlReport: { path: "e2e/.out/report/index.html" },
+      reviewReport: { path: "e2e/.out/review/review-report.md" },
+      perf: { missing: "real 未运行" },
+      a11y: { path: "e2e/.out/a11y/" },
+    },
+    sections: {
+      visual: { status: "notGenerated", reason: "本例不涉及" },
+      perf: { status: "notRun", reason: "real 未运行" },
+      a11y: { status: "ready", lines },
+    },
+    utcOffsetMinutes: 480,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 用例
 // ---------------------------------------------------------------------------
 
 test.describe("A11y_Scan 一节（任务 20.5）", () => {
-  test("11 次扫描都完成：按 A11Y_SCANS 的顺序逐节列出，critical 与 serious 标记、minor 与 moderate 只列出，无违规写违规数 0", () => {
+  test("31 次扫描都完成：按 A11Y_SCANS 的顺序逐节列出，critical 与 serious 标记、minor 与 moderate 只列出，无违规写违规数 0", () => {
     const settings = okResult("a11y-settings", {
       violations: [
         // flagged 故意写反：标记只看影响级别（15.5）
-        { id: "label", impact: "critical", nodes: 2, flagged: false },
-        { id: "color-contrast", impact: "serious", nodes: 3, flagged: true },
-        { id: "region", impact: "moderate", nodes: 1, flagged: true },
-        { id: "list", impact: "minor", nodes: 1, flagged: false },
+        { id: "label", impact: "critical", nodes: 2, flagged: false, details: details("l", 2) },
+        { id: "color-contrast", impact: "serious", nodes: 3, flagged: true, details: details("c", 3) },
+        { id: "region", impact: "moderate", nodes: 1, flagged: true, details: details("r", 1) },
+        { id: "list", impact: "minor", nodes: 1, flagged: false, details: details("s", 1) },
       ],
-      incomplete: [{ id: "color-contrast", nodes: 4 }],
+      incomplete: [{ id: "color-contrast", nodes: 4, details: details("i", 4) }],
     });
     // 用例顺序与 A11Y_SCANS 相反：节序只取 A11Y_SCANS
     const cases = [...A11Y_SCANS].reverse().map((def) =>
@@ -157,21 +225,26 @@ test.describe("A11y_Scan 一节（任务 20.5）", () => {
     );
     const { data, lines } = section(cases);
 
-    expect(A11Y_SCANS).toHaveLength(11);
+    // RDF 15.1、15.6：6 个视图扫描、5 次阅读器正文对比度扫描与 20 次 Contrast_Extension_Scan
+    expect(A11Y_SCANS).toHaveLength(31);
     expect(data.entries.map((e) => e.name)).toEqual(A11Y_SCANS.map((d) => d.name));
     expect(data.entries.every((e) => e.result.kind === "ok")).toBe(true);
     expect(data.axeVersions).toEqual([AXE_VERSION]);
     expect(data.problems).toEqual([]);
 
-    // 15.4：11 节，节名标明视图与主题
+    // 15.4：31 节，节名标明视图与主题
     expect(headings(lines)).toEqual(A11Y_SCANS.map((d, i) => `### ${i + 1}. ${describeA11yScan(d)}`));
     expect(headings(lines)[0]).toBe("### 1. 书架首屏 · " + describeTheme(THEME_UNSET));
     expect(headings(lines)[10]).toMatch(/^### 11\. 阅读器正文 · .+ · 仅 color-contrast$/);
 
     expect(lines).toContain(`- axe-core：${AXE_VERSION}`);
-    expect(lines).toContain("- 结果：完成 11、扫描失败 0、跳过 0、未执行 0（共 11 次）");
+    expect(lines).toContain("- 结果：完成 31、扫描失败 0、跳过 0、未执行 0（共 31 次）");
     expect(lines.some((l) => l.includes("4 条违规规则，其中 critical 或 serious 2 条") && l.includes(FLAG))).toBe(true);
-    expect(lines.some((l) => l.includes("不影响用例结果与退出码"))).toBe(true);
+    // RDF 15.2、15.3：任一违规即判用例失败，incomplete 只列出
+    expect(lines.some((l) => l.includes("任一违规即判该扫描的用例失败") && l.includes("incomplete 只列出，不使用例失败"))).toBe(
+      true,
+    );
+    expect(lines.some((l) => l.includes("不影响用例结果与退出码"))).toBe(false);
 
     expect(bodyOf(lines, "a11y-shelf")).toEqual([
       "- 扫描：`a11y-shelf`；结果：完成",
@@ -191,6 +264,35 @@ test.describe("A11y_Scan 一节（任务 20.5）", () => {
       "| `region` | moderate | 1 | — |",
       "| `list` | minor | 1 | — |",
       "",
+      // RDF 15.3、15.4：违规逐条规则列出节点明细
+      "- 违规 `label`（critical）的节点明细，共 2 个：",
+      "",
+      "| 节点 | target | html | failureSummary |",
+      "| ---: | --- | --- | --- |",
+      detailRow("l", 1),
+      detailRow("l", 2),
+      "",
+      "- 违规 `color-contrast`（serious）的节点明细，共 3 个：",
+      "",
+      "| 节点 | target | html | failureSummary |",
+      "| ---: | --- | --- | --- |",
+      detailRow("c", 1),
+      detailRow("c", 2),
+      detailRow("c", 3),
+      "",
+      "- 违规 `region`（moderate）的节点明细，共 1 个：",
+      "",
+      "| 节点 | target | html | failureSummary |",
+      "| ---: | --- | --- | --- |",
+      detailRow("r", 1),
+      "",
+      "- 违规 `list`（minor）的节点明细，共 1 个：",
+      "",
+      "| 节点 | target | html | failureSummary |",
+      "| ---: | --- | --- | --- |",
+      detailRow("s", 1),
+      "",
+      // incomplete 只列规则 id 与节点数（RDF 15.3）
       "- incomplete（axe 判为需人工复核）：1",
       "",
       "| 规则 id | 节点数 |",
@@ -217,18 +319,18 @@ test.describe("A11y_Scan 一节（任务 20.5）", () => {
       scanCase("a11y-search", { status: "skipped", annotations: [{ type: "skip", description: fixtureFailed }] }),
       // 通过却只留下无法解析的附件
       scanCase("a11y-settings", { attachments: [attachment("{not json")] }),
-      // 5 次对比度扫描本次未收集
+      // 25 次对比度扫描（15.2 的 5 次与 RDF 15.6 的 20 次）本次未收集
     ]);
 
     expect(data.collected).toBe(6);
     expect(data.entries.map((e) => e.result.kind)).toEqual([
       "failed", "skipped", "failed", "notRun", "skipped", "failed",
-      "notRun", "notRun", "notRun", "notRun", "notRun",
+      ...Array.from({ length: 25 }, () => "notRun"),
     ]);
     expect(data.axeVersions).toEqual([]);
     expect(lines).toContain("- axe-core：未知（没有完成的扫描）");
-    expect(lines).toContain("- 结果：完成 0、扫描失败 3、跳过 2、未执行 6（共 11 次）");
-    expect(headings(lines)).toHaveLength(11);
+    expect(lines).toContain("- 结果：完成 0、扫描失败 3、跳过 2、未执行 26（共 31 次）");
+    expect(headings(lines)).toHaveLength(31);
 
     // 15.9：标"扫描失败"，附视图名、主题与失败原因
     expect(bodyOf(lines, "a11y-shelf")).toEqual([
@@ -273,7 +375,11 @@ test.describe("A11y_Scan 一节（任务 20.5）", () => {
   test("附件问题：同一扫描名取第一份，扫描名不在定义中与视图不符的附件记入附件问题", () => {
     const { data, lines } = section([
       scanCase("a11y-shelf", {
-        attachments: [attachment(okResult("a11y-shelf", { violations: [{ id: "region", impact: "moderate", nodes: 5, flagged: false }] }))],
+        attachments: [
+          attachment(
+            okResult("a11y-shelf", { violations: [{ id: "region", impact: "moderate", nodes: 5, flagged: false, details: details("r", 5) }] }),
+          ),
+        ],
       }),
       scanCase("a11y-shelf-again", { title: "另一个用例", attachments: [attachment(okResult("a11y-shelf")), attachment({ ...okResult("a11y-shelf"), name: "a11y-unknown" })] }),
       scanCase("a11y-reader", { attachments: [attachment({ ...okResult("a11y-reader"), view: "shelf" })] }),
@@ -292,39 +398,16 @@ test.describe("A11y_Scan 一节（任务 20.5）", () => {
     expect(problems).toHaveLength(2 + data.problems.length);
   });
 
-  test("A11y_Scan 违规不影响退出码：用例全部通过时退出码为 0，summary 的 A11y_Scan 一节即本节正文", () => {
-    const critical = okResult("a11y-settings", { violations: [{ id: "label", impact: "critical", nodes: 2, flagged: true }] });
+  // RDF 15.2 起违规由 a11y.spec.ts 的断言使用例失败；本节自身仍不参与退出码（不单列为运行级失败）
+  test("退出码只取用例结果：本节不单列运行级失败，用例全部通过时退出码为 0，summary 的 A11y_Scan 一节即本节正文", () => {
+    const critical = okResult("a11y-settings", {
+      violations: [{ id: "label", impact: "critical", nodes: 2, flagged: true, details: details("l", 2) }],
+    });
     const cases = A11Y_SCANS.map((def) =>
       scanCase(def.name, { attachments: [attachment(def.name === "a11y-settings" ? critical : okResult(def.name))] }),
     );
     const { lines } = section(cases);
-    const facts: RunFacts = {
-      startTime: new Date("2025-06-01T12:00:00.000Z"),
-      durationMs: 60_000,
-      status: "passed",
-      selected: ["fixture"],
-      onBeginTests: cases.length,
-      errors: [],
-      setupAbort: null,
-      cases,
-      snapshot: { start: { ok: true, count: 10, ms: 5 }, end: { ok: true, count: 10, ms: 5 }, diff: null },
-      fixtureFailed: null,
-      realPrecheck: null,
-      reviewViolations: [],
-      artifacts: {
-        htmlReport: { path: "e2e/.out/report/index.html" },
-        reviewReport: { path: "e2e/.out/review/review-report.md" },
-        perf: { missing: "real 未运行" },
-        a11y: { path: "e2e/.out/a11y/" },
-      },
-      sections: {
-        visual: { status: "notGenerated", reason: "本例不涉及" },
-        perf: { status: "notRun", reason: "real 未运行" },
-        a11y: { status: "ready", lines },
-      },
-      utcOffsetMinutes: 480,
-    };
-    const model = buildRunSummary(facts);
+    const model = buildRunSummary(runFacts(cases, lines, "passed"));
     expect(model.exitCode).toBe(0);
     expect(model.runLevel).toEqual([]);
 
@@ -333,5 +416,417 @@ test.describe("A11y_Scan 一节（任务 20.5）", () => {
     expect(start).toBeGreaterThan(-1);
     expect(md.slice(start + 2, start + 2 + lines.length)).toEqual(lines);
     expect(md.some((l) => l.includes(`| \`label\` | critical | 2 | ${FLAG} |`))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RDF 任务 6.4：扫描集合（需求 15.6）与违规节点明细的渲染（需求 15.3、15.4）
+// ---------------------------------------------------------------------------
+
+/** RDF 15.6 的 5 个视图（`shelf`、`detail`、`toc`、`search`、`settings`）与 EV 15.4 节名中的写法，按需求原文的顺序。 */
+const EXT_VIEWS = [
+  ["shelf", "书架首屏"],
+  ["detail", "书籍详情弹窗"],
+  ["toc", "目录抽屉"],
+  ["search", "检索抽屉"],
+  ["settings", "设置抽屉"],
+] as const;
+
+/** RDF 15.6 的 4 个主题键（D12：默认主题即 sepia，已由 15.1 的 6 个视图扫描覆盖）。 */
+const EXT_THEMES = ["default", "eyecare", "dark", "black"] as const;
+
+/** 表格行按未转义的 `|` 切出的单元格数（`\|` 是单元格内的竖线，不分列）。 */
+function cellCount(row: string): number {
+  return row.split(/(?<!\\)\|/).length - 2;
+}
+
+test.describe("A11y_Scan 扫描集合与节点明细（RDF 任务 6.4）", () => {
+  test("RDF 15.6 A11Y_SCANS 恰为 31 次：EV 15.1 的 6 次与 15.2 的 5 次不变，其后是 5 个视图 × default、eyecare、dark、black 的 20 次 color-contrast 扫描", () => {
+    expect(A11Y_SCANS).toHaveLength(31);
+    expect(A11Y_SCANS.map((d) => d.name)).toEqual([
+      // EV 15.1：6 次视图扫描
+      "a11y-shelf",
+      "a11y-detail",
+      "a11y-reader",
+      "a11y-toc",
+      "a11y-search",
+      "a11y-settings",
+      // EV 15.2：阅读器正文 5 个主题的对比度扫描
+      "a11y-contrast-default",
+      "a11y-contrast-sepia",
+      "a11y-contrast-eyecare",
+      "a11y-contrast-dark",
+      "a11y-contrast-black",
+      // RDF 15.6：Contrast_Extension_Scan，按视图 × 主题
+      "a11y-contrast-shelf-default",
+      "a11y-contrast-shelf-eyecare",
+      "a11y-contrast-shelf-dark",
+      "a11y-contrast-shelf-black",
+      "a11y-contrast-detail-default",
+      "a11y-contrast-detail-eyecare",
+      "a11y-contrast-detail-dark",
+      "a11y-contrast-detail-black",
+      "a11y-contrast-toc-default",
+      "a11y-contrast-toc-eyecare",
+      "a11y-contrast-toc-dark",
+      "a11y-contrast-toc-black",
+      "a11y-contrast-search-default",
+      "a11y-contrast-search-eyecare",
+      "a11y-contrast-search-dark",
+      "a11y-contrast-search-black",
+      "a11y-contrast-settings-default",
+      "a11y-contrast-settings-eyecare",
+      "a11y-contrast-settings-dark",
+      "a11y-contrast-settings-black",
+    ]);
+
+    // EV 15.1、15.2 的 11 次：名称、视图、主题、规则集与所用的书不变
+    expect(A11Y_SCANS.slice(0, 11).map(({ name, view, theme, rules, book }) => ({ name, view, theme, rules, book }))).toEqual([
+      { name: "a11y-shelf", view: "shelf", theme: THEME_UNSET, rules: "wcag", book: null },
+      { name: "a11y-detail", view: "detail", theme: THEME_UNSET, rules: "wcag", book: "volumes" },
+      { name: "a11y-reader", view: "reader", theme: THEME_UNSET, rules: "wcag", book: "volumes" },
+      { name: "a11y-toc", view: "toc", theme: THEME_UNSET, rules: "wcag", book: "volumes" },
+      { name: "a11y-search", view: "search", theme: THEME_UNSET, rules: "wcag", book: "volumes" },
+      { name: "a11y-settings", view: "settings", theme: THEME_UNSET, rules: "wcag", book: "volumes" },
+      { name: "a11y-contrast-default", view: "reader", theme: "default", rules: "color-contrast", book: "volumes" },
+      { name: "a11y-contrast-sepia", view: "reader", theme: "sepia", rules: "color-contrast", book: "volumes" },
+      { name: "a11y-contrast-eyecare", view: "reader", theme: "eyecare", rules: "color-contrast", book: "volumes" },
+      { name: "a11y-contrast-dark", view: "reader", theme: "dark", rules: "color-contrast", book: "volumes" },
+      { name: "a11y-contrast-black", view: "reader", theme: "black", rules: "color-contrast", book: "volumes" },
+    ]);
+    for (const def of A11Y_SCANS.slice(0, 6)) {
+      expect(a11yTestTitle(def), def.name).toBe(`15.1 ${def.name}：${describeA11yScan(def)}`);
+    }
+    for (const def of A11Y_SCANS.slice(6, 11)) {
+      expect(a11yTestTitle(def), def.name).toBe(`15.2 ${def.name}：${describeA11yScan(def)}`);
+    }
+
+    // D12：扩展的主题是 5 个主题键去掉应用默认渲染的 sepia；视图按需求原文的顺序
+    expect(appDefaultTheme()).toBe("sepia");
+    expect(EXTENSION_THEMES).toEqual(EXT_THEMES);
+    expect(EXTENSION_THEMES).not.toContain(appDefaultTheme());
+    expect(A11Y_CONTRAST_EXT_VIEWS).toEqual(EXT_VIEWS.map(([view]) => view));
+
+    // RDF 15.6 的 20 次：只运行 color-contrast、seed 该主题键；书与进入路径同 15.1 中同一视图
+    const expected = EXT_VIEWS.flatMap(([view, label]) => EXT_THEMES.map((theme) => ({ view, label, theme })));
+    const ext = A11Y_SCANS.slice(11);
+    expect(ext).toHaveLength(expected.length);
+    expected.forEach(({ view, label, theme }, i) => {
+      const def = ext[i];
+      const name = `a11y-contrast-${view}-${theme}`;
+      const base = A11Y_SCANS.find((d) => d.name === `a11y-${view}`);
+      assert.ok(base !== undefined, `没有 a11y-${view}`);
+      expect({ name: def.name, view: def.view, theme: def.theme, rules: def.rules }, name).toEqual({
+        name,
+        view,
+        theme,
+        rules: "color-contrast",
+      });
+      expect({ book: def.book, url: def.url }, name).toEqual({ book: base.book, url: base.url });
+      expect(def.book, name).toBe(view === "shelf" ? null : "volumes");
+      expect(a11yTestTitle(def), name).toBe(`RDF 15.6 ${name}：${label} · ${describeTheme(theme)} · 仅 color-contrast`);
+    });
+
+    // Run_Summary：20 次与 15.2 的对比度扫描同样计为对比度扫描，节名标明视图、主题与规则
+    const { lines } = section(A11Y_SCANS.map((def) => scanCase(def.name, { attachments: [attachment(okResult(def.name))] })));
+    expect(lines.some((l) => l.includes("6 个视图只启用") && l.includes("25 次对比度扫描只运行 `color-contrast`"))).toBe(true);
+    expect(headings(lines).slice(11)).toEqual(
+      expected.map(({ label, theme }, i) => `### ${12 + i}. ${label} · ${describeTheme(theme)} · 仅 color-contrast`),
+    );
+    expect(bodyOf(lines, "a11y-contrast-toc-dark")).toEqual([
+      "- 扫描：`a11y-contrast-toc-dark`；结果：完成",
+      "- 用例结果：通过",
+      ZERO_VIOLATIONS,
+      "- incomplete（axe 判为需人工复核）：0",
+    ]);
+  });
+
+  test("RDF 15.3、15.4 违规节点明细：color-contrast 另列对比度数据，缺数据与空字段写“—”，多项 target 以 → 连接，单元格中的 |、反引号与标签照常显示，failureSummary 的换行折成空格；incomplete 带明细时仍只列规则 id 与节点数", () => {
+    const contrastNode: A11yNodeDetail = {
+      target: ["#ink"],
+      html: '<span class="muted">第 1 章</span>',
+      failureSummary: "Fix any of the following:\n  Element has insufficient color contrast of 3.2",
+      contrast: {
+        fgColor: "#8a8a8a",
+        bgColor: "#f5ecd9",
+        contrastRatio: 3.2,
+        expectedContrastRatio: "4.5:1",
+        fontSize: "10.5pt (14px)",
+        fontWeight: "normal",
+      },
+    };
+    // 同一规则中没有对比度数据的节点；跨 frame 的 target 有两项
+    const plainNode: A11yNodeDetail = {
+      target: ["iframe#reader", "#b"],
+      html: '<label title="a|b">`x`</label>',
+      failureSummary: "Fix all of the following:\n  a\r\n\r\n  b",
+    };
+    // 字段为空：target 为空数组、html 与 failureSummary 为空串，对比度数据只有一部分
+    const emptyNode: A11yNodeDetail = {
+      target: [],
+      html: "",
+      failureSummary: "",
+      contrast: { fgColor: "", bgColor: "#000000", contrastRatio: 0, expectedContrastRatio: "4.5:1", fontSize: "", fontWeight: "" },
+    };
+    const pendingNode: A11yNodeDetail = {
+      target: ["#pending"],
+      html: "<em>待定</em>",
+      failureSummary: "Fix any of the following:\n  y",
+      contrast: { fgColor: "#abcdef", bgColor: "", contrastRatio: 0, expectedContrastRatio: "4.5:1", fontSize: "12.0pt (16px)", fontWeight: "bold" },
+    };
+    const search = okResult("a11y-search", {
+      violations: [
+        { id: "color-contrast", impact: "serious", nodes: 3, flagged: true, details: [contrastNode, plainNode, emptyNode] },
+        { id: "label", impact: "critical", nodes: 1, flagged: true, details: details("l", 1) },
+      ],
+      incomplete: [{ id: "color-contrast", nodes: 1, details: [pendingNode] }],
+    });
+    const { data, lines } = section([scanCase("a11y-search", { attachments: [attachment(search)] })]);
+    expect(data.problems).toEqual([]);
+
+    const header = "| 节点 | target | html | failureSummary | 前景色 | 背景色 | 实测对比度 | 要求的对比度 | 字号 | 字重 |";
+    const rows = [
+      "| 1 | `#ink` | `<span class=\"muted\">第 1 章</span>` | `Fix any of the following: Element has insufficient color contrast of 3.2` | #8a8a8a | #f5ecd9 | 3.2 | 4.5:1 | 10.5pt (14px) | normal |",
+      // 单元格内的 | 转义为 \|；html 含反引号时围栏加长为两个反引号
+      '| 2 | `iframe#reader` → `#b` | ``<label title="a\\|b">`x`</label>`` | `Fix all of the following: a b` | — | — | — | — | — | — |',
+      "| 3 | — | — | — | — | #000000 | 0 | 4.5:1 | — | — |",
+    ];
+    const body = bodyOf(lines, "a11y-search");
+    expect(body).toEqual([
+      "- 扫描：`a11y-search`；结果：完成",
+      "- 用例结果：通过",
+      "- 违规数：2",
+      "",
+      "| 规则 id | 影响级别 | 节点数 | 标记 |",
+      "| --- | --- | ---: | --- |",
+      `| \`color-contrast\` | serious | 3 | ${FLAG} |`,
+      `| \`label\` | critical | 1 | ${FLAG} |`,
+      "",
+      "- 违规 `color-contrast`（serious）的节点明细，共 3 个：",
+      "",
+      header,
+      "| ---: | --- | --- | --- | --- | --- | ---: | --- | --- | --- |",
+      ...rows,
+      "",
+      // 对比度列按规则判定：本规则没有节点带对比度数据，不加这几列
+      "- 违规 `label`（critical）的节点明细，共 1 个：",
+      "",
+      "| 节点 | target | html | failureSummary |",
+      "| ---: | --- | --- | --- |",
+      detailRow("l", 1),
+      "",
+      "- incomplete（axe 判为需人工复核）：1",
+      "",
+      "| 规则 id | 节点数 |",
+      "| --- | ---: |",
+      "| `color-contrast` | 1 |",
+    ]);
+
+    // 每行的列数与表头相同：单元格中的 |、反引号与标签不破坏表格
+    for (const row of rows) expect(cellCount(row), row).toBe(cellCount(header));
+    expect(cellCount(header)).toBe(10);
+    // incomplete 的节点明细只在结果文件中，不出现在 Run_Summary
+    const text = body.join("\n");
+    expect(text).not.toContain("#pending");
+    expect(text).not.toContain("#abcdef");
+    expect(body.filter((l) => l.includes("节点明细"))).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RDF 任务 17.2：违规时的用例失败信息（需求 15.2）与 Run_Summary 中的判定（需求 15.2、15.3）
+// ---------------------------------------------------------------------------
+
+/** 15.2 的失败信息中，每条规则之后都写的判定。 */
+const BLOCKING = "任一违规即判用例失败（RDF 15.2）";
+
+/** `color-contrast` 节点：带对比度数据，html 含换行，failureSummary 为 axe 的两行写法。 */
+const CONTRAST_NODE: A11yNodeDetail = {
+  target: ["#settings-panel .hint"],
+  html: '<p class="hint">\n  字号\n</p>',
+  failureSummary:
+    "Fix any of the following:\n  Element has insufficient color contrast of 3.2 (foreground color: #8a8a8a, " +
+    "background color: #f5ecd9, font size: 10.5pt (14px), font weight: normal). Expected contrast ratio of 4.5:1",
+  contrast: {
+    fgColor: "#8a8a8a",
+    bgColor: "#f5ecd9",
+    contrastRatio: 3.2,
+    expectedContrastRatio: "4.5:1",
+    fontSize: "10.5pt (14px)",
+    fontWeight: "normal",
+  },
+};
+
+/** 同一规则中没有对比度数据的节点：跨 frame 的 target 有两项，html 为空，failureSummary 含 `\r\n` 与空行。 */
+const PLAIN_NODE: A11yNodeDetail = {
+  target: ["iframe#reader", "#b"],
+  html: "",
+  failureSummary: "Fix all of the following:\n  a\r\n\r\n  b",
+};
+
+/** `label` 节点：failureSummary 为空。 */
+const LABEL_NODE: A11yNodeDetail = {
+  target: ["#font-size"],
+  html: '<input id="font-size" type="range">',
+  failureSummary: "",
+};
+
+/** 设置抽屉的视图扫描报出 2 条违规：`color-contrast`（2 个节点）与影响级别缺失的 `label`（1 个节点）。 */
+function settingsViolations(): A11yScanResult {
+  return okResult("a11y-settings", {
+    violations: [
+      { id: "color-contrast", impact: "serious", nodes: 2, flagged: true, details: [CONTRAST_NODE, PLAIN_NODE] },
+      { id: "label", impact: null, nodes: 1, flagged: false, details: [LABEL_NODE] },
+    ],
+  });
+}
+
+/** `settingsViolations()` 的失败信息首行。 */
+const SETTINGS_HEAD =
+  `A11y_Scan a11y-settings（设置抽屉 · ${describeTheme(THEME_UNSET)}）报出 2 条违规规则：` +
+  `color-contrast（serious，2 个节点）、label（未给出，1 个节点）；${BLOCKING}`;
+
+test.describe("A11y_Scan 违规时的失败信息（RDF 任务 17.2）", () => {
+  test("RDF 15.2 formatA11yViolations：0 条违规只有首行、不含换行；规则没有节点明细时写“（没有节点明细）”", () => {
+    const message = formatA11yViolations(okResult("a11y-contrast-dark"));
+    expect(message).toBe(`A11y_Scan a11y-contrast-dark（阅读器正文 · ${describeTheme("dark")}）报出 0 条违规规则`);
+    expect(message).not.toContain("\n");
+
+    const empty = okResult("a11y-shelf", {
+      violations: [{ id: "region", impact: "moderate", nodes: 0, flagged: false, details: [] }],
+    });
+    expect(formatA11yViolations(empty).split("\n")).toEqual([
+      `A11y_Scan a11y-shelf（书架首屏 · ${describeTheme(THEME_UNSET)}）报出 1 条违规规则：region（moderate，0 个节点）；${BLOCKING}`,
+      "",
+      "1. region（moderate），0 个节点",
+      "   （没有节点明细）",
+    ]);
+  });
+
+  test("RDF 15.2 formatA11yViolations：首行概括全部规则，其后逐条规则列出每个节点的 target、html、failureSummary 与对比度数据；多项 target 以 → 连接，html 的换行折成空格，failureSummary 保留分行，空字段写“—”，影响级别缺失写“未给出”", () => {
+    expect(formatA11yViolations(settingsViolations())).toBe(
+      [
+        SETTINGS_HEAD,
+        "",
+        "1. color-contrast（serious），2 个节点",
+        "   节点 1/2",
+        "     target：#settings-panel .hint",
+        '     html：<p class="hint"> 字号 </p>',
+        "     failureSummary：Fix any of the following:",
+        "       Element has insufficient color contrast of 3.2 (foreground color: #8a8a8a, background color: #f5ecd9, " +
+          "font size: 10.5pt (14px), font weight: normal). Expected contrast ratio of 4.5:1",
+        "     对比度：前景色 #8a8a8a；背景色 #f5ecd9；实测对比度 3.2；要求的对比度 4.5:1；字号 10.5pt (14px)；字重 normal",
+        // 没有对比度数据的节点不写对比度一行
+        "   节点 2/2",
+        "     target：iframe#reader → #b",
+        "     html：—",
+        "     failureSummary：Fix all of the following:",
+        "       a",
+        "       b",
+        "",
+        "2. label（未给出），1 个节点",
+        "   节点 1/1",
+        "     target：#font-size",
+        '     html：<input id="font-size" type="range">',
+        "     failureSummary：—",
+      ].join("\n"),
+    );
+  });
+
+  test("RDF 15.3 formatA11yViolations：incomplete（即使带节点明细）不进入失败信息", () => {
+    const pending: A11yNodeDetail = {
+      target: ["#pending"],
+      html: "<em>待定</em>",
+      failureSummary: "Fix any of the following:\n  y",
+      contrast: { fgColor: "#abcdef", bgColor: "", contrastRatio: 0, expectedContrastRatio: "4.5:1", fontSize: "12.0pt (16px)", fontWeight: "bold" },
+    };
+    const incomplete = [{ id: "aria-allowed-role", nodes: 1, details: [pending] }];
+    const withIncomplete: A11yScanResult = { ...settingsViolations(), incomplete };
+
+    const message = formatA11yViolations(withIncomplete);
+    expect(message).toBe(formatA11yViolations(settingsViolations()));
+    for (const text of ["aria-allowed-role", "#pending", "待定", "#abcdef", "incomplete"]) {
+      expect(message, text).not.toContain(text);
+    }
+    // 只有 incomplete、没有违规：仍只有"报出 0 条违规规则"的首行
+    expect(formatA11yViolations(okResult("a11y-detail", { incomplete }))).toBe(
+      `A11y_Scan a11y-detail（书籍详情弹窗 · ${describeTheme(THEME_UNSET)}）报出 0 条违规规则`,
+    );
+  });
+
+  test("RDF 15.2 formatA11yViolations 是纯函数：不修改参数，同一输入两次结果相同", () => {
+    const input: A11yScanResult = {
+      ...settingsViolations(),
+      incomplete: [{ id: "color-contrast", nodes: 1, details: details("i", 1) }],
+    };
+    const before = structuredClone(input);
+    const first = formatA11yViolations(input);
+    expect(input).toEqual(before);
+    expect(formatA11yViolations(input)).toBe(first);
+    expect(input).toEqual(before);
+  });
+
+  test("RDF 15.2 失败信息首行单独成句：含扫描名、视图、主题与每条违规规则的 id，reporter 取的错误信息首行即此行", () => {
+    const toc = okResult("a11y-contrast-toc-black", {
+      violations: [{ id: "color-contrast", impact: "serious", nodes: 1, flagged: true, details: [CONTRAST_NODE] }],
+    });
+    const cases: [A11yScanResult, string, string, string[]][] = [
+      [settingsViolations(), "设置抽屉", describeTheme(THEME_UNSET), ["color-contrast", "label"]],
+      [toc, "目录抽屉", describeTheme("black"), ["color-contrast"]],
+    ];
+    for (const [result, view, theme, ids] of cases) {
+      const message = formatA11yViolations(result);
+      const head = message.split("\n")[0];
+      expect(firstLine(message), result.name).toBe(head);
+      expect(head, result.name).toContain(`A11y_Scan ${result.name}（${view} · ${theme}）`);
+      expect(head, result.name).toContain(`报出 ${ids.length} 条违规规则`);
+      for (const id of ids) expect(head, `${result.name} ${id}`).toContain(id);
+      expect(head.endsWith(BLOCKING), result.name).toBe(true);
+    }
+    expect(formatA11yViolations(settingsViolations()).split("\n")[0]).toBe(SETTINGS_HEAD);
+  });
+
+  test("RDF 15.2、15.3 Run_Summary：有违规的扫描所在用例失败，失败用例清单的错误信息首行即失败信息首行，A11y_Scan 一节写明违规即判失败、incomplete 只列出", () => {
+    const result: A11yScanResult = {
+      ...settingsViolations(),
+      incomplete: [{ id: "color-contrast", nodes: 2, details: details("pending", 2) }],
+    };
+    const message = formatA11yViolations(result);
+    // Playwright 的 expect 带说明时，错误信息以说明开头、其后是匹配器的输出
+    const error = `Error: ${message}\n\nexpect(received).toBe(expected) // Object.is equality\n\nExpected: 0\nReceived: 2`;
+    const cases = A11Y_SCANS.map((def) =>
+      def.name === "a11y-settings"
+        ? scanCase(def.name, { status: "failed", errors: [error], attachments: [attachment(result)] })
+        : scanCase(def.name, { attachments: [attachment(okResult(def.name))] }),
+    );
+    const { data, lines } = section(cases);
+    expect(data.problems).toEqual([]);
+
+    expect(lines).toContain(
+      "- 判定（RDF 15.2、15.3）：任一违规即判该扫描的用例失败，失败信息列出规则 id、影响级别与节点明细；" +
+        "incomplete 只列出，不使用例失败；扫描失败、跳过与未执行的扫描没有 axe 结果，" +
+        '违规数写"没有结果"，不计为 0（15.9）',
+    );
+    // 用例失败不影响该扫描的结果：附件照常采用，违规与 incomplete 都列出
+    const body = bodyOf(lines, "a11y-settings");
+    expect(body.slice(0, 3)).toEqual(["- 扫描：`a11y-settings`；结果：完成", "- 用例结果：失败", "- 违规数：2"]);
+    expect(body).toContain(`| \`color-contrast\` | serious | 2 | ${FLAG} |`);
+    expect(body).toContain("| `label` | 未给出 | 1 | — |");
+    expect(body).toContain("- 违规 `color-contrast`（serious）的节点明细，共 2 个：");
+    expect(body).toContain("- 违规 `label`（未给出）的节点明细，共 1 个：");
+    expect(body.slice(-5)).toEqual([
+      "- incomplete（axe 判为需人工复核）：1",
+      "",
+      "| 规则 id | 节点数 |",
+      "| --- | ---: |",
+      "| `color-contrast` | 2 |",
+    ]);
+    expect(body.join("\n")).not.toContain("#pending");
+
+    const model = buildRunSummary(runFacts(cases, lines, "failed"));
+    expect(model.exitCode).toBe(1);
+    // 失败用例清单中唯一的一项：续行缩进为列表标记"1. "的宽度
+    const md = renderSummary(model).split("\n");
+    expect(md).toContain(`   - 错误信息首行：Error: ${SETTINGS_HEAD}`);
   });
 });

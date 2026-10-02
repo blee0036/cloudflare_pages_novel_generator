@@ -37,9 +37,12 @@
  * 就要再写一遍读取、写入、默认值与旧值兼容四段代码，换来的只是类型上的洁癖。代价是
  * `ReaderSettings` 从"排版设置"扩宽成了"阅读器设置"，已在类型定义处注明。
  *
- * 校验放在**用处**而不是存储处：`getStoredSettings()` 只做浅合并、不校验数值，手改过的
- * localStorage 完全可能给出 `-1` 或 `"十本"`，而淘汰计算不能接受脏值，所以每次用都过一遍
- * `normalizeMaxBooks`。
+ * 取值的归一在存储处完成：`getStoredSettings()` 浅合并后经 `utils/sliderSettings.ts` 的
+ * `normalizeSliderSettings` 把 `cacheMaxBooks` 收拢为 `[MIN_MAX_BOOKS, MAX_MAX_BOOKS]` 内的
+ * 整数（手改过的 localStorage 给出 `-1` 或 `"十本"` 也一样）。用处仍每次过一遍
+ * `normalizeMaxBooks`：对归一后的值是恒等（`floor` 语义），留着是因为淘汰计算不能接受脏值，
+ * 而上限也可能不经 `getStoredSettings()` 直接传入（`CachePutOptions.maxBooks`、
+ * `planCacheEviction` 的参数）。
  */
 
 import {

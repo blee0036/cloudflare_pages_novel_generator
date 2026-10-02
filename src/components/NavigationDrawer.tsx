@@ -173,15 +173,18 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
               <BookOpen className="w-4 h-4 text-[var(--accent)]" />
               <h2 className="font-bold text-base line-clamp-1">{bookTitle}</h2>
             </div>
-            <p className="text-xs opacity-60 mt-1">
+            <p className="text-xs text-[var(--text-muted)] mt-1">
               作者: {author} · 共 {contentTotal} 章
             </p>
           </div>
+          {/* 只含图标的按钮：名称由 `aria-label` 给出，`title` 同文作悬停提示（F-009，需求 11.1） */}
           <button
             onClick={onClose}
             className="p-1 rounded-lg hover:bg-[var(--hover)]"
+            aria-label="关闭目录"
+            title="关闭目录"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
@@ -194,7 +197,9 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
                 ? /* 选中页签浮在 --card-bg 的切换条上，故底色取 --bg：与原先"白底
                      卡片 + 深色主题下 slate-700"同一个意思——比容器亮一档 */
                   "bg-[var(--bg)] shadow text-[var(--accent)] font-bold"
-                : "opacity-60 hover:opacity-100"
+                : /* 未选中页签：不透明的 `--text-muted` 取代 `opacity-60`（F-010），
+                     悬停时提到 `--text`，与原先 60% → 100% 的反馈同义 */
+                  "text-[var(--text-muted)] hover:text-[var(--text)]"
             }`}
           >
             <BookOpen className="w-3.5 h-3.5" />
@@ -206,7 +211,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
             className={`py-1.5 rounded-lg transition-all flex items-center justify-center space-x-1.5 ${
               activeTab === "bookmark"
                 ? "bg-[var(--bg)] shadow text-[var(--accent)] font-bold"
-                : "opacity-60 hover:opacity-100"
+                : "text-[var(--text-muted)] hover:text-[var(--text)]"
             }`}
           >
             <BookmarkIcon className="w-3.5 h-3.5" />
@@ -231,7 +236,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
                 {keyword && (
                   <button
                     onClick={() => setKeyword("")}
-                    className="text-xs opacity-50 hover:opacity-100"
+                    className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
                   >
                     清除
                   </button>
@@ -251,7 +256,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
               className="flex-1 overflow-y-auto"
             >
               {total === 0 ? (
-                <div className="p-8 text-center text-xs opacity-50">
+                <div className="p-8 text-center text-xs text-[var(--text-muted)]">
                   未找到匹配的章节
                 </div>
               ) : (
@@ -291,7 +296,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
                             className="w-0.5 h-3.5 mr-2 rounded-full shrink-0 bg-[var(--accent)]"
                             aria-hidden
                           />
-                          <span className="truncate opacity-60">
+                          <span className="truncate text-[var(--text-muted)]">
                             {chap.title}
                           </span>
                         </h3>
@@ -309,16 +314,25 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
                         /* 未选中行的 `hover:bg-[var(--hover)]` 从这一步起才真正生效：
                            行内 `backgroundColor: "transparent"` 此前无条件压过它（行内样式
                            胜过任何非 !important 的类），悬停一直没有反馈。删掉行内样式后
-                           这个类回到它本来该有的作用，与书架、书签列表的行为一致。 */
+                           这个类回到它本来该有的作用，与书架、书签列表的行为一致。
+                           当前行底色取 `--selected`（`--accent` 15% 混 `--bg`）而不是
+                           `--card-bg`：后者是卷标题的底色，两者相同就分不清"卷标题"与
+                           "当前章"（F-007，需求 9.1）。`shadow-inner` 随之去掉。
+                           未选中行原先是 `--text` 加 `opacity-80`，改为不透明的 `--text-muted`
+                           （F-010）；悬停反馈由 `hover:bg-[var(--hover)]` 承担。 */
                         className={`w-full text-left px-4 text-xs sm:text-sm flex items-center justify-between transition-colors ${divider} ${
                           isActive
-                            ? "font-semibold shadow-inner bg-[var(--card-bg)] text-[var(--accent)]"
-                            : "bg-transparent text-[var(--text)] opacity-80 hover:opacity-100 hover:bg-[var(--hover)]"
+                            ? "font-semibold bg-[var(--selected)] text-[var(--accent)]"
+                            : "bg-transparent text-[var(--text-muted)] hover:bg-[var(--hover)]"
                         }`}
                         style={{ height: ROW_HEIGHT }}
                       >
                         <span className="truncate pr-2">{chap.title}</span>
-                        <span className="text-[10px] opacity-40 shrink-0">
+                        {/* 字数沿用所在行的字色（原先再叠 `opacity-40`，五套主题下都不足 4.5:1）：
+                            未选中行是 `--text-muted`，当前行是 `--accent`。当前行不改用
+                            `--text-muted`——它在 `--selected` 上 sepia 只有 4.25:1，而 `--accent`
+                            对 `--selected` ≥ 4.5:1 由 `palette.test.ts` 核对。 */}
+                        <span className="text-[10px] shrink-0">
                           {chap.length ? `${chap.length}字` : ""}
                         </span>
                       </button>
@@ -338,7 +352,7 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
         {activeTab === "bookmark" && (
           <div className="flex-1 overflow-y-auto p-3 divide-y divide-[var(--border)]">
             {bookmarks.length === 0 ? (
-              <div className="py-24 text-center opacity-40 text-xs px-6">
+              <div className="py-24 text-center text-[var(--text-muted)] text-xs px-6">
                 暂无书签。在阅读页面点击右上角书签图标即可随时记录精彩位置
               </div>
             ) : (
@@ -360,18 +374,18 @@ export const NavigationDrawer: React.FC<NavigationDrawerProps> = ({
                       <span className="truncate">{bm.chapterTitle}</span>
                     </div>
                     {bm.previewText && (
-                      <p className="text-[11px] opacity-70 line-clamp-2 mt-1 leading-relaxed">
+                      <p className="text-[11px] text-[var(--text-muted)] line-clamp-2 mt-1 leading-relaxed">
                         {bm.previewText}
                       </p>
                     )}
-                    <span className="text-[9px] opacity-40 mt-1 block">
+                    <span className="text-[9px] text-[var(--text-muted)] mt-1 block">
                       {new Date(bm.createdAt).toLocaleDateString()} {new Date(bm.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
 
                   <button
                     onClick={(e) => handleDeleteBookmark(bm.id, e)}
-                    className="p-1 text-slate-400 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+                    className="p-1 text-[var(--text-muted)] hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100 shrink-0"
                     title="删除此书签"
                   >
                     <Trash2 className="w-3.5 h-3.5" />

@@ -19,6 +19,13 @@ import {
   withTocBookId,
   withoutTocBookId,
 } from "../utils/bookshelfUrl";
+import {
+  SHELF_LOAD_ERROR_TEXT,
+  ShelfLoadErrorCategory,
+  classifyLoadError,
+  fetchJson,
+  formatLoadErrorLog,
+} from "../utils/loadError";
 import { hasMore, nextPageCount, remainingCount, visibleCount } from "../utils/pagination";
 import { RecentRead, buildRecentReads } from "../utils/recentReads";
 import { getAllReadingHistory, getBookProgress } from "../utils/storage";
@@ -43,7 +50,13 @@ export const BookshelfPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [catalog, setCatalog] = useState<BooksCatalog | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * 书架加载失败的类别（需求 13.7），`null` 表示没有失败。
+   *
+   * 存类别而不是 `err.message`：页面只显示类别对应的固定中文说明，原始异常只进控制台
+   * （需求 13.8、13.10，F-012）。
+   */
+  const [error, setError] = useState<ShelfLoadErrorCategory | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   /**
    * 当前的作者筛选，`null` 表示没有筛选（需求 5.11）。
@@ -59,23 +72,38 @@ export const BookshelfPage: React.FC = () => {
    */
   const [recentReads, setRecentReads] = useState<RecentRead[]>([]);
 
-  const fetchBooks = async () => {
+  /**
+   * 书目加载的代次：每次 `fetchBooks` 开始时加 1，effect 清理（卸载、StrictMode 的
+   * 装载→清理→装载）时也加 1。只有代次仍是自己的那次加载才写 state、打日志。
+   *
+   * 需求 13.10 要求每次显示 Shelf_Error_State 恰好打 1 条日志：开发环境下 StrictMode 会让
+   * 首个 effect 发出两次请求，被清理掉的那一次若照常失败就会多打一条；连点"重新加载"时，
+   * 先发出的那次也不该在后发的那次之后改写结果。
+   */
+  const loadGenerationRef = useRef(0);
+
+  const fetchBooks = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+    const isCurrent = () => loadGenerationRef.current === generation;
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/data/books.json");
-      if (!res.ok) {
-        throw new Error(`无法获取书架索引 (HTTP ${res.status})。请确保已执行 npm run preprocess`);
-      }
-      const data: BooksCatalog = await res.json();
-      setCatalog(data);
+      /*
+       * 404、2xx 但响应体不是 JSON（含 SPA 回退的 `index.html`）、其他非 2xx 与网络错误由
+       * `fetchJson` 包装成三个错误类，分类见 `classifyLoadError`（需求 13.7）。
+       */
+      const data = await fetchJson<BooksCatalog>("/data/books.json");
+      if (!isCurrent()) return;
 
-      // Load progress for each book
+      /*
+       * 处理书目放在同一个 `try` 里、且先于任何 `setState`：响应体是 JSON 但不是书目
+       * （例如 `{}`、`null`）时，这里抛出的未包装 `TypeError` 按需求 13.7 判为 `unknown`，
+       * 而不会先把一份坏书目写进 `catalog` 再进失败态。
+       */
       const pMap: Record<string, ReadingProgress | null> = {};
       data.books.forEach((b) => {
         pMap[b.id] = getBookProgress(b.id);
       });
-      setProgressMap(pMap);
 
       /*
        * 最近阅读的取数（需求 5.10，差异表 B5 / 缺陷 E6：`getAllReadingHistory()` 此前无人调用）。
@@ -85,17 +113,28 @@ export const BookshelfPage: React.FC = () => {
        * 至多 50 个进度键（`MAX_PROGRESS_RECORDS`），比按 7000 本逐本取键便宜得多，顺带
        * 把排序也做完了。书名由 `buildRecentReads` 从 `data.books` 连接进来。
        */
-      setRecentReads(buildRecentReads(getAllReadingHistory(), data.books));
+      const recent = buildRecentReads(getAllReadingHistory(), data.books);
+
+      setCatalog(data);
+      setProgressMap(pMap);
+      setRecentReads(recent);
     } catch (err) {
-      setError(err instanceof Error && err.message ? err.message : "加载书架失败");
+      if (!isCurrent()) return;
+      // 原始异常只进控制台，恰好一行（需求 13.10）；页面只显示类别对应的固定说明（13.7、13.8）。
+      console.error(formatLoadErrorLog("catalog", null, err));
+      setError(classifyLoadError("catalog", err));
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchBooks();
-  }, []);
+    void fetchBooks();
+    return () => {
+      // 作废进行中的那次加载：它的结果与失败日志都不再属于当前挂载。
+      loadGenerationRef.current += 1;
+    };
+  }, [fetchBooks]);
 
   /* ---------------------------------------------------------------------------
    * 章节目录弹窗 ↔ URL（需求 5.12，差异表 B8）
@@ -273,7 +312,7 @@ export const BookshelfPage: React.FC = () => {
               <span className="font-bold text-base tracking-tight block leading-tight">
                 {SITE.name}
               </span>
-              <span className="text-[10px] text-slate-400 block leading-tight">
+              <span className="text-[10px] text-[var(--text-muted)] block leading-tight">
                 Cloudflare Pages + Gzip 静态阅读器
               </span>
             </div>
@@ -281,7 +320,7 @@ export const BookshelfPage: React.FC = () => {
 
           {/* Search bar */}
           <div className="relative w-48 sm:w-72">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
             <input
               type="text"
               placeholder="搜索书名、作者或拼音首字母..."
@@ -356,7 +395,7 @@ export const BookshelfPage: React.FC = () => {
         */}
         {!loading && !error && authorFilter && (
           <div className="mb-6 flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-[var(--text)]/60">正在查看作者</span>
+            <span className="text-[var(--text-muted)]">正在查看作者</span>
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-[var(--accent)] font-semibold max-w-[16rem]">
               <User className="w-3.5 h-3.5 shrink-0" />
               <span className="truncate">{authorFilter}</span>
@@ -364,7 +403,7 @@ export const BookshelfPage: React.FC = () => {
             {/* 只把**会变的那个数**做成 live region（筛着作者再改检索词时它会动），
                 与下方"已显示 X / Y 本"同一个口径；整条 bar 挂 aria-live 会把
                 "清除筛选"这枚按钮的文字一起念出来。 */}
-            <span className="text-[var(--text)]/50" aria-live="polite">
+            <span className="text-[var(--text-muted)]" aria-live="polite">
               共 {filteredBooks.length} 本
             </span>
             <button
@@ -387,16 +426,19 @@ export const BookshelfPage: React.FC = () => {
           <div className="py-16 text-center max-w-md mx-auto">
             <AlertCircle className="w-10 h-10 text-rose-500 mx-auto mb-3" />
             <h3 className="font-semibold text-base mb-1">加载遇到问题</h3>
-            <p className="text-xs text-slate-500 mb-4">{error}</p>
+            {/* 只显示类别对应的固定说明（需求 13.7、13.8），不再是 `err.message`——
+                那里面的英文异常与"请确保已执行 npm run preprocess"是给站主看的（F-012）。
+                标题与"重新加载"按钮不变（需求 13.9）。 */}
+            <p className="text-xs text-[var(--text-muted)] mb-4">{SHELF_LOAD_ERROR_TEXT[error]}</p>
             <button
-              onClick={fetchBooks}
+              onClick={() => void fetchBooks()}
               className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold hover:bg-blue-700 transition-colors shadow-sm"
             >
               重新加载
             </button>
           </div>
         ) : filteredBooks.length === 0 ? (
-          <div className="py-20 text-center text-slate-400">
+          <div className="py-20 text-center text-[var(--text-muted)]">
             <BookOpen className="w-12 h-12 mx-auto mb-2 opacity-30" />
             {/* 文案用落定的词而非 `searchTerm`：否则打字途中会出现"未找到与『从零开』相关"
                 这种与当前结果不同步的提示。
@@ -438,7 +480,7 @@ export const BookshelfPage: React.FC = () => {
                   <ChevronDown className="w-4 h-4 mr-1.5" />
                   继续加载（还有 {remainingCount(filteredBooks.length, pageCount)} 本）
                 </button>
-                <p className="text-[11px] text-slate-400" aria-live="polite">
+                <p className="text-[11px] text-[var(--text-muted)]" aria-live="polite">
                   已显示 {visibleBooks.length} / {filteredBooks.length} 本
                 </p>
               </div>

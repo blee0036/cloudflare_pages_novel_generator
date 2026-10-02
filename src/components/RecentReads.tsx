@@ -46,7 +46,7 @@ export const RecentReads: React.FC<RecentReadsProps> = ({ items, onResume }) => 
           <Clock className="w-4 h-4 mr-1.5 text-[var(--accent)]" />
           最近阅读
         </h2>
-        <span className="text-[11px] text-[var(--text)]/50">{items.length} 本在读</span>
+        <span className="text-[11px] text-[var(--text-muted)]">{items.length} 本在读</span>
       </div>
 
       <ul className="rounded-2xl bg-[var(--card-bg)] border border-[var(--border)] divide-y divide-[var(--border)] overflow-hidden shadow-sm">
@@ -70,11 +70,11 @@ export const RecentReads: React.FC<RecentReadsProps> = ({ items, onResume }) => 
                   <div className="flex items-baseline gap-2">
                     <span className="text-sm font-semibold truncate">{item.title}</span>
                     {/* 作者跟着书名走：7000 本里同名书不罕见（A18），少了它两行可能长得一样 */}
-                    <span className="text-[11px] text-[var(--text)]/50 shrink-0 max-w-[7rem] truncate">
+                    <span className="text-[11px] text-[var(--text-muted)] shrink-0 max-w-[7rem] truncate">
                       {item.author}
                     </span>
                   </div>
-                  <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[var(--text)]/60">
+                  <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
                     <span className="truncate">{item.chapterTitle}</span>
                     {/* 时间戳坏掉时 `formatRelativeTime` 给空串，此时连分隔点一起不渲染，
                         免得出现一个后面没有东西的"·" */}

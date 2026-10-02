@@ -15,6 +15,8 @@
  *   声明，与 `package-lock.json` 根项的声明及 `node_modules/<包>` 解析出的版本相同。"已有条目不变"
  *   要与基准提交比较，由验收脚本的 `package_json_problems` 核对（16.5），这里不依赖 git 历史，
  *   以免今后正常的依赖升级让本文件误报。
+ * - RDF 17.3（reader-defect-fixes 任务 19.2）：`BASELINES` 中没有定义带非空 `knownDefects`，
+ *   `e2e/visual/baselines.ts` 的源码不再引用已修复的 F-004、F-006。
  *
  * 本文件自身也在源码扫描范围内（`e2e/tests/`），所以正文与注释里都不在容差键名后紧接 ASCII 冒号。
  */
@@ -316,6 +318,28 @@ test.describe("12.4 全部 Pixel_Baseline 共用一组容差，只在 VISUAL 配
         return why === null ? [] : [`${h.file}:${h.line} ${brief(h)}（${why}）`];
       });
     expect(violations).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RDF 17.3：基线定义不再带已知缺陷标注
+// ---------------------------------------------------------------------------
+
+/** EV 阶段 5 曾标注在基线上、已由 reader-defect-fixes 修复的 Finding 编号（行高、移动底栏）。 */
+const FIXED_BASELINE_FINDINGS = ["F-004", "F-006"] as const;
+
+test.describe("RDF 17.3 Pixel_Baseline 定义不带已知缺陷标注", () => {
+  test("RDF 17.3 BASELINES 中没有任何定义带非空的 knownDefects；baselines.ts 的源码不再引用 F-004、F-006", () => {
+    const flagged = BASELINES.filter((d) => d.knownDefects !== undefined && d.knownDefects.length > 0).map(
+      (d) => `${d.name}：${d.knownDefects?.join("、")}`,
+    );
+    expect(flagged, "带非空 knownDefects 的基线定义").toEqual([]);
+
+    const lines = readFileSync(abs(BASELINES_FILE), "utf8").split("\n");
+    const mentions = lines.flatMap((text, i) =>
+      FIXED_BASELINE_FINDINGS.filter((id) => text.includes(id)).map((id) => `${BASELINES_FILE}:${i + 1} 引用 ${id}`),
+    );
+    expect(mentions, "遮罩旁与定义中引用已修复 Finding 的注释").toEqual([]);
   });
 });
 

@@ -1,4 +1,5 @@
 import { ReaderSettings, ReadingProgress, Bookmark } from "../types";
+import { SLIDER_SPECS, normalizeSliderSettings } from "./sliderSettings";
 
 /*
  * 这里曾有 `ThemeConfig` 与 `THEME_CONFIGS`（5 套 × 5 个颜色），任务 44 一并删除：
@@ -8,17 +9,19 @@ import { ReaderSettings, ReadingProgress, Bookmark } from "../types";
  * `src/utils/theme.ts`（`READER_THEMES`）——本模块只管持久化，不管呈现。
  */
 
+// 5 个滑杆项的默认值取自 `SLIDER_SPECS` 的 `fallback`（19 / 1.85 / 1 / 820 / 10），与归一时
+// "不是有限数取默认值"用的是同一个数，两处不会各说各话。
 const DEFAULT_SETTINGS: ReaderSettings = {
   theme: "sepia",
-  fontSize: 19,
-  lineHeight: 1.85,
-  letterSpacing: 1,
+  fontSize: SLIDER_SPECS.fontSize.fallback,
+  lineHeight: SLIDER_SPECS.lineHeight.fallback,
+  letterSpacing: SLIDER_SPECS.letterSpacing.fallback,
   fontFamily: "system",
-  contentWidth: 820,
+  contentWidth: SLIDER_SPECS.contentWidth.fallback,
   // 离线缓存本数上限（需求 4.2）。旧 localStorage 里没有这个键，浅合并会自动补上这个默认值。
-  // 字面量必须与 `utils/bookCache.ts` 的 `DEFAULT_MAX_BOOKS` 一致（有单测钉住）：这里不 import
-  // 它，是为了不在 storage 与 bookCache 之间形成循环依赖——bookCache 要读本模块的设置。
-  cacheMaxBooks: 10,
+  // 它必须与 `utils/bookCache.ts` 的 `DEFAULT_MAX_BOOKS` 一致（有单测钉住）；不 import 的原因
+  // 见 `sliderSettings.ts` 的模块说明（bookCache 要读本模块的设置，会成环）。
+  cacheMaxBooks: SLIDER_SPECS.cacheMaxBooks.fallback,
 };
 
 // 白名单：只有这些字段会被写回 localStorage。旧版本遗留的键（如 viewMode）
@@ -130,13 +133,16 @@ function asCharOffset(value: unknown): number {
  * 会抛 `ReferenceError` 并打一行 console.error，而本函数现在是**每次写缓存都要调**的
  * （`utils/bookCache.ts` 要读 `cacheMaxBooks`），那样每打开一本书就刷一条假错误。
  *
- * 浅合并保证新增字段（如 `cacheMaxBooks`）对旧存储自动取默认值；`pickSettings` 再把结果收拢
- * 到白名单字段，旧版遗留键不会漏进返回值。
+ * 浅合并保证新增字段（如 `cacheMaxBooks`）对旧存储自动取默认值；随后 `normalizeSliderSettings`
+ * 把 5 个滑杆项归一到各自的区间与步进网格上（需求 6.5，D4）：手改过的存储给出的字符串、越界值、
+ * 不在网格上的值在这里就收拢，滑杆位置、显示数值与生效值因此一致；
+ * 最后 `pickSettings` 把结果收拢到白名单字段，旧版遗留键不会漏进返回值。
+ * `theme` 与 `fontFamily` 不在归一范围内，仍是浅合并的原值。
  */
 export function getStoredSettings(): ReaderSettings {
   const raw = readJson(SETTINGS_KEY);
   if (typeof raw !== "object" || raw === null) return DEFAULT_SETTINGS;
-  return pickSettings({ ...DEFAULT_SETTINGS, ...raw });
+  return pickSettings(normalizeSliderSettings({ ...DEFAULT_SETTINGS, ...raw }));
 }
 
 export function saveStoredSettings(settings: ReaderSettings) {

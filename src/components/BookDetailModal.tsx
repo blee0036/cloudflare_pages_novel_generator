@@ -169,7 +169,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
               <span>章节目录 · 全本精校</span>
             </div>
             <h2 className="text-xl font-bold">{book.title}</h2>
-            <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--text)]/60 mt-2">
+            <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--text-muted)] mt-2">
               <span className="flex items-center">
                 <User className="w-3.5 h-3.5 mr-1 opacity-70" />
                 {book.author}
@@ -186,18 +186,22 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
             </div>
           </div>
 
+          {/* 只含图标的按钮：名称由 `aria-label` 给出，`title` 同文作悬停提示（F-009，需求 11.1）。
+              关闭仍走 `onClose`（书架的 `closeToc`），去掉 URL 里的 `book` 参数（需求 11.2）。 */}
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-[var(--hover)] text-[var(--text)]/50 hover:text-[var(--text)]"
+            className="p-1.5 rounded-lg hover:bg-[var(--hover)] text-[var(--text-muted)] hover:text-[var(--text)]"
+            aria-label="关闭书籍详情"
+            title="关闭书籍详情"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden="true" />
           </button>
         </div>
 
         {/* Quick Read / Resume Button & Search */}
         <div className="p-4 border-b border-[var(--border)] flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="relative w-full sm:w-72">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text)]/50" />
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
             <input
               type="text"
               placeholder="快速过滤章节..."
@@ -232,12 +236,12 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           className="flex-1 overflow-y-auto p-4"
         >
           {loading ? (
-            <div className="py-20 text-center text-slate-400">
+            <div className="py-20 text-center text-[var(--text-muted)]">
               <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-blue-500" />
               <p className="text-xs">正在载入完整章节目录...</p>
             </div>
           ) : filteredChapters.length === 0 ? (
-            <div className="py-16 text-center text-slate-400 text-xs">
+            <div className="py-16 text-center text-[var(--text-muted)] text-xs">
               未找到匹配的章节
             </div>
           ) : (
@@ -268,7 +272,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                         <span className="truncate pr-2 group-hover:text-[var(--accent)]">
                           {chap.title}
                         </span>
-                        <span className="text-[10px] text-slate-400 shrink-0">
+                        <span className="text-[10px] text-[var(--text-muted)] shrink-0">
                           {chap.length ? `${chap.length}字` : ""}
                         </span>
                       </button>

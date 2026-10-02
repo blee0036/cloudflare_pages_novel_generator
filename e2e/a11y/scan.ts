@@ -16,11 +16,15 @@
  *    `settings.ts`），`color-contrast` 规则集 `.withRules(["color-contrast"])`（15.2）；不设
  *    `include`，即整页；`.analyze()`。
  * 4. `summarizeAxe` 归纳，附为 `a11y-result`（`A11Y_RESULT_ATTACHMENT`），同时写
- *    `e2e/.out/a11y/<name>.json`。
+ *    `e2e/.out/a11y/<name>.json`。两者内容相同，违规与 incomplete 的每条规则都带节点明细
+ *    `details`（`target`、截到 200 字符以内的 `html`、`failureSummary`，`color-contrast` 另带
+ *    对比度数据；RDF 15.4）。reporter 只为违规在 Run_Summary 中列出明细（RDF 15.3）。
  *
- * ## 判定（15.8、15.9、16.4）
+ * ## 判定（15.9、16.4；违规即失败：RDF 15.2、15.3）
  *
- * - 违规与 incomplete 从不断言：扫描成功时本函数不因它们抛错。
+ * - 本函数不因违规与 incomplete 抛错：扫描成功时附 `ok` 结果并返回它。违规由调用方断言：
+ *   `a11y.spec.ts` 断言 `violations` 为空，失败信息由 `report.ts` 的 `formatA11yViolations` 生成
+ *   （RDF 15.2，取代 EV 15.8）；incomplete 不断言（RDF 15.3）。
  * - 第 1–3 步抛错（前提不符、注入失败、axe 执行抛错或未返回结果、等待超时、主题断言不成立）时，先
  *   附 `{ status: "failed", reason }` 并写结果文件，再重抛，用例失败。reason 以所处阶段开头。
  * - 目标元素已渲染却定位不到（16.4 的可测性缺口）：用例在 Findings_Log 记 Finding 后调用
@@ -302,6 +306,7 @@ export async function runA11yScan(page: Page, def: A11yScanDef): Promise<A11ySca
       throw error;
     }
 
+    // 违规与 incomplete 连同节点明细（details）一并写入附件与结果文件（RDF 15.4）
     const result: A11yScanResult = {
       name: def.name,
       view: def.view,

@@ -2,7 +2,7 @@
 r"""夹具书规格与确定性文本合成（e2e-visual-testing 需求 3.3 / 3.4，design「夹具书规格」、K3）。
 
 本模块只有**数据与纯函数**：52 本夹具书的规格表、每本书的全文合成，以及 `roles.json`
-的组装。写 `.zip`、调 `scripts/preprocess.py` 的 `run()`、校验 3.3 (a)–(i)、写
+的组装。写 `.zip`、调 `scripts/preprocess.py` 的 `run()`、校验 3.3 (a)–(j)、写
 `roles.json` / `record.json` 都是 `generate.py` 的事（任务 4.2），这里一个文件都不写。
 只用 Python 标准库：`generate.py` 要在调用管线之前做依赖检查（需求 1.9），导入本模块
 不能先一步因为缺包而失败。
@@ -61,6 +61,10 @@ stars 书"5 段，以 `※※※` 行分隔"落地为"5 段、每段以 `※※�
 
 crlf 书以 CR LF 换行，另有两处段落以单独的 LF 结尾（`BookSpec.lone_lf`），让需求 10.3 的
 逐字节比对同时覆盖"CR LF 原样保留"与"单独的 LF 原样保留"。
+
+3.3 (j)（reader-defect-fixes 需求 10.2）由填充书《黄沙古道》承担：第 2 章中段多出一行
+`=` × 60（`BookSpec.long_run`）。这一行在合成之后插入、不消耗 PRNG，书里其余各行与不插时
+逐字相同；其余 51 本不受影响。
 """
 
 from __future__ import annotations
@@ -77,6 +81,10 @@ __all__ = [
     'FEW_KEYWORD',
     'FEW_KEYWORD_COUNT',
     'HUGE_CHAPTERS',
+    'LONG_RUN_CHAPTER',
+    'LONG_RUN_CHAR',
+    'LONG_RUN_LENGTH',
+    'LONG_RUN_MIN',
     'LONG_TEXT_CHAPTER',
     'LONG_TEXT_CHAPTER_TITLE',
     'LONG_TEXT_PARAGRAPHS',
@@ -230,6 +238,16 @@ SAME_AUTHOR = '夹具作者甲'
 #: `books.json` 核对。
 PINYIN_TITLE = '青山踏雪行'
 PINYIN_ABBR = 'qstxx'
+
+#: 3.3 (j)（reader-defect-fixes 需求 10.2）：longRun 书第 `LONG_RUN_CHAPTER` 个正文章节（0 起）
+#: 的中段插入一个由 `LONG_RUN_LENGTH` 个 `LONG_RUN_CHAR` 构成的段落，没有任何断行机会，
+#: 供 RDF 10.1 核对正文段落不横向溢出。`=` 不在字表与任何标题里，也不是任何章节规则的
+#: 起手式（`_HEAD` 之后不是 `第`、序号、单位字、括号或 `_MARK` 装饰符），插进去不改变目录。
+#: plain 书以第一章开头、没有卷节点，第 2 个正文章节在 `_toc.json` 中的下标就是 1。
+LONG_RUN_CHAR = '='
+LONG_RUN_LENGTH = 60
+LONG_RUN_MIN = 58
+LONG_RUN_CHAPTER = 1
 
 # ---------------------------------------------------------------------------
 # 种子 PRNG
@@ -517,6 +535,9 @@ class BookSpec:
     lone_lf: Tuple[int, ...] = ()
     """在 `newline` 为 CR LF 的书里，这几章（0 起的章序号）的首个正文段落改以单独的 LF 结尾。"""
 
+    long_run: Optional[int] = None
+    """这一章（0 起的章序号）的正文中段插入 3.3 (j) 的长串段落（`LONG_RUN_CHAR` × `LONG_RUN_LENGTH`）。"""
+
 
 def _filler_key(index: int) -> str:
     return f'filler-{index:02d}'
@@ -541,6 +562,10 @@ _SAME_AUTHOR_FILLERS = (5, 23)
 _CRLF_FILLER = 10
 _RECENT_FILLERS = (2, 8, 14, 20, 26, 32)
 
+#: longRun 书（3.3 (j)）：《黄沙古道》。只承担这一项用途；源文件名在全库排最后
+#: （`books.json` 第 52 本），不在书架首批 50 张书卡里，书架类截图不因它的字数变化而变。
+_LONG_RUN_FILLER = 16
+
 
 def _fillers() -> Tuple[BookSpec, ...]:
     specs: List[BookSpec] = []
@@ -548,6 +573,7 @@ def _fillers() -> Tuple[BookSpec, ...]:
         author = _FILLER_AUTHORS[(index - 1) % len(_FILLER_AUTHORS)]
         newline = '\n'
         lone_lf: Tuple[int, ...] = ()
+        long_run: Optional[int] = None
         purpose = '填充（3.3 (a)）'
         if index in _SAME_AUTHOR_FILLERS:
             author = SAME_AUTHOR
@@ -558,6 +584,12 @@ def _fillers() -> Tuple[BookSpec, ...]:
             purpose = 'crlf：CR LF 换行，第 2、4 章首段以单独的 LF 结尾（10.3）'
         elif index in _RECENT_FILLERS:
             purpose = '最近阅读的种子之一（7.13）'
+        elif index == _LONG_RUN_FILLER:
+            long_run = LONG_RUN_CHAPTER
+            purpose = (
+                f'longRun（3.3 (j)，RDF 10.2）：第 {LONG_RUN_CHAPTER + 1} 章中段一段 '
+                f'{LONG_RUN_LENGTH} 个 {LONG_RUN_CHAR}'
+            )
         specs.append(
             BookSpec(
                 key=_filler_key(index),
@@ -567,6 +599,7 @@ def _fillers() -> Tuple[BookSpec, ...]:
                 builder=_build_plain,
                 newline=newline,
                 lone_lf=lone_lf,
+                long_run=long_run,
             )
         )
     return tuple(specs)
@@ -627,17 +660,32 @@ SPECS_BY_KEY: Mapping[str, BookSpec] = {spec.key: spec for spec in SPECS}
 # ---------------------------------------------------------------------------
 
 
+def _title_lines(lines: Sequence[str]) -> List[int]:
+    """章标题所在的行号。标题行以 `第` 开头，正文行不可能（字表里没有）。"""
+    return [index for index, line in enumerate(lines) if line.startswith('第')]
+
+
 def _lone_lf_lines(lines: Sequence[str], chapters: Sequence[int]) -> FrozenSet[int]:
-    """`chapters` 里每章首个正文段落所在的行号。标题行以 `第` 开头，正文行不可能（字表里没有）。"""
-    wanted = set(chapters)
-    marks = set()
-    chapter = -1
-    for index, line in enumerate(lines):
-        if line.startswith('第'):
-            chapter += 1
-            if chapter in wanted:
-                marks.add(index + 1)
-    return frozenset(marks)
+    """`chapters` 里每章首个正文段落所在的行号。"""
+    titles = _title_lines(lines)
+    return frozenset(titles[chapter] + 1 for chapter in chapters if chapter < len(titles))
+
+
+def _insert_long_run(lines: Sequence[str], chapter: int) -> Lines:
+    """在第 `chapter` 章（0 起）中间那个正文段落之前插入 3.3 (j) 的长串段落，返回新的行列表。
+
+    插入的是独立的一行（与其他正文行一样带 `INDENT`），前后都还有本章的正文段落。
+    不消耗 PRNG：这本书其余的每一行都与不插时逐字相同。
+    """
+    titles = _title_lines(lines)
+    if not 0 <= chapter < len(titles):
+        raise ValueError(f'书里只有 {len(titles)} 章，没有第 {chapter + 1} 章可插长串段落')
+    end = titles[chapter + 1] if chapter + 1 < len(titles) else len(lines)
+    body = [index for index in range(titles[chapter] + 1, end) if lines[index].strip()]
+    if len(body) < 2:
+        raise ValueError(f'第 {chapter + 1} 章只有 {len(body)} 个正文段落，插不出"中段"')
+    at = body[len(body) // 2]
+    return [*lines[:at], INDENT + LONG_RUN_CHAR * LONG_RUN_LENGTH, *lines[at:]]
 
 
 def synthesize(spec: BookSpec) -> str:
@@ -647,6 +695,8 @@ def synthesize(spec: BookSpec) -> str:
     每一行都带行终止符，全文以换行结尾。
     """
     lines = spec.builder(SplitMix64(_seed(spec.key)))
+    if spec.long_run is not None:
+        lines = _insert_long_run(lines, spec.long_run)
     lone = _lone_lf_lines(lines, spec.lone_lf) if spec.lone_lf else frozenset()
     return ''.join(
         line + ('\n' if index in lone else spec.newline) for index, line in enumerate(lines)
@@ -681,6 +731,7 @@ class RolePlan:
     same_author: Tuple[str, ...]
     long_text: str
     recent: Tuple[str, ...]
+    long_run: str
 
 
 ROLES = RolePlan(
@@ -693,10 +744,13 @@ ROLES = RolePlan(
     same_author=('volumes', *(_filler_key(index) for index in _SAME_AUTHOR_FILLERS)),
     long_text='long-text',
     recent=tuple(_filler_key(index) for index in _RECENT_FILLERS),
+    long_run=_filler_key(_LONG_RUN_FILLER),
 )
 
 
-def build_roles(id_of: Mapping[str, str], long_text_chapter_index: int) -> Dict[str, object]:
+def build_roles(
+    id_of: Mapping[str, str], long_text_chapter_index: int, long_run_chapter_index: int
+) -> Dict[str, object]:
     """组装 `roles.json` 的内容（design Data Models 的 `FixtureRoles`）。
 
     Args:
@@ -705,6 +759,8 @@ def build_roles(id_of: Mapping[str, str], long_text_chapter_index: int) -> Dict[
             莫名其妙的地方失败，不如生成时就停下。
         long_text_chapter_index: longText 书里 `LONG_TEXT_CHAPTER_TITLE` 在 `_toc.json`
             中的下标，由调用方从产物里读出（预期为 `LONG_TEXT_CHAPTER`）。
+        long_run_chapter_index: longRun 书里插了长串段落的那一章在 `_toc.json` 中的下标，
+            由调用方从产物里读出（预期为 `LONG_RUN_CHAPTER`）。
 
     Returns:
         可直接 `json.dump` 的字典，键名与 `FixtureRoles` 一致。
@@ -729,6 +785,10 @@ def build_roles(id_of: Mapping[str, str], long_text_chapter_index: int) -> Dict[
         },
         'recent': [id_of[key] for key in ROLES.recent],
         'volumesKeyword': VOLUMES_KEYWORD,
+        'longRun': {
+            'id': id_of[ROLES.long_run],
+            'chapterIndex': long_run_chapter_index,
+        },
     }
 
 
@@ -765,6 +825,14 @@ def _check_tables() -> None:
         problems.append('书名 + 作者重复：管线会给同名书加后缀，用途就对不上了')
     if sum(1 for spec in SPECS if spec.author == SAME_AUTHOR) != len(ROLES.same_author):
         problems.append(f'作者为 {SAME_AUTHOR} 的书数与 ROLES.same_author 不一致')
+    if len(LONG_RUN_CHAR) != 1 or LONG_RUN_CHAR in BODY_CHARS + titles + INDENT:
+        problems.append(f'长串字符 {LONG_RUN_CHAR!r} 须为单个字符，且不出现在正文字表、标题或缩进里')
+    if LONG_RUN_LENGTH < LONG_RUN_MIN:
+        problems.append(f'长串段落 {LONG_RUN_LENGTH} 个字符，少于 3.3 (j) 的 {LONG_RUN_MIN} 个')
+    if [spec.key for spec in SPECS if spec.long_run is not None] != [ROLES.long_run]:
+        problems.append('插长串段落的书应恰好是 ROLES.long_run 这一本')
+    if _LONG_RUN_FILLER in (*_SAME_AUTHOR_FILLERS, _CRLF_FILLER, *_RECENT_FILLERS):
+        problems.append('longRun 书还承担了别的用途（3.3 (j) 要一本只作填充的书）')
     if problems:
         raise RuntimeError('books.py 规格表自相矛盾：\n  - ' + '\n  - '.join(problems))
 

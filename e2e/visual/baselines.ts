@@ -47,20 +47,14 @@
  *
  * ## 遮罩（12.3）
  *
- * 13 张初始均为空：时间相关内容由 `CLOCK_T0` 固定，缓存占用读自 IndexedDB 元数据，夹具确定。
- * 只有 6.6 的两次连续运行暴露不稳定区域时才加遮罩，并在 `reason` 写明内容为何随运行变化；
- * 18.9 的"含已知缺陷接受"时，把 Finding 编号写入 `knownDefects`，并在 `masks` 定义旁注释。
+ * 13 张均为空：时间相关内容由 `CLOCK_T0` 固定，缓存占用读自 IndexedDB 元数据，夹具确定。
+ * 只有 6.6 的两次连续运行暴露不稳定区域时才加遮罩，并在 `reason` 写明内容为何随运行变化。
  *
  * ## 已知缺陷（18.9）
  *
- * 阶段 5（任务 25.5，2026-10-01）把 9 张判为"含已知缺陷接受"，`knownDefects` 写在各定义里：
- *
- * - F-004（正文段落行高恒为 1.625 × 字号）：5 张 `px-reader-<主题键>`、`px-reader-mobile`，以及抽屉
- *   背后的正文 `px-toc-volumes`、`px-settings-drawer`、`px-search-results`。
- * - F-006（移动视口下底栏溢出）：`px-reader-mobile`。
- *
- * 这些缺陷修复后，对应基线的 Visual_Regression_Check 会失败，这是预期的：以基线更新命令重新生成，
- * 按 18.2 重新评审，再去掉这里与各定义中的编号。
+ * 评审判为"含已知缺陷接受"时，把 Finding 编号写入该定义的 `knownDefects`，并在 `masks` 定义旁注释。
+ * 目前没有任何定义带 `knownDefects`：EV 阶段 5 曾按此标注的 9 张，已在 reader-defect-fixes 修复对应
+ * 缺陷后删除并以基线更新命令重新生成（该 spec 需求 17.1、17.3）。
  */
 import { expect } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
@@ -296,9 +290,7 @@ function readerTheme(theme: (typeof READER_BASELINE_THEMES)[number]): BaselineDe
       `已存储主题为 ${theme}（首次导航前 seedTheme），没有阅读进度：阅读器停在下标 ${chapter.index} 的` +
       `「${chapter.title}」章首；5 张 px-reader-<主题键> 为同一本书的同一章`,
     prepare: (page) => openReaderAt(page, VOLUMES_READER_URL, chapter),
-    // 18.9 含已知缺陷接受（F-004）：段内行距约 31 px（19 px × 1.625），默认行高 1.85x 应为 35.15 px
     masks: [],
-    knownDefects: ["F-004"],
   };
 }
 
@@ -314,10 +306,7 @@ const READER_MOBILE: BaselineDef = {
     `移动视口，默认主题，没有阅读进度：阅读器停在下标 ${VOLUMES_BOOK.start.index} 的` +
     `「${VOLUMES_BOOK.start.title}」章首`,
   prepare: (page) => openReaderAt(page, VOLUMES_READER_URL, VOLUMES_BOOK.start),
-  // 18.9 含已知缺陷接受：F-004 段内行距约 31 px（19 px × 1.625），默认行高 1.85x 应为 35.15 px；
-  // F-006 底栏溢出，检索按钮右缘被裁，"下一章"按钮在视口外
   masks: [],
-  knownDefects: ["F-004", "F-006"],
 };
 
 const TOC_VOLUMES: BaselineDef = {
@@ -341,9 +330,7 @@ const TOC_VOLUMES: BaselineDef = {
       await expect(drawer.volume(volume.title)).toBeInViewport();
     });
   },
-  // 18.9 含已知缺陷接受（F-004）：抽屉背后模糊正文的行带间距约 31 px（19 px × 1.625）
   masks: [],
-  knownDefects: ["F-004"],
 };
 
 const SETTINGS_DRAWER: BaselineDef = {
@@ -373,9 +360,7 @@ const SETTINGS_DRAWER: BaselineDef = {
       await expect(drawer.cacheUsage).toHaveText(/^\d+ 本 · .+$/);
     });
   },
-  // 18.9 含已知缺陷接受（F-004）：抽屉显示「行高间距 1.85x」，背后模糊正文的行带间距约 31 px（19 px × 1.625）
   masks: [],
-  knownDefects: ["F-004"],
 };
 
 const SEARCH_RESULTS: BaselineDef = {
@@ -406,9 +391,7 @@ const SEARCH_RESULTS: BaselineDef = {
       await expect(drawer.input).toBeFocused();
     });
   },
-  // 18.9 含已知缺陷接受（F-004）：抽屉背后模糊正文的行带间距约 31 px（19 px × 1.625）
   masks: [],
-  knownDefects: ["F-004"],
 };
 
 /** 全部 Pixel_Baseline，按 12.2 的顺序（`REQUIRED_BASELINE_NAMES`）。 */
