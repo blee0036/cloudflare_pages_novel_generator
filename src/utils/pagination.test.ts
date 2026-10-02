@@ -1,25 +1,44 @@
 import { describe, expect, it } from "vitest";
 import {
   PAGE_SIZE,
+  TARGET_PAGE_SIZE,
   hasMore,
   nextPageCount,
   remainingCount,
   totalPages,
   visibleCount,
 } from "./pagination";
+import { SHELF_GRID_COLUMNS } from "./shelfGrid";
 
 /** 差异表 B3 里那个"一次性挂载会卡死"的规模。 */
 const HUGE = 7000;
 
+/** 下面的用例都以批大小为单位书写，不依赖它的具体取值。 */
+const P = PAGE_SIZE;
+
+describe("PAGE_SIZE", () => {
+  it("目标 50 本对齐到网格列数后为 48", () => {
+    expect(TARGET_PAGE_SIZE).toBe(50);
+    expect(PAGE_SIZE).toBe(48);
+  });
+
+  it("任何断点的列数、任何页数下，已挂载条数都是整行", () => {
+    for (const columns of SHELF_GRID_COLUMNS) {
+      for (let pages = 1; pages <= 20; pages += 1) {
+        expect(visibleCount(HUGE, pages) % columns).toBe(0);
+      }
+    }
+  });
+});
+
 describe("visibleCount", () => {
-  it("首屏只挂载一批（需求 5.8 的默认 50 本）", () => {
-    expect(PAGE_SIZE).toBe(50);
-    expect(visibleCount(HUGE, 1)).toBe(50);
+  it("首屏只挂载一批（需求 5.8）", () => {
+    expect(visibleCount(HUGE, 1)).toBe(P);
   });
 
   it("每加一页多挂一批", () => {
-    expect(visibleCount(HUGE, 2)).toBe(100);
-    expect(visibleCount(HUGE, 3)).toBe(150);
+    expect(visibleCount(HUGE, 2)).toBe(2 * P);
+    expect(visibleCount(HUGE, 3)).toBe(3 * P);
   });
 
   it("结果集比一批还少时全部挂载，不补空位", () => {
@@ -33,7 +52,7 @@ describe("visibleCount", () => {
 
   it("页数为 0 / 负数 / NaN 时仍挂载首屏一批，不白屏", () => {
     for (const pages of [0, -4, Number.NaN]) {
-      expect(visibleCount(HUGE, pages)).toBe(50);
+      expect(visibleCount(HUGE, pages)).toBe(P);
     }
   });
 
@@ -58,26 +77,26 @@ describe("visibleCount", () => {
 describe("hasMore / remainingCount", () => {
   it("首屏之后还有剩余时为真，并报出准确的剩余数", () => {
     expect(hasMore(HUGE, 1)).toBe(true);
-    expect(remainingCount(HUGE, 1)).toBe(HUGE - 50);
+    expect(remainingCount(HUGE, 1)).toBe(HUGE - P);
   });
 
   it("结果集不足一批时没有继续加载入口", () => {
-    expect(hasMore(50, 1)).toBe(false);
+    expect(hasMore(P, 1)).toBe(false);
     expect(hasMore(7, 1)).toBe(false);
     expect(hasMore(0, 1)).toBe(false);
-    expect(remainingCount(50, 1)).toBe(0);
+    expect(remainingCount(P, 1)).toBe(0);
   });
 
   it("刚好整批边界不会多出一次空的继续加载", () => {
-    // 100 本 / 每批 50：第 2 页正好装满，此时入口必须消失
-    expect(hasMore(100, 2)).toBe(false);
-    expect(remainingCount(100, 2)).toBe(0);
-    expect(hasMore(101, 2)).toBe(true);
-    expect(remainingCount(101, 2)).toBe(1);
+    // 两批的量：第 2 页正好装满，此时入口必须消失
+    expect(hasMore(2 * P, 2)).toBe(false);
+    expect(remainingCount(2 * P, 2)).toBe(0);
+    expect(hasMore(2 * P + 1, 2)).toBe(true);
+    expect(remainingCount(2 * P + 1, 2)).toBe(1);
   });
 
   it("已挂载数 + 剩余数恒等于总数", () => {
-    for (const total of [0, 1, 49, 50, 51, 999, HUGE]) {
+    for (const total of [0, 1, P - 1, P, P + 1, 999, HUGE]) {
       for (const pages of [1, 2, 7, 500]) {
         expect(visibleCount(total, pages) + remainingCount(total, pages)).toBe(total);
       }
@@ -87,9 +106,9 @@ describe("hasMore / remainingCount", () => {
 
 describe("totalPages", () => {
   it("按批大小向上取整", () => {
-    expect(totalPages(50)).toBe(1);
-    expect(totalPages(51)).toBe(2);
-    expect(totalPages(HUGE)).toBe(140);
+    expect(totalPages(P)).toBe(1);
+    expect(totalPages(P + 1)).toBe(2);
+    expect(totalPages(HUGE)).toBe(Math.ceil(HUGE / P));
   });
 
   it("空列表也算一页（那页空的首屏）", () => {
@@ -104,8 +123,9 @@ describe("nextPageCount", () => {
   });
 
   it("在装满结果集的页数处封顶，连点不会涨成虚高的页数", () => {
-    expect(nextPageCount(120, 3)).toBe(3);
-    expect(nextPageCount(120, 99)).toBe(3);
+    const total = 2 * P + 1; // 需要 3 页
+    expect(nextPageCount(total, 3)).toBe(3);
+    expect(nextPageCount(total, 99)).toBe(3);
     expect(nextPageCount(0, 1)).toBe(1);
   });
 

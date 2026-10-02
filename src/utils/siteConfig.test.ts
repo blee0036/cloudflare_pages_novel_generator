@@ -127,6 +127,87 @@ describe("resolveSiteConfig", () => {
   });
 });
 
+describe("resolveSiteConfig：书架文案（tagline / banner）", () => {
+  it("tagline 可覆盖，去首尾空白", () => {
+    const { config, warnings } = resolveSiteConfig({ tagline: " 私人书库 " });
+    expect(config.tagline).toBe("私人书库");
+    expect(warnings).toEqual([]);
+  });
+
+  it("tagline 写成空串或空白表示不显示，不告警", () => {
+    for (const tagline of ["", "   "]) {
+      const { config, warnings } = resolveSiteConfig({ tagline });
+      expect(config.tagline).toBe("");
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  it("tagline 类型写错时回落默认值", () => {
+    expectFallback({ tagline: 1 }, "tagline", /tagline/);
+  });
+
+  it("banner 只写一部分时，其余项保持默认", () => {
+    const { config, warnings } = resolveSiteConfig({ banner: { title: "老张的私人书库" } });
+
+    expect(warnings).toEqual([]);
+    expect(config.banner).toEqual({ ...DEFAULT_SITE_CONFIG.banner, title: "老张的私人书库" });
+  });
+
+  it("banner 四项全部可覆盖", () => {
+    const banner = {
+      badge: "自用",
+      title: "老张的私人书库",
+      description: "平时看的网文都在这里。",
+      countLabel: "本藏书",
+    };
+    const { config, warnings } = resolveSiteConfig({ banner });
+
+    expect(warnings).toEqual([]);
+    expect(config.banner).toEqual(banner);
+  });
+
+  it("badge 与 description 写成空串表示不显示，不告警", () => {
+    const { config, warnings } = resolveSiteConfig({ banner: { badge: "", description: " " } });
+
+    expect(warnings).toEqual([]);
+    expect(config.banner.badge).toBe("");
+    expect(config.banner.description).toBe("");
+  });
+
+  it("title 与 countLabel 不可为空，空白时告警并回落", () => {
+    const { config, warnings } = resolveSiteConfig({ banner: { title: "", countLabel: "  " } });
+
+    expect(config.banner.title).toBe(DEFAULT_SITE_CONFIG.banner.title);
+    expect(config.banner.countLabel).toBe(DEFAULT_SITE_CONFIG.banner.countLabel);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/banner\.title/);
+    expect(warnings[1]).toMatch(/banner\.countLabel/);
+  });
+
+  it("banner 内的字段类型写错只影响该字段", () => {
+    const { config, warnings } = resolveSiteConfig({ banner: { badge: 7, title: "还在" } });
+
+    expect(config.banner.badge).toBe(DEFAULT_SITE_CONFIG.banner.badge);
+    expect(config.banner.title).toBe("还在");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/banner\.badge/);
+  });
+
+  it("banner 不是对象时整块回落默认值并告警", () => {
+    for (const banner of ["标题", null, ["a"]]) {
+      expectFallback({ banner }, "banner", /banner/);
+    }
+  });
+
+  it("banner 里拼错的键告警而不是静默忽略", () => {
+    const { config, warnings } = resolveSiteConfig({ banner: { subtitle: "x" } });
+
+    expect(config.banner).toEqual(DEFAULT_SITE_CONFIG.banner);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/banner\.subtitle/);
+  });
+});
+
 describe("documentTitleFor", () => {
   it("没有书名时就是站点名（书架、以及书还没加载完的阅读器）", () => {
     expect(documentTitleFor("老张的书架")).toBe("老张的书架");
@@ -165,6 +246,7 @@ describe("faviconPublicPath / faviconHref", () => {
 
 describe("siteHtmlPlaceholders", () => {
   const config: SiteConfig = {
+    ...DEFAULT_SITE_CONFIG,
     name: "张三 & 李四的书架",
     description: '带"引号"与 <标签> 的简介',
     keywords: ["小说", "阅读"],
@@ -185,9 +267,10 @@ describe("siteHtmlPlaceholders", () => {
     expect(values["%SITE_FAVICON%"]).toBe("/favicon.svg");
   });
 
-  it("默认 favicon 已百分号编码，不会被转义改写", () => {
+  it("默认 favicon 是仓库自带的 public/favicon.svg", () => {
+    expect(faviconPublicPath(DEFAULT_SITE_CONFIG.favicon)).toBe("favicon.svg");
     const values = siteHtmlPlaceholders(DEFAULT_SITE_CONFIG);
-    expect(values["%SITE_FAVICON%"]).toBe(DEFAULT_SITE_CONFIG.favicon);
+    expect(values["%SITE_FAVICON%"]).toBe("/favicon.svg");
   });
 
   it("占位符集合与 index.html 里用到的四个一致", () => {

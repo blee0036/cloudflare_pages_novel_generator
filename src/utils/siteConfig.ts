@@ -43,12 +43,41 @@
  * 情形只有一种（顶层不是对象），那时才整份回落。
  *
  * 告警不吞：插件会把它们打到构建日志里。静默回落的代价是站主改完配置看不出哪一行没生效。
+ *
+ * ## 书架文案（`tagline` / `banner`）
+ *
+ * 顶栏品牌名下的副标题与书架 Banner 的文案也走这份配置。它们只有运行时一个消费者
+ * （书架页从 `SITE` 读），不进 `index.html`，因此没有对应的 `%SITE_*%` 占位符。
+ *
+ * 其中纯装饰性的三项（`tagline`、`banner.badge`、`banner.description`）允许显式写成
+ * 空字符串，表示"不显示这一块"——与 `keywords: []` 表示"不要关键词"同一个思路。
+ * `banner.title` 是书架页唯一的 `<h1>`、`banner.countLabel` 是藏书数字的说明，
+ * 两者缺了页面就不成立，所以空白仍按写错处理、回落默认值。
  */
 
 /** 可选配置文件的文件名，位于仓库根目录（与 `index.html`、`vite.config.ts` 同级）。 */
 export const SITE_CONFIG_FILE = "site.config.json";
 
-/** 站点标识的四个值。运行时由 `utils/site.ts` 提供，构建期由插件解析后注入。 */
+/**
+ * 书架页 Banner 的文案。藏书数字本身来自书库目录（`books.json` 的 `count`），不可配置。
+ */
+export interface SiteBanner {
+  /** 标题上方的小标签。空字符串表示不显示。 */
+  readonly badge: string;
+  /** 主标题，也是书架页的 `<h1>`。不可为空。 */
+  readonly title: string;
+  /** 标题下的说明文字。空字符串表示不显示。 */
+  readonly description: string;
+  /** 藏书数字下方的说明，如"精校藏书"。不可为空。 */
+  readonly countLabel: string;
+}
+
+/**
+ * 站点标识与书架文案。运行时由 `utils/site.ts` 提供，构建期由插件解析后注入。
+ *
+ * 前四项（`name` / `description` / `keywords` / `favicon`）同时进 `index.html` 与运行时；
+ * `tagline` / `banner` 只在运行时由书架页使用。
+ */
 export interface SiteConfig {
   /** 站点名称。标签页标题、书架顶栏的品牌名都用它。 */
   readonly name: string;
@@ -61,27 +90,38 @@ export interface SiteConfig {
    * data URI / 绝对 URL 原样使用，其余一律当作 `public/` 下的相对路径。
    */
   readonly favicon: string;
+  /** 顶栏品牌名下方的一行副标题。空字符串表示不显示。 */
+  readonly tagline: string;
+  /** 书架页 Banner 的文案。配置里可以只写其中几项，其余保持默认。 */
+  readonly banner: SiteBanner;
 }
 
 /**
  * 内置默认值（需求 9.2 的"缺失时使用内置默认值"）。
  *
- * 取值刻意与改造前 `index.html` 里硬编码的那一份一致（站点名去掉了原先的
+ * 站点名、简介、关键词取值与改造前 `index.html` 里硬编码的那一份一致（站点名去掉了原先的
  * " - Web Reader" 后缀——它是标题的装饰，不是站点名，而现在这个值还要用在书架顶栏与
- * 书籍标题的后缀里）：没有 `site.config.json` 的仓库（含本仓库当前状态）构建出来的
- * 站点与改造前逐字节等价，配置文件因此是纯增量能力，不是新的必填项。
+ * 书籍标题的后缀里）。配置文件因此是纯增量能力，不是新的必填项。
  *
- * 默认 favicon 是一段自包含的 SVG data URI，**不引用任何文件**：这样"零配置"路径下
- * 不需要仓库里存在任何图标文件，也不多一次 HTTP 请求。整串已百分号编码，故写进 HTML
- * 属性时不需要转义任何字符（`%F0%9F%93%96` 是 📖）。
+ * 默认 favicon 是仓库自带的 `public/favicon.svg`（读书的蓝猫，已纳入版本控制）。它同时
+ * 是书架顶栏的图标，标签页与顶栏用同一个地址，浏览器只取一次。这个文件若被删掉，构建会
+ * 在 `site-config` 插件的 `generateBundle` 里明确报错，而不是带着一个 404 图标上线。
  */
 export const DEFAULT_SITE_CONFIG: SiteConfig = {
   name: "云端小说书架",
   description:
     "纯静态的 Web 小说书库：单书 Gzip 压缩存储，浏览器流式解压，章节化阅读与精确续读。",
   keywords: ["小说", "在线阅读", "电子书", "静态网站", "Cloudflare Pages"],
-  favicon:
-    "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%20100%20100%22%3E%3Ctext%20y=%22.9em%22%20font-size=%2290%22%3E%F0%9F%93%96%3C/text%3E%3C/svg%3E",
+  favicon: "/favicon.svg",
+  // 以下文案取值与改为可配置之前 BookshelfPage 里硬编码的一致，零配置时页面不变。
+  tagline: "Cloudflare Pages + Gzip 静态阅读器",
+  banner: {
+    badge: "Pure Cloudflare Pages 架构",
+    title: "轻量、丝滑且无限制的 Web 电子书库",
+    description:
+      "采用单书原生 Gzip 压缩存储，通过浏览器 DecompressionStream 内存流解压，配合分级正则状态机与绝对字符偏移断章，彻底告别切片乱码与文件数超限。",
+    countLabel: "精校藏书",
+  },
 };
 
 /** `resolveSiteConfig` 的产物：解析结果 + 给构建日志的告警。 */
@@ -97,6 +137,16 @@ const KNOWN_KEYS: readonly (keyof SiteConfig)[] = [
   "description",
   "keywords",
   "favicon",
+  "tagline",
+  "banner",
+];
+
+/** `banner` 对象里认得的键，同样对拼错的键告警。 */
+const KNOWN_BANNER_KEYS: readonly (keyof SiteBanner)[] = [
+  "badge",
+  "title",
+  "description",
+  "countLabel",
 ];
 
 /**
@@ -138,6 +188,13 @@ export function resolveSiteConfig(raw: unknown): ResolvedSiteConfig {
       ),
       keywords: readKeywords(raw.keywords, warnings),
       favicon: readFavicon(raw.favicon, warnings),
+      tagline: readOptionalText(
+        raw.tagline,
+        "tagline",
+        DEFAULT_SITE_CONFIG.tagline,
+        warnings,
+      ),
+      banner: readBanner(raw.banner, warnings),
     },
     warnings,
   };
@@ -255,6 +312,58 @@ function readText(
     return fallback;
   }
   return trimmed;
+}
+
+/**
+ * 可隐藏的字符串字段：与 `readText` 的差别只在空白——这里空白表示"不显示"，返回 `""`，
+ * 不告警。类型写错仍告警后回落。
+ */
+function readOptionalText(
+  value: unknown,
+  key: string,
+  fallback: string,
+  warnings: string[],
+): string {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string") {
+    warnings.push(`字段 "${key}" 应为字符串，实际是 ${describeType(value)}；改用默认值`);
+    return fallback;
+  }
+  return value.trim();
+}
+
+/**
+ * `banner`：逐项回落，与顶层同一套规则。只写 `{ "title": "..." }` 时其余三项保持默认。
+ * 整个值不是对象（比如误写成一个字符串）时，四项全部用默认值并告警。
+ */
+function readBanner(value: unknown, warnings: string[]): SiteBanner {
+  const fallback = DEFAULT_SITE_CONFIG.banner;
+  if (value === undefined) return fallback;
+
+  if (!isPlainObject(value)) {
+    warnings.push(`字段 "banner" 应为对象，实际是 ${describeType(value)}；改用默认值`);
+    return fallback;
+  }
+
+  for (const key of Object.keys(value)) {
+    if (!(KNOWN_BANNER_KEYS as readonly string[]).includes(key)) {
+      warnings.push(
+        `未知字段 "banner.${key}" 已忽略；可用字段：${KNOWN_BANNER_KEYS.join("、")}`,
+      );
+    }
+  }
+
+  return {
+    badge: readOptionalText(value.badge, "banner.badge", fallback.badge, warnings),
+    title: readText(value.title, "banner.title", fallback.title, warnings),
+    description: readOptionalText(
+      value.description,
+      "banner.description",
+      fallback.description,
+      warnings,
+    ),
+    countLabel: readText(value.countLabel, "banner.countLabel", fallback.countLabel, warnings),
+  };
 }
 
 /**

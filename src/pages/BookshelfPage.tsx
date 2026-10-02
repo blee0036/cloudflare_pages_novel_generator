@@ -13,6 +13,8 @@ import { BooksCatalog, BookSummary, ReadingProgress } from "../types";
 import { SEARCH_DEBOUNCE_MS, useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { SITE } from "../utils/site";
+import { faviconHref } from "../utils/siteConfig";
+import { SHELF_GRID_CLASS } from "../utils/shelfGrid";
 import { buildSearchIndex, filterByAuthor, searchBooks } from "../utils/bookSearch";
 import {
   readTocBookId,
@@ -284,7 +286,7 @@ export const BookshelfPage: React.FC = () => {
   }
 
   /**
-   * 首屏只挂载 50 本（需求 5.8 / 差异表 B3）。
+   * 首屏只挂载一批 `PAGE_SIZE` 本（需求 5.8 / 差异表 B3；目标 50，对齐到网格列数后为 48）。
    *
    * 继续加载做成**按钮**而不是 IntersectionObserver 无限滚动：需求 5.8 只要求"提供继续
    * 加载机制"，而按钮是可聚焦、可用键盘触发的显式控件，读者也能知道列表到底还有多少；
@@ -303,18 +305,27 @@ export const BookshelfPage: React.FC = () => {
       <header className="sticky top-0 z-20 bg-[var(--card-bg)]/80 backdrop-blur-md border-b border-[var(--border)]">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-2.5">
-            <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
-              <BookOpen className="w-5 h-5" />
-            </div>
+            {/* 顶栏图标就是站点 favicon（同一个配置值、同一个地址，浏览器只取一次）。
+                alt 留空：右边紧挨着站名文字，图标对读屏软件是重复信息。 */}
+            <img
+              src={faviconHref(SITE.favicon)}
+              alt=""
+              width={36}
+              height={36}
+              className="w-9 h-9 shrink-0"
+            />
             <div>
               {/* 顶栏品牌名同样取配置里的站点名（需求 9.2）：它与标签页标题、
                   `<meta>` 是同一个值，不该在这里再硬编码一份。 */}
               <span className="font-bold text-base tracking-tight block leading-tight">
                 {SITE.name}
               </span>
-              <span className="text-[10px] text-[var(--text-muted)] block leading-tight">
-                Cloudflare Pages + Gzip 静态阅读器
-              </span>
+              {/* 副标题与下方 Banner 的文案都来自 site.config.json，写成空串即不显示。 */}
+              {SITE.tagline && (
+                <span className="text-[10px] text-[var(--text-muted)] block leading-tight">
+                  {SITE.tagline}
+                </span>
+              )}
             </div>
           </div>
 
@@ -340,22 +351,26 @@ export const BookshelfPage: React.FC = () => {
         {/* Banner */}
         <div className="mb-8 p-6 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-700 text-white shadow-lg shadow-blue-500/10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <div className="flex items-center space-x-2 mb-2">
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-white/20 backdrop-blur-md">
-                <Sparkles className="w-3.5 h-3.5 mr-1" />
-                Pure Cloudflare Pages 架构
-              </span>
-            </div>
+            {SITE.banner.badge && (
+              <div className="flex items-center space-x-2 mb-2">
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-white/20 backdrop-blur-md">
+                  <Sparkles className="w-3.5 h-3.5 mr-1" />
+                  {SITE.banner.badge}
+                </span>
+              </div>
+            )}
             <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight">
-              轻量、丝滑且无限制的 Web 电子书库
+              {SITE.banner.title}
             </h1>
-            <p className="text-xs sm:text-sm text-blue-100 mt-1 max-w-xl">
-              采用单书原生 Gzip 压缩存储，通过浏览器 DecompressionStream 内存流解压，配合分级正则状态机与绝对字符偏移断章，彻底告别切片乱码与文件数超限。
-            </p>
+            {SITE.banner.description && (
+              <p className="text-xs sm:text-sm text-blue-100 mt-1 max-w-xl">
+                {SITE.banner.description}
+              </p>
+            )}
           </div>
           <div className="shrink-0 bg-white/10 backdrop-blur-md px-5 py-3 rounded-xl border border-white/10 text-center sm:text-right">
             <div className="text-2xl font-black">{catalog?.count || 0}</div>
-            <div className="text-xs text-blue-100">精校藏书</div>
+            <div className="text-xs text-blue-100">{SITE.banner.countLabel}</div>
           </div>
         </div>
 
@@ -452,7 +467,8 @@ export const BookshelfPage: React.FC = () => {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+            {/* 网格类与 PAGE_SIZE 的对齐同源（shelfGrid.ts），每批都是整行。 */}
+            <div className={SHELF_GRID_CLASS}>
               {visibleBooks.map((book) => (
                 <BookCard
                   key={book.id}

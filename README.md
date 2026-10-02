@@ -411,18 +411,40 @@ python scripts/check_toc.py > after.txt
 
 ## 站点配置（可选）
 
-仓库根目录放一个 `site.config.json`，可以改站点名、简介、关键词和图标。样板是 `site.config.example.json`：
+仓库根目录放一个 `site.config.json`，可以改站点名、简介、关键词、图标，以及书架顶栏的副标题和 Banner 文案。样板是 `site.config.example.json`：
 
 ```json
 {
   "name": "云端小说书架",
   "description": "纯静态的 Web 小说书库：单书 Gzip 压缩存储，浏览器流式解压，章节化阅读与精确续读。",
   "keywords": ["小说", "在线阅读", "电子书", "静态网站", "Cloudflare Pages"],
-  "favicon": "/favicon.svg"
+  "favicon": "/favicon.svg",
+  "tagline": "Cloudflare Pages + Gzip 静态阅读器",
+  "banner": {
+    "badge": "Pure Cloudflare Pages 架构",
+    "title": "轻量、丝滑且无限制的 Web 电子书库",
+    "description": "采用单书原生 Gzip 压缩存储，通过浏览器 DecompressionStream 内存流解压，配合分级正则状态机与绝对字符偏移断章，彻底告别切片乱码与文件数超限。",
+    "countLabel": "精校藏书"
+  }
 }
 ```
 
-- **没有这个文件也行**，用内置默认值，什么都不打印。默认图标是一个 📖。想用仓库自带的蓝猫（`public/favicon.svg`），把样板复制一份就行：`Copy-Item site.config.example.json site.config.json`（macOS/Linux 用 `cp`）。
+| 字段 | 显示在哪 |
+| --- | --- |
+| `name` | 标签页标题、书架顶栏的站名 |
+| `description` / `keywords` | 页面 `<meta>`，给搜索引擎看 |
+| `favicon` | 标签页图标，也是书架顶栏的图标 |
+| `tagline` | 顶栏站名下面那行小字 |
+| `banner.badge` | Banner 标题上方的小标签 |
+| `banner.title` | Banner 大标题 |
+| `banner.description` | Banner 标题下的说明 |
+| `banner.countLabel` | 藏书数字下方的说明。数字本身按书库实际数量显示，不能配 |
+
+- **每个字段都可以不写**，不写的用默认值。`banner` 也可以只写其中一两项。
+- **`tagline`、`banner.badge`、`banner.description` 写成 `""` 就不显示。**`banner.title` 和 `banner.countLabel` 不能为空，写成空串会退回默认值并打提示。
+
+- **没有这个文件也行**，用内置默认值，什么都不打印。默认图标是仓库自带的蓝猫 `public/favicon.svg`。
+- **`favicon` 同时也是书架顶栏左上角的图标**，换一处两处一起变。
 - **文件写坏了（不是合法 JSON）会让构建失败。**悄悄退回默认站名的话，你会带着一份以为生效了的配置上线。单个字段写错（类型不对、键名拼错）只退回那个字段的默认值，并打提示。
 - **图标写成路径时，文件必须在 `public/` 下真实存在**，否则构建报错。也可以写 data URI 或完整网址。
 - **这个文件要提交进仓库**，别加进 `.gitignore`：Pages 在云端构建时要读它，读不到就用默认值发布。

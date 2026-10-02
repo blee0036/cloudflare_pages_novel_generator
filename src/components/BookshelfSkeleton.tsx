@@ -1,4 +1,5 @@
 import React from "react";
+import { SHELF_GRID_CLASS, SHELF_ROW_UNIT } from "../utils/shelfGrid";
 
 /**
  * 书架索引加载期间的骨架占位（需求 5.9，差异表 B4）。
@@ -11,12 +12,12 @@ import React from "react";
  * 2. 骨架本身要立刻可见，不能再有"先空白再出现"的中间态——所以它直接顶替 `loading`
  *    分支，而不是和 spinner 并存。
  *
- * ## 为什么是 8 张，不是 `PAGE_SIZE` 的 50 张
+ * ## 为什么是 12 张，不是 `PAGE_SIZE` 的 48 张
  *
- * 骨架的用途是"把首屏的形状先画出来"，折叠线以下的占位没人看见，却要为此挂 50 套
+ * 骨架的用途是"把首屏的形状先画出来"，折叠线以下的占位没人看见，却要为此挂 48 套
  * 空节点——那正是差异表 B3（"7000 本一次性挂载会卡死"）在提防的成本，只是换成了
- * 加载态。8 张在 `lg` 的四列下正好铺满两行、在 `sm` 的两列下四行，两种宽度都能把
- * 首屏撑到大致正确的高度，再多也只是加节点不加信息。
+ * 加载态。12 是网格各断点列数（1/2/3/4）的最小公倍数 `SHELF_ROW_UNIT`：`lg` 三行、
+ * `md` 四行、`sm` 六行，任何宽度下都是整行，不会在末行空出格子；再多也只是加节点不加信息。
  *
  * ## 为什么用 Tailwind 自带的 `animate-pulse`，不自己写 shimmer
  *
@@ -35,7 +36,7 @@ import React from "react";
  */
 
 /** 首屏骨架卡数量。取值理由见文件头注释。 */
-const SKELETON_COUNT = 8;
+const SKELETON_COUNT = SHELF_ROW_UNIT;
 
 /**
  * 单张占位卡：逐块对应 `BookCard` 的真实结构。
@@ -83,7 +84,7 @@ export const BookshelfSkeleton: React.FC = () => (
     <span className="sr-only">正在载入书架索引...</span>
     <div
       aria-hidden="true"
-      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6 motion-safe:animate-pulse"
+      className={`${SHELF_GRID_CLASS} motion-safe:animate-pulse`}
     >
       {Array.from({ length: SKELETON_COUNT }, (_, i) => (
         <SkeletonCard key={i} />

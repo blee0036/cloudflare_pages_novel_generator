@@ -1,3 +1,5 @@
+import { SHELF_GRID_COLUMNS, alignToColumns } from "./shelfGrid";
+
 /**
  * 书架列表的分批挂载算术（需求 5.8，差异表 B3）。
  *
@@ -17,12 +19,19 @@
  */
 
 /**
- * 首屏与每批追加的条目数（需求 5.8 的"默认 50 本"）。
+ * 每批的目标条目数（需求 5.8 的"默认 50 本"）。实际批大小是它对齐到网格列数后的 `PAGE_SIZE`。
+ */
+export const TARGET_PAGE_SIZE = 50;
+
+/**
+ * 首屏与每批追加的条目数：`TARGET_PAGE_SIZE` 对齐到书架网格各断点列数的最小公倍数
+ * （1/2/3/4 列 → 12 的倍数 → 48），使每一批在任何宽度下都是整行，不在末行留空格子。
+ * 理由见 `shelfGrid.ts`。
  *
  * 首批与追加批取同一个值：需求只规定了首屏批次，再为"第二批加载更多"另立一个常数只会
- * 多一个需要解释的数字。
+ * 多一个需要解释的数字。同一个值也保证了累计挂载数（页数 × 批大小）始终是整行。
  */
-export const PAGE_SIZE = 50;
+export const PAGE_SIZE = alignToColumns(TARGET_PAGE_SIZE, SHELF_GRID_COLUMNS);
 
 /** 把可能为脏值的计数钳成非负整数。非有限数视为 0。 */
 function asCount(n: number): number {
