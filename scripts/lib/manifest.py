@@ -21,6 +21,11 @@ r"""增量清单（design §4.9，需求 7.3 / 7.4 / 7.5 / 7.12，任务 23 / 65
 }
 ```
 
+合集包（一个源包里并入了多个 `.txt`）的条目另有
+`"volumes": [{"title": "上卷", "start": 0}, {"title": "下卷", "start": 18734}]`，
+单本书没有这个键（见 `Entry`）。加这个可选键不改 `MANIFEST_VERSION`：旧清单读进来
+就是"单本书"，旧代码读新清单会忽略它。
+
 编排层（design §4.9）用到的主要口子：
 
 ```python
@@ -318,6 +323,10 @@ class Entry:
       记录——产物文件本身看不出来，而越限报错时第一个要回答的就是这个问题
       （design §4.9 / 需求 10.7）。
     - `processed_at`：给人看的，"这本是什么时候构建的"。
+    - `volumes`：合集包（一个源包里并入了多个 `.txt`）每一册的 `(册名, 起点)`，起点是册名
+      那一行在 `.txt.gz` 正文里的字符偏移。源包删掉之后要按 `.txt.gz` 重切，只有靠它才能
+      逐册切、逐册加卷节点——光看正文分不出哪一行是拼接时加进去的册名。单本书为空，
+      清单里也不写这个键。
     """
 
     book_id: str
@@ -328,6 +337,7 @@ class Entry:
     gz_size: int = 0
     compressor: Optional[str] = None
     processed_at: str = ''
+    volumes: Tuple[Tuple[str, int], ...] = ()
 
     @property
     def current(self) -> bool:
@@ -350,6 +360,8 @@ class Entry:
         if self.compressor:
             data['compressor'] = self.compressor
         data['processedAt'] = self.processed_at
+        if self.volumes:
+            data['volumes'] = [{'title': title, 'start': start} for title, start in self.volumes]
         return data
 
     @classmethod
@@ -394,6 +406,7 @@ class Entry:
             gz_size=_as_int(raw.get('gzSize', 0), 'gzSize'),
             compressor=compressor or None,
             processed_at=processed_at,
+            volumes=_parse_volumes(raw.get('volumes')),
         )
 
     @classmethod
@@ -409,6 +422,10 @@ class Entry:
         if not isinstance(book_id, str) or not book_id.strip():
             raise ManifestError(f'元数据缺少可用的 id，无法写入清单：{meta!r}')
         compressor = meta.get('compressor')
+        try:
+            volumes = _parse_volumes(meta.get('volumes'))
+        except ValueError as exc:
+            raise ManifestError(f'元数据里的 volumes 不合法，无法写入清单：{exc}') from exc
         return cls(
             book_id=book_id,
             digest=digest,
@@ -420,7 +437,32 @@ class Entry:
             gz_size=int(meta.get('gzSize') or 0),
             compressor=str(compressor) if compressor else None,
             processed_at=_now_iso(),
+            volumes=volumes,
         )
+
+
+def _parse_volumes(raw: object) -> Tuple[Tuple[str, int], ...]:
+    """`volumes` 字段 → `((册名, 起点), …)`。缺失为空元组。
+
+    形状不对抛 `ValueError`（`from_json` 据此按坏条目丢弃）：至少两册（一册就不是合集），
+    册名非空，起点从 0 开始严格递增。这些条件不满足的记录拿去重切，切出来的目录必然是错的。
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or len(raw) < 2:
+        raise ValueError(f'volumes 必须是至少两项的列表，实际是 {raw!r}')
+    volumes: List[Tuple[str, int]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError(f'volumes 的每一项必须是对象，实际是 {item!r}')
+        title = item.get('title')
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f'volumes 里的 title 缺失或为空：{item!r}')
+        start = _as_int(item.get('start'), 'volumes[].start')
+        if (not volumes and start != 0) or (volumes and start <= volumes[-1][1]):
+            raise ValueError(f'volumes 的起点必须从 0 开始严格递增：{raw!r}')
+        volumes.append((title, start))
+    return tuple(volumes)
 
 
 def _usable(path: Path) -> bool:

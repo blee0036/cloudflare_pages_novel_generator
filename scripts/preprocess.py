@@ -8,10 +8,17 @@ r"""预处理编排层（design §1 / §4.8 / §4.9，需求 7.1 / 7.2 / 7.5 / 7
 一条流水线，每个环节都在 `scripts/lib/` 里（design §4.1），本文件只负责串起来：
 
     扫描源目录 → 改名识别 → 占住已分配的 id → 增量判定（摘要 + 流水线版本）
-              → 解压 → 解码 → 择一规则 → 切分 → 卷标记 → 兜底 → 拼音
+              → 解压 →（合集包：定顺序与册名）→ 解码 → 择一规则 → 切分 → 卷标记 → 兜底 → 拼音
               → 压缩（源包 ≤10MB: gz9 / >10MB: zopfli）→ 自校验 → 更新清单 →（删源包）
               → 归档书（沿用 / 按 .txt.gz 重切 / 遗忘）→ 写 books.json → 孤儿产物
               → 汇总 → 容量护栏 → 退出码
+
+## 合集包
+
+一个源包里有多个 `.txt` 时（分册合集、正文 + 外传），全部并成一本书：顺序与册名由
+`scripts/lib/bundle.py` 定，每册单独切章、册前一个卷节点（见"合集包"那一节的注释）。
+旧版只取体积最大的那个 `.txt`，合集只剩一册、日志却显示成功。分册的起点记进清单
+（`manifest.Entry.volumes`），源包删掉之后按 `.txt.gz` 重切照样逐册切。
 
 ## 逐本 try/except 是这一层存在的主要理由（需求 7.1 / 7.2）
 
@@ -238,6 +245,7 @@ require_dependencies()
 from zopfli import gzip as zopfli_gzip  # noqa: E402  只用 .gzip.compress，见模块 docstring
 
 from scripts.lib import archive  # noqa: E402  解压与源目录扫描（需求 7.6 / 7.7）
+from scripts.lib import bundle  # noqa: E402  合集包（一个源包里多个 .txt）的并入顺序与册名
 from scripts.lib import encoding  # noqa: E402  BOM → 探测 → 全文 strict 试解（需求 7.8）
 from scripts.lib import manifest  # noqa: E402  SHA-256 增量清单与归档书（需求 7.3–7.5）
 from scripts.lib import pinyin  # noqa: E402  书名/作者拼音首字母（需求 5.6）
@@ -414,13 +422,27 @@ def build_toc(
     或者命中过不了全书篇幅门槛（`toc.Coverage`），整本按段落块切。
     逐章兜底（需求 8.8，个别超长章就地再切）不算——规则依然可用，`tocRule` 依然有意义。
     """
+    chapters, rule_name, fallback, _reason = _build_toc(text, book_id, overrides)
+    return chapters, rule_name, fallback
+
+
+def _build_toc(
+    text: str,
+    book_id: str,
+    overrides: Optional[toc_overrides.Overrides],
+) -> Tuple[List[Dict], Optional[str], bool, Optional[str]]:
+    """`build_toc` 的实现，多返回一项：整本兜底的原因（与 `[兜底]` 那行日志同一句），
+    没有兜底时为 `None`。批次汇总要列出本次整本兜底的书和原因，原因只在这里算得出来。
+    """
     # 需求 8.10：本机覆盖表点了名就用那条规则，跳过自动判定；
     # 否则按需求 8.1–8.5 采样择一（只看前 100 万字符）。
     pick = toc_overrides.pick_rule_for(text, book_id, overrides)
+    reason: Optional[str] = None
     if pick.overridden:
         print(f'  [覆盖] 本机覆盖表为本书点名规则: {pick.name}（跳过自动判定）')
     elif pick.rule is None:
-        print(f'  [兜底] {_no_rule_reason(pick)}，全书按段落块切分（需求 8.9）')
+        reason = _no_rule_reason(pick)
+        print(f'  [兜底] {reason}，全书按段落块切分（需求 8.9）')
     else:
         print(
             f'  命中规则: {pick.name}'
@@ -431,8 +453,9 @@ def build_toc(
     if result.fallback and pick.name is not None:
         # 采样里像有章节、全书却不成目录：要么过滤后凑不出 2 个标题（命中全挤在
         # 前 100 万字符里），要么命中够多、却过不了全书尺度的篇幅门槛。
-        print(f'  [兜底] {_whole_book_reason(pick.name, result.cover)}，全书按段落块切分（需求 8.9）')
-    return result.chapters, pick.name, result.fallback
+        reason = _whole_book_reason(pick.name, result.cover)
+        print(f'  [兜底] {reason}，全书按段落块切分（需求 8.9）')
+    return result.chapters, pick.name, result.fallback, reason
 
 
 def _no_rule_reason(pick: toc.RulePick) -> str:
@@ -502,15 +525,27 @@ class Processed:
     compressor: Optional[str]
     """`gz9` / `zopfli`（需求 10.7）。归档书重切时沿用清单记录，旧清单没记就是 `None`。"""
 
+    fallback_reason: Optional[str] = None
+    """整本兜底（需求 8.9）的原因，只进批次汇总、不写进任何产物；没兜底是 `None`。"""
+
+    volumes: Tuple[Tuple[str, int], ...] = ()
+    """合集包每一册的 `(册名, 起点)`；单本书为空。见 `manifest.Entry.volumes`。"""
+
     def tagged(self) -> Dict[str, object]:
-        """给 `manifest` / `report` 用的形态：`meta` + 压缩器标签。
+        """给 `manifest` / `report` 用的形态：`meta` + 压缩器标签（合集包再加分册）。
 
         压缩器**不进 `books.json`**：前端不读它，7000 本 × 一个键只是体积浪费。
         但清单必须记——`.txt.gz` 本身看不出是 gz9 还是 zopfli 压的（两者都是标准
         gzip 流），而越限报错时第一个要回答的就是"zopfli 是不是已经上过了"
         （design §4.9）。被跳过的书的这个标签只剩清单里这一份。
+
+        分册同理：前端从 `_toc.json` 的卷节点就能看到分册，不需要它；但源包删掉之后，
+        按 `.txt.gz` 重切只能靠清单里这一份（`manifest.Entry.volumes`）。
         """
-        return {**self.meta, 'compressor': self.compressor}
+        tagged: Dict[str, object] = {**self.meta, 'compressor': self.compressor}
+        if self.volumes:
+            tagged['volumes'] = [{'title': title, 'start': start} for title, start in self.volumes]
+        return tagged
 
 
 def process_book(
@@ -549,20 +584,40 @@ def process_book(
 
     with tempfile.TemporaryDirectory() as td:
         # 解压出的 .txt 只在这个块里活着：出块即删，7000 本不会在磁盘上堆出第二份库。
-        txt_path = archive.extract_largest_txt(source_path, Path(td))
-        raw_size = txt_path.stat().st_size
+        members = archive.extract_txt_members(source_path, Path(td))
+        # 包里多个 .txt（合集包）时定顺序、起册名；只有一个时原样返回它。
+        picked = _pick_volumes(members, book_id, title, author, overrides, rep)
+        raw_size = sum(member.size for _vol_title, member in picked)
         print(f"  解压成功，原始体积: {raw_size / 1024 / 1024:.2f} MB")
 
         # 编码规范化（需求 7.8）：BOM 优先 → 采样探测 → 全文 strict 试解 + 有效性校验。
-        # 出口已是去除 BOM 的 UTF-8 str，此处不再有第二种文本形态。
-        decoded = encoding.decode_file(txt_path)
+        # 出口已是去除 BOM 的 UTF-8 str，此处不再有第二种文本形态。合集包逐册探测：
+        # 同一个包里的几册可能是不同工具导出的，编码不必相同。
+        decoded = [(vol_title, encoding.decode_file(member.path)) for vol_title, member in picked]
 
-    # 告警交给账本而不是 `decoded.emit_warnings()`：这样它们会计进批次汇总的条数。
-    rep.warn_all(decoded.warnings)
-    source = 'BOM' if decoded.from_bom else '探测'
-    print(f"  检测编码: {decoded.encoding}（来源: {source}，候选序: {' → '.join(decoded.tried)}）")
+    parts: List[Tuple[str, str]] = []
+    for index, (vol_title, result) in enumerate(decoded, 1):
+        # 告警交给账本而不是 `result.emit_warnings()`：这样它们会计进批次汇总的条数。
+        rep.warn_all(result.warnings)
+        source = 'BOM' if result.from_bom else '探测'
+        label = f'[第 {index} 册] ' if len(decoded) > 1 else ''
+        print(
+            f"  {label}检测编码: {result.encoding}"
+            f"（来源: {source}，候选序: {' → '.join(result.tried)}）"
+        )
+        if len(decoded) > 1 and not result.text.strip():
+            rep.warn(
+                f'[合集] 《{title}》（{book_id}）第 {index} 册「{vol_title}」解码后是空文本，不并入。'
+            )
+            continue
+        parts.append((vol_title, result.text))
 
-    text = decoded.text
+    volumes: Tuple[Tuple[str, int], ...] = ()
+    if len(parts) > 1:
+        # 合集包：册名行 + 正文，逐册首尾相接（见 `_join_volumes`）
+        text, volumes = _join_volumes(parts)
+    else:
+        text = parts[0][1] if parts else ''
     char_count = len(text)
     if not text.strip():
         # 空文本切不出章节表，产物也没有意义。当场给一句能读的失败原因，
@@ -570,10 +625,11 @@ def process_book(
         raise ValueError(
             f'解压出的文本为空（{char_count} 字符）：源文件里那个 .txt 可能是占位文件。'
         )
-    print(f"  读取字符数: {char_count:,} 字")
+    print(f"  读取字符数: {char_count:,} 字" + (f'（{len(volumes)} 册）' if volumes else ''))
 
-    # 章节识别：覆盖表/采样择一规则 → 全文切分（range 含自身标题行）→ 卷标记 → 两级兜底
-    toc_data = _toc_data(text, book_id, title, author, overrides)
+    # 章节识别：覆盖表/采样择一规则 → 全文切分（range 含自身标题行）→ 卷标记 → 两级兜底。
+    # 合集包逐册做这一整套，册前加卷节点（`_bundle_toc`）。
+    toc_data, fallback_reason = _toc_data(text, book_id, title, author, overrides, volumes)
 
     # 压缩（需求 10.7）：按源包体积二选一，写入的字节即解码结果的 UTF-8 编码，
     # 不经任何文本模式翻译（模块 docstring 末节）。
@@ -588,7 +644,13 @@ def process_book(
     )
 
     _write_toc(toc_data, data_dir)
-    return Processed(meta=_index_meta(toc_data, gz_size), toc_data=toc_data, compressor=compressor)
+    return Processed(
+        meta=_index_meta(toc_data, gz_size),
+        toc_data=toc_data,
+        compressor=compressor,
+        fallback_reason=fallback_reason,
+        volumes=volumes,
+    )
 
 
 def resplit_book(
@@ -616,7 +678,8 @@ def resplit_book(
 
     Raises:
         OSError / EOFError / gzip.BadGzipFile / UnicodeDecodeError: gz 读不了或坏了。
-        ValueError: 解出的文本为空，或字符数与清单记录不符（这份 gz 不是清单描述的那本书）。
+        ValueError: 解出的文本为空，或字符数与清单记录不符（这份 gz 不是清单描述的那本书），
+            或合集包的册名行不在清单记录的起点上。
         以上都由编排层记成这一本的失败（需求 7.1）。
     """
     book_id = entry.book_id
@@ -633,14 +696,22 @@ def resplit_book(
             f'{gz_path.name} 解出 {char_count:,} 字符，清单记的是 {entry.char_count:,}：'
             '这份 gz 不是清单描述的那本书，不拿它重切。'
         )
-    print(f"  读取字符数: {char_count:,} 字（自 {gz_path.name}）")
+    print(
+        f"  读取字符数: {char_count:,} 字（自 {gz_path.name}"
+        + (f'，清单记着 {len(entry.volumes)} 册，逐册重切' if entry.volumes else '')
+        + '）'
+    )
 
-    toc_data = _toc_data(text, book_id, title, author, overrides)
+    # 合集包的分册只记在清单里：册名行是拼接时加进正文的，光看正文认不出来
+    # （`manifest.Entry.volumes`）。册名行对不上记录的起点时 `_bundle_toc` 抛 ValueError。
+    toc_data, fallback_reason = _toc_data(text, book_id, title, author, overrides, entry.volumes)
     _write_toc(toc_data, data_dir)
     return Processed(
         meta=_index_meta(toc_data, len(payload)),
         toc_data=toc_data,
         compressor=entry.compressor,
+        fallback_reason=fallback_reason,
+        volumes=entry.volumes,
     )
 
 
@@ -650,15 +721,26 @@ def _toc_data(
     title: str,
     author: str,
     overrides: Optional[toc_overrides.Overrides],
-) -> Dict[str, object]:
+    volumes: Sequence[Tuple[str, int]] = (),
+) -> Tuple[Dict[str, object], Optional[str]]:
     """切章并组装 `_toc.json` 的内容（design §2.1）。`process_book` 与 `resplit_book` 共用。
 
     字段顺序即 design §2.1 的顺序。`fallback` 与 `isVolume` 同一约定——"真时才输出"，
     避免 7000 本 × 冗余 false 的体积浪费（前端按 `!!c.isVolume` 与 `!!toc.fallback`
     读取）。`tocRule` 在兜底且无规则可用时是 null："选中了哪条规则"与"是否兜底"是两件
     独立的事，各自记各自的。
+
+    `volumes` 非空时这是合集包，按册切（`_bundle_toc`）；两个调用方传的是同一份分册
+    记录，所以处理与重切走的是同一段代码。
+
+    返回 `(_toc.json 的内容, 整本兜底的原因)`；没兜底时原因是 `None`。
     """
-    chapters, toc_rule, fallback = build_toc(text, book_id, overrides)
+    if volumes:
+        chapters, toc_rule, fallback, fallback_reason = _bundle_toc(
+            text, volumes, book_id, overrides
+        )
+    else:
+        chapters, toc_rule, fallback, fallback_reason = _build_toc(text, book_id, overrides)
     # totalChapters 只数非卷节点（design §2.1 不变量 4）
     total_chapters = toc.count_content_chapters(chapters)
     volume_count = len(chapters) - total_chapters
@@ -675,7 +757,186 @@ def _toc_data(
     if fallback:
         toc_data['fallback'] = True
     toc_data['chapters'] = chapters
-    return toc_data
+    return toc_data, fallback_reason
+
+
+# ---------------------------------------------------------------------------
+# 合集包：一个源包里有多个 .txt
+#
+# 每个 .txt 是一册。并入顺序与册名由 `bundle` 定；这里负责拼正文、逐册切章。
+#
+# 正文里每册前面加一行册名（`_join_volumes`），目录里对应一个卷节点，range 恰好覆盖
+# 这一行——与 `toc.mark_volumes` 标出来的卷节点同一形态，前端照样渲染成不可点的分组
+# 表头（需求 12.2），`_toc.json` 的格式与前端一行都不用改。册名行是**加进正文的**：
+# 卷节点不能是零长度（design §0 修订一），总得有几个字符归它。
+#
+# 每册单独择一规则、单独切：同一个包里的几册经常出自不同的排版，整本选一条规则会让
+# 格式不同的那几册整册兜底。代价是 `tocRule` 只能记一条——记正文最长的那一册用的规则
+# （它是"供审查参考"的字段，前端不读）。`fallback` 只在**每一册**都兜底时为真：它的
+# 意思是"这本书没有目录"，有一册切出了章节就不是。
+#
+# 只切出一段的册（几千字的资料、后记）不单列卷节点，整册并成一章、标题就是册名：
+# 卷节点下面挂一个"第 1 部分"，目录里平白多一层。这一章的 range 从册名行起，首行就是
+# 它自己的标题，与前端"跳过与标题相同的首段"（design §3.2）对得上。
+#
+# 册首只有一行书名的（分册 txt 常见），那一行并进册名的卷节点，不另起一个"序章 / 前言"。
+# ---------------------------------------------------------------------------
+
+
+def _pick_volumes(
+    members: Sequence[archive.TxtMember],
+    book_id: str,
+    title: str,
+    author: str,
+    overrides: Optional[toc_overrides.Overrides],
+    rep: report.Report,
+) -> List[Tuple[str, archive.TxtMember]]:
+    """定并入哪些 `.txt`、按什么顺序、每册叫什么，返回 `[(册名, 成员)]`。
+
+    只有一个 `.txt` 且覆盖表没给这本书写 `order` 时原样返回它（册名不会被用到）。
+
+    Raises:
+        bundle.BundleError: 覆盖表的 `order` 对不上包里的文件。这一本失败（需求 7.1）。
+    """
+    forced = overrides.order_for(book_id) if overrides is not None else None
+    if len(members) == 1 and forced is None:
+        return [(title, members[0])]
+
+    by_name = {member.name: member for member in members}
+    plan = bundle.plan(title, [bundle.Member(m.name, m.size) for m in members], forced)
+    picked = [
+        (bundle.volume_title(item.name, index, author), by_name[item.name])
+        for index, item in enumerate(plan.order, 1)
+    ]
+
+    print(
+        f'  [合集] 包里有 {len(members)} 个 .txt，按「{plan.method}」定顺序，'
+        f'并入 {len(picked)} 个：'
+    )
+    for index, (vol_title, member) in enumerate(picked, 1):
+        print(f'    {index}. {member.name}（{member.size:,} B）→ 「{vol_title}」')
+    for member in plan.excluded:
+        print(f'    ✗ {member.name}（{member.size:,} B）：覆盖表的 order 没列它，不并入')
+
+    if plan.unsure:
+        largest = max(member.size for member in members)
+        rep.warn(
+            '\n'.join(
+                [
+                    f'[合集顺序] 《{title}》（{book_id}）按「{plan.method}」排了顺序，'
+                    '下面这些文件体量不小，未必该排在后面：',
+                    *(
+                        f'    - {member.name}（{member.size:,} B，最大那个的 '
+                        f'{member.size / largest:.0%}）'
+                        for member in plan.unsure
+                    ),
+                    '  顺序不对的话，在本机覆盖表里给这本书写 {"order": [...]}，'
+                    '列出包里的文件名（docs/toc.md「合集包的分册顺序」）。',
+                ]
+            )
+        )
+    return picked
+
+
+def _join_volumes(parts: Sequence[Tuple[str, str]]) -> Tuple[str, Tuple[Tuple[str, int], ...]]:
+    """把各册拼成一份正文，返回 `(正文, ((册名, 册名行起点), …))`。
+
+    每册是"册名 + 换行"一行，再接这一册的正文；正文不以换行结尾的补一个，免得下一册的
+    册名行接在上一册最后一行的行尾。换行符跟着这一册走（正文里有 CRLF 就用 CRLF）：
+    `.txt.gz` 里的就是这里拼出来的字符，INV-1 只有这一个坐标系。
+    """
+    pieces: List[str] = []
+    volumes: List[Tuple[str, int]] = []
+    offset = 0
+    for vol_title, body in parts:
+        newline = '\r\n' if '\r\n' in body else '\n'
+        if not body.endswith('\n'):
+            body += newline
+        header = vol_title + newline
+        volumes.append((vol_title, offset))
+        pieces += [header, body]
+        offset += len(header) + len(body)
+    return ''.join(pieces), tuple(volumes)
+
+
+def _header_length(segment: str, vol_title: str) -> int:
+    """这一册开头那行册名的长度（含换行）。不是以册名行开头就抛 `ValueError`。"""
+    for newline in ('\r\n', '\n'):
+        if segment.startswith(vol_title + newline):
+            return len(vol_title) + len(newline)
+    raise ValueError(
+        f'分册「{vol_title}」的册名行不在清单记录的起点上：正文与清单里的分册记录对不上，'
+        '不拿它切目录。'
+    )
+
+
+def _bundle_toc(
+    text: str,
+    volumes: Sequence[Tuple[str, int]],
+    book_id: str,
+    overrides: Optional[toc_overrides.Overrides],
+) -> Tuple[List[Dict], Optional[str], bool, Optional[str]]:
+    """合集包逐册切章，返回值与 `_build_toc` 同形：`(chapters, 规则名, 是否兜底, 兜底原因)`。
+
+    取舍见本节开头的注释。章节表照样从 0 连续覆盖到全文末尾（需求 8.14）：每册的卷节点
+    覆盖册名行，册内章节覆盖其余部分，下一册从上一册的末尾接上。
+
+    Raises:
+        ValueError: 分册起点不合法，或某一册不是以它的册名行开头（`_header_length`）。
+    """
+    bounds = [start for _title, start in volumes] + [len(text)]
+    if bounds[0] != 0 or any(lo >= hi for lo, hi in zip(bounds, bounds[1:])):
+        raise ValueError(
+            f'分册起点 {[start for _t, start in volumes]} 不合法（全文 {len(text):,} 字符）：'
+            '必须从 0 开始、严格递增且落在正文之内。'
+        )
+
+    chapters: List[Dict] = []
+    weights: List[Tuple[int, Optional[str]]] = []
+    fell_back: List[str] = []
+    for index, ((vol_title, start), end) in enumerate(zip(volumes, bounds[1:]), 1):
+        head = _header_length(text[start:end], vol_title)
+        body_start = start + head
+        body = text[body_start:end]
+        print(f'  [第 {index} 册] 「{vol_title}」 {len(body):,} 字')
+        sub, rule_name, fallback, reason = _build_toc(body, book_id, overrides)
+        weights.append((len(body), rule_name))
+        if fallback:
+            fell_back.append(f'第 {index} 册「{vol_title}」：{reason}')
+
+        # 册首只有一行书名之类的短内容时，`toc.split_book` 把它切成"序章 / 前言"、又被
+        # `mark_volumes` 标成卷——紧挨在册名卷节点下面，目录里是两个连着的表头。并进册名
+        # 那个卷节点；并完仍不足 `VOLUME_BODY_MAX` 才并，不把卷节点撑成"偏长"。
+        lead = 0
+        if (
+            len(sub) > 1
+            and sub[0].get('isVolume')
+            and sub[0]['title'] == toc.PREFACE_TITLE
+            and head + int(sub[0]['end']) < toc.VOLUME_BODY_MAX
+        ):
+            lead = int(sub[0]['end'])
+            sub = sub[1:]
+
+        if len(sub) <= 1:
+            print(f'    只有 1 段，整册并成一章「{vol_title}」')
+            chapters.append(
+                {'id': 0, 'title': vol_title, 'start': start, 'end': end, 'length': end - start}
+            )
+            continue
+        chapters.append(
+            {'id': 0, 'title': vol_title, 'start': start, 'end': body_start + lead,
+             'length': head + lead, 'isVolume': True}
+        )
+        chapters.extend(
+            dict(chapter, start=chapter['start'] + body_start, end=chapter['end'] + body_start)
+            for chapter in sub
+        )
+
+    toc.renumber(chapters)
+    # 正文最长那一册的规则；同样长取靠前的那册（`max` 返回第一个最大值）
+    toc_rule = max(weights, key=lambda item: item[0])[1]
+    whole = len(fell_back) == len(volumes)
+    return chapters, toc_rule, whole, ('；'.join(fell_back) if whole else None)
 
 
 def _write_toc(toc_data: Dict[str, object], data_dir: Path) -> Path:
@@ -931,6 +1192,7 @@ def process_archived(
     一样逐本记账、继续下一本（需求 7.1）。
     """
     _raw_id, title, author = parse_filename_meta(key)
+    rep.begin_book(key, title)
     book_id = entry.book_id
     gz_ok, toc_ok = mf.artifact_state(book_id)
 
@@ -992,7 +1254,7 @@ def process_archived(
         rep.warn_all(validate.check(processed.meta, processed.toc_data).warnings)
         mf.update(key, entry.digest, processed.tagged())
         rep.warn_all(mf.drain_warnings())
-        rep.ok(key, processed.tagged())
+        rep.ok(key, processed.tagged(), fallback_reason=processed.fallback_reason)
         batch.books[key] = processed.meta
     except Exception as e:                          # 需求 7.1：记原因，继续下一本
         batch.unindexed.add(book_id)
@@ -1131,7 +1393,7 @@ def run(
         )
 
     if len(overrides):
-        print(f"  [覆盖] {overrides.path.name} 指定了 {len(overrides)} 本书的规则")
+        print(f"  [覆盖] {overrides.path.name} 点名了 {len(overrides)} 本书（规则或合集顺序）")
         # 键写错是这张表唯一无法在加载期校验的部分（那时还不知道有哪些书）。
         # 告警而非失败：书被合法删掉时批次不该停。归档书的 id 同样算"有这本书"。
         known_ids = [meta[0] for _, meta in parsed] + [entry.book_id for _, entry in archived]
@@ -1154,6 +1416,7 @@ def run(
 
     for index, (src, (raw_id, title, author)) in enumerate(parsed, 1):
         print(f"\n[{index}/{len(parsed)}] {src.name}")
+        rep.begin_book(src, title)                 # 此后的告警在汇总里标这本书的名字
         book_id = sticky.get(src.name) or rep.unique_id(raw_id, src)   # 需求 7.9
         rep.check_source(src)                      # 需求 7.11：源包 > 30MB 预警
 
@@ -1199,7 +1462,7 @@ def run(
             rep.warn_all(validate.check(processed.meta, processed.toc_data).warnings)
             mf.update(src, digest, processed.tagged())    # 需求 7.3：每本成功即落盘
             rep.warn_all(mf.drain_warnings())
-            rep.ok(src, processed.tagged())
+            rep.ok(src, processed.tagged(), fallback_reason=processed.fallback_reason)
             batch.books[src.name] = processed.meta
             if delete_source:                       # 需求 7.12：产物与清单都已落盘
                 consume_source(src, int(processed.meta['gzSize']), rep, batch)
@@ -1233,6 +1496,8 @@ def run(
             data_dir=data_dir,
             overrides=overrides,
         )
+    # 逐本环节到此为止：之后的告警（孤儿产物、索引自校验）属于整批，汇总里不标书名。
+    rep.end_book()
 
     # 流水线换版的整批账（`manifest.PIPELINE_VERSION`）。没有这一笔，一次"什么都没改"
     # 的运行突然重建 7,681 本就没有任何解释——而"跳过 0 本"恰恰是清单失效时的表现，

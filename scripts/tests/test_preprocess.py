@@ -48,6 +48,7 @@ import pytest
 from scripts import preprocess
 from scripts.lib import manifest as manifest_mod
 from scripts.lib import report as report_mod
+from scripts.lib import toc as toc_mod
 from scripts.lib import toc_overrides
 from scripts.lib import toc_rules
 from scripts.lib import validate
@@ -1243,3 +1244,247 @@ def test_missing_override_file_prints_exactly_one_notice_first(
     first_book = [i for i, line in enumerate(lines) if line.startswith('[1/')]
     assert first_book, outcome.out
     assert notices[0] < first_book[0], outcome.out
+
+
+# ---------------------------------------------------------------------------
+# 12. 合集包：一个源包里有多个 .txt（`_pick_volumes` / `_join_volumes` / `_bundle_toc`）
+#
+# 旧版只取体积最大的那个 .txt：合集只剩一册、续集合订本只剩续集，日志还显示成功。现在
+# 全部并入，每册单独切章、册前一个卷节点；分册起点记进清单，源包删掉之后照样逐册重切。
+# ---------------------------------------------------------------------------
+
+SERIES_SRC = '《青石巷合集》作者：某甲.zip'
+SERIES_ID = '青石巷合集-某甲'
+MAIN_SRC = '《青石巷》作者：某甲.zip'
+MAIN_ID = '青石巷-某甲'
+MAIN_TXT = '《青石巷》（校对版全本）作者：某甲.txt'
+
+
+def put_bundle(bench: Bench, name: str, files: Dict[str, bytes]) -> Path:
+    """放一个装了多个文件的 `.zip`。成员名非 ASCII 时 `zipfile` 自己设 UTF-8 标志位。"""
+    path = bench.source_dir / name
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for member, data in files.items():
+            zf.writestr(member, data)
+    return path
+
+
+def chapters_of(bench: Bench, book_id: str) -> List[Dict[str, Any]]:
+    return bench.toc(book_id)['chapters']
+
+
+def volume_nodes(bench: Bench, book_id: str) -> List[Dict[str, Any]]:
+    return [c for c in chapters_of(bench, book_id) if c.get('isVolume')]
+
+
+def put_series(bench: Bench) -> List[str]:
+    """三册同名加序号，故意按"错"的顺序写进包里。返回每册正文。"""
+    bodies = [novel_text(), novel_text(CHAPTER_TITLES[:4]), novel_text(CHAPTER_TITLES[:3])]
+    put_bundle(bench, SERIES_SRC, {
+        '青石巷3.txt': bodies[2].encode('utf-8'),
+        '青石巷1.txt': bodies[0].encode('utf-8'),
+        '青石巷2.txt': bodies[1].encode('utf-8'),
+    })
+    return bodies
+
+
+def test_every_volume_is_merged_behind_its_own_volume_node(
+    bench: Bench, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bodies = put_series(bench)
+    assert bench.run() == report_mod.EXIT_OK, bench.err()
+
+    toc_data = bench.toc(SERIES_ID)
+    nodes = volume_nodes(bench, SERIES_ID)
+    assert [node['title'] for node in nodes] == ['青石巷1', '青石巷2', '青石巷3']
+    assert toc_data['totalChapters'] == 5 + 4 + 3, '三册的章都在，没有只剩最大的那一册'
+    assert toc_data['tocRule'] == '标准章节'
+    assert 'fallback' not in toc_data
+
+    # 正文就是"册名行 + 那一册"首尾相接；卷节点恰好覆盖册名行
+    text = bench.gz_text(SERIES_ID)
+    assert text == ''.join(f'青石巷{i}\n{body}' for i, body in enumerate(bodies, 1))
+    assert toc_data['charCount'] == len(text)
+    for node in nodes:
+        assert text[node['start']:node['end']] == node['title'] + '\n'
+    for chapter in chapters_of(bench, SERIES_ID):
+        if not chapter.get('isVolume'):
+            assert text[chapter['start']:chapter['end']].split('\n', 1)[0] == chapter['title']
+
+    # 产物照样过 schema（连续覆盖、id 即下标、卷节点不长）
+    (book,) = bench.books()
+    assert not validate.check(book, toc_data).warnings
+
+    # 分册起点进清单（重切要用），不进 books.json（前端不需要）
+    entry = bench.manifest().entry_for(SERIES_SRC)
+    assert entry is not None
+    assert entry.volumes == tuple((node['title'], node['start']) for node in nodes)
+    assert 'volumes' not in book
+
+    out = capsys.readouterr().out
+    assert '[合集] 包里有 3 个 .txt，按「同名加序号」定顺序' in out
+    assert '[合集顺序]' not in bench.err(), '序号说得清顺序，不该告警'
+
+
+def test_a_single_txt_pack_is_unchanged(bench: Bench, capsys: pytest.CaptureFixture[str]) -> None:
+    bench.add('测试书甲', '某甲')
+    assert bench.run() == report_mod.EXIT_OK
+
+    assert volume_nodes(bench, ID_A) == []
+    assert bench.gz_text(ID_A) == novel_text(), '单本书的正文一个字符都没多'
+    raw = json.loads(bench.manifest_path.read_text(encoding='utf-8'))
+    assert 'volumes' not in raw['books'][SRC_A]
+    assert '[合集]' not in capsys.readouterr().out
+
+
+def test_a_one_piece_appendix_becomes_one_chapter_named_after_it(bench: Bench) -> None:
+    # 几百字的资料只切得出一段：不单列卷节点，整册并成一章、标题就是册名
+    put_bundle(bench, MAIN_SRC, {
+        MAIN_TXT: novel_text().encode('utf-8'),
+        '人物资料.txt': '甲：主角。\n乙：配角。\n'.encode('utf-8'),
+    })
+    assert bench.run() == report_mod.EXIT_OK, bench.err()
+
+    chapters = chapters_of(bench, MAIN_ID)
+    assert [c['title'] for c in chapters if c.get('isVolume')] == ['青石巷']
+    last = chapters[-1]
+    assert last['title'] == '人物资料' and 'isVolume' not in last
+    assert bench.gz_text(MAIN_ID)[last['start']:last['end']] == '人物资料\n甲：主角。\n乙：配角。\n'
+    toc_data = bench.toc(MAIN_ID)
+    assert toc_data['totalChapters'] == 5 + 1
+    assert (toc_data['tocRule'], 'fallback' in toc_data) == ('标准章节', False), \
+        '只有附录兜底不算整本兜底'
+
+
+def test_a_title_line_at_the_top_of_a_volume_joins_its_volume_node(bench: Bench) -> None:
+    # 分册 txt 常以一行书名开头：它切出来是一个标了卷的"序章 / 前言"，紧挨在册名卷节点
+    # 下面就是两个连着的表头。并进册名那个卷节点
+    put_bundle(bench, SERIES_SRC, {
+        '青石巷1.txt': novel_text().encode('utf-8'),
+        '青石巷2.txt': ('青石巷\n' + novel_text()).encode('utf-8'),
+    })
+    assert bench.run() == report_mod.EXIT_OK, bench.err()
+
+    nodes = volume_nodes(bench, SERIES_ID)
+    assert [n['title'] for n in nodes] == ['青石巷1', '青石巷2']
+    assert bench.gz_text(SERIES_ID)[nodes[1]['start']:nodes[1]['end']] == '青石巷2\n青石巷\n'
+    titles = [c['title'] for c in chapters_of(bench, SERIES_ID)]
+    assert toc_mod.PREFACE_TITLE not in titles
+    assert bench.toc(SERIES_ID)['totalChapters'] == 10
+
+
+def test_an_unsure_order_warns_and_the_override_order_fixes_it(
+    bench: Bench, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 副文件体量够得上一本书：可能是该排在前面的前情提要，只看文件名判断不了
+    recap = novel_text(('第一章 旧梦', '第二章 远行'))
+    put_bundle(bench, MAIN_SRC, {
+        MAIN_TXT: novel_text().encode('utf-8'),
+        '【前情】.txt': recap.encode('utf-8'),
+        '下载说明.txt': '本书来自某某网站。\n'.encode('utf-8'),
+    })
+    assert bench.run() == report_mod.EXIT_OK
+    assert [n['title'] for n in volume_nodes(bench, MAIN_ID)] == ['青石巷', '前情']
+    assert '[合集顺序]' in bench.err() and '【前情】.txt' in bench.err()
+
+    # 文档里的修法：本机覆盖表写 order → 删掉 _toc.json 让它重做（源包没变，否则会被跳过）
+    bench.overrides_path.write_text(
+        json.dumps({MAIN_ID: {'order': ['【前情】.txt', MAIN_TXT]}}, ensure_ascii=False),
+        encoding='utf-8',
+    )
+    (bench.data_dir / manifest_mod.toc_name(MAIN_ID)).unlink()
+    capsys.readouterr()
+    assert bench.run() == report_mod.EXIT_OK, bench.err()
+
+    assert [n['title'] for n in volume_nodes(bench, MAIN_ID)] == ['前情', '青石巷']
+    assert bench.gz_text(MAIN_ID).startswith('前情\n' + recap)
+    assert '本书来自某某网站' not in bench.gz_text(MAIN_ID), 'order 没列的文件不并入'
+    assert '[合集顺序]' not in bench.err()
+    out = capsys.readouterr().out
+    assert '按「覆盖表点名」定顺序' in out and '✗ 下载说明.txt' in out
+
+
+def test_an_override_order_that_does_not_fit_fails_only_that_book(bench: Bench) -> None:
+    put_bundle(bench, MAIN_SRC, {MAIN_TXT: novel_text().encode('utf-8'), '外传.txt': b'x' * 50})
+    bench.add('测试书甲', '某甲')
+    bench.overrides_path.write_text(
+        json.dumps({MAIN_ID: {'order': ['外篇.txt', MAIN_TXT]}}, ensure_ascii=False),
+        encoding='utf-8',
+    )
+
+    assert bench.run() == report_mod.EXIT_BOOK_FAILED
+    assert bench.ids() == [ID_A]
+    err = bench.err()
+    assert '"外篇.txt" 在包里找不到' in err
+    assert MAIN_TXT in err and '外传.txt' in err, '报错里列出包里实际有哪些文件'
+
+
+def test_volumes_with_different_encodings_and_line_endings(bench: Bench) -> None:
+    # 同一个包里的几册常出自不同工具：编码逐册探测；换行符跟着各自那一册走；
+    # 不以换行结尾的那一册补一个，免得下一册的册名行接在它最后一行的行尾
+    crlf = novel_text().replace('\n', '\r\n').rstrip('\r\n')
+    put_bundle(bench, SERIES_SRC, {
+        '青石巷1.txt': crlf.encode('gb18030'),
+        '青石巷2.txt': novel_text().encode('utf-8'),
+    })
+    assert bench.run() == report_mod.EXIT_OK, bench.err()
+
+    text = bench.gz_text(SERIES_ID)
+    assert text == '青石巷1\r\n' + crlf + '\r\n' + '青石巷2\n' + novel_text()
+    titles = [c['title'] for c in chapters_of(bench, SERIES_ID) if not c.get('isVolume')]
+    assert titles == list(CHAPTER_TITLES) * 2, 'GB18030 那一册也解对了'
+
+
+def test_whole_book_fallback_only_when_every_volume_falls_back(bench: Bench) -> None:
+    put_bundle(bench, SERIES_SRC, {
+        '青石巷1.txt': filler(12_000).encode('utf-8'),
+        '青石巷2.txt': filler(12_000).encode('utf-8'),
+    })
+    assert bench.run() == report_mod.EXIT_OK, bench.err()
+
+    toc_data = bench.toc(SERIES_ID)
+    assert toc_data['fallback'] is True and toc_data['tocRule'] is None
+    assert [n['title'] for n in volume_nodes(bench, SERIES_ID)] == ['青石巷1', '青石巷2']
+    rep = bench.rep
+    assert rep is not None
+    (book,) = [b for b in rep.books if b.fallback_reason]
+    assert '第 1 册「青石巷1」' in book.fallback_reason and '第 2 册「青石巷2」' in book.fallback_reason
+
+
+def test_an_archived_bundle_is_resplit_volume_by_volume(
+    bench: Bench, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """源包删掉之后换版：从 `.txt.gz` 重切，分册靠清单记录，结果与当初逐字段相同。"""
+    put_series(bench)
+    archive_everything(bench)
+    first_toc = bench.toc(SERIES_ID)
+    gz_before = gz_bytes(bench, SERIES_ID)
+    volumes = bench.manifest().entry_for(SERIES_SRC).volumes      # type: ignore[union-attr]
+
+    stale_the_manifest(bench)
+    capsys.readouterr()
+    assert bench.run() == report_mod.EXIT_OK, bench.err()
+    assert bench.toc(SERIES_ID) == first_toc
+    assert gz_bytes(bench, SERIES_ID) == gz_before
+    assert bench.manifest().entry_for(SERIES_SRC).volumes == volumes  # type: ignore[union-attr]
+    assert '清单记着 3 册，逐册重切' in capsys.readouterr().out
+
+    # 缺 _toc.json 同样逐册重切
+    (bench.data_dir / manifest_mod.toc_name(SERIES_ID)).unlink()
+    assert bench.run() == report_mod.EXIT_OK, bench.err()
+    assert bench.toc(SERIES_ID) == first_toc
+
+
+def test_a_volume_record_that_does_not_fit_the_gz_is_not_resplit(bench: Bench) -> None:
+    put_series(bench)
+    archive_everything(bench)
+    (bench.data_dir / manifest_mod.toc_name(SERIES_ID)).unlink()
+
+    raw = json.loads(bench.manifest_path.read_text(encoding='utf-8'))
+    raw['books'][SERIES_SRC]['volumes'][1]['start'] += 1
+    bench.manifest_path.write_text(json.dumps(raw, ensure_ascii=False), encoding='utf-8')
+
+    assert bench.run() == report_mod.EXIT_BOOK_FAILED
+    assert bench.ids() == []
+    assert '册名行不在清单记录的起点上' in bench.err()
+    assert SERIES_SRC in bench.manifest(), '记录留着：把源包放回来就能重建'

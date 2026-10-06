@@ -7,14 +7,24 @@
   （修正"目录名叫 `zip-novel` 却只 glob `*.rar`"的缺陷）。
 - `.zip` / `.tar` / `.tar.gz` / `.tgz` 走标准库 `zipfile` / `tarfile`；
   `.7z` 走 `py7zr`；`.rar` 调外部工具。
-- 解压后返回体积最大的 `.txt`，避免命中 readme / 广告文件。
+- 解压后返回包里**全部**非空 `.txt`（`extract_txt_members`），连同包内名与体积。
 - 依赖或外部工具不可用时抛出指向具体文件与修复建议的异常，
   不做多级回退、不静默降级。
 
 ## 只解压 `.txt` 成员
 
-调用方唯一需要的是"正文那一个 txt"，书名/作者来自**压缩包文件名**而非包内名。
-所以本模块只取包内 `.txt` 成员，其余（封面图、说明、广告）直接不落盘。
+书名/作者来自**压缩包文件名**而非包内名，调用方要的只是正文。所以本模块只取包内
+`.txt` 成员，其余（封面图、说明、广告）直接不落盘。
+
+## 一个包里有好几个 `.txt`
+
+旧版只返回体积最大的那个，理由是避开 `readme.txt` / 广告文件。实测全库 7,681 个包里
+多 txt 的只有 6 个，没有一个是"正文 + 广告"：要么是分册合集（几册体量相当），要么是
+"正文 + 外传/作品相关"。只留最大的那个，合集就只剩一册、续集合订本甚至只剩续集，
+而且日志显示"成功"。所以现在全部交给调用方，定顺序、起册名是 `bundle` 模块的事。
+
+zip 里没设 UTF-8 标志位的成员名会被 `zipfile` 按 cp437 解码，中文包里那几乎总是
+GBK——排序与册名都要看包内名，所以这里先把它还原（`_zip_member_name`）。
 
 ## 路径穿越（zip slip / tar member escape）
 
@@ -42,6 +52,7 @@ import stat
 import subprocess
 import tarfile
 import zipfile
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -50,8 +61,10 @@ __all__ = [
     'ARCHIVE_EXTENSIONS',
     'ArchiveError',
     'MissingExtractorError',
+    'TxtMember',
     'archive_kind',
     'extract_largest_txt',
+    'extract_txt_members',
     'is_supported_archive',
     'scan_source_dir',
     'unsupported_in',
@@ -71,6 +84,29 @@ _SAFE_STEM_CHARS = re.compile(r'[^\w.\-]', re.UNICODE)
 _MAX_STEM_LEN = 60
 
 _DRIVE_PREFIX = re.compile(r'^[A-Za-z]:')
+
+#: zip 通用标志位第 11 位：成员名是 UTF-8。没设时 `zipfile` 按 cp437 解码。
+_ZIP_UTF8_FLAG = 0x800
+
+
+@dataclass(frozen=True)
+class TxtMember:
+    """包里一个非空的 `.txt`，已解压到调用方给的目录里。"""
+
+    name: str
+    """包内路径，`/` 分隔。zip 里按 GBK 编码的名字已还原。只用于排序、册名与覆盖表
+    匹配，**不用于写盘**（写盘名见模块 docstring"路径穿越"）。"""
+
+    path: Path
+    """落盘位置，在 `dest_dir` 之内。"""
+
+    size: int
+    """字节数，恒 > 0（空文件不返回）。"""
+
+    @property
+    def basename(self) -> str:
+        """去掉目录的文件名。`.rar` 解压工具可能套一层以包名命名的目录，比对时看这个。"""
+        return PurePosixPath(self.name).name
 
 
 class ArchiveError(Exception):
@@ -189,13 +225,36 @@ def _stream_member(src, target: Path) -> None:
         shutil.copyfileobj(src, dst, _COPY_BUFFER)
 
 
-def _collect_txt_files(root: Path, archive_path: Path) -> List[Path]:
+def _zip_member_name(info: zipfile.ZipInfo) -> str:
+    """还原 zip 成员名（见模块 docstring）。
+
+    没设 UTF-8 标志位时，`zipfile` 把原始字节按 cp437 解码成了 `info.filename`；按 cp437
+    编回去就是原始字节，再依次试 UTF-8（有些工具写 UTF-8 却不设标志位）与 GB18030。
+    都不成就原样返回——名字只用于排序与展示，认不出来不该让这本书失败。
+    """
+    name = info.filename
+    if info.flag_bits & _ZIP_UTF8_FLAG:
+        return name
+    try:
+        raw = name.encode('cp437')
+    except UnicodeEncodeError:
+        return name
+    for enc in ('utf-8', 'gb18030'):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return name
+
+
+def _collect_txt_files(root: Path, archive_path: Path) -> List[Tuple[str, Path]]:
     """收集 `root` 下的 `.txt` 普通文件，确认都落在 `root` 内。
 
-    用于 `.7z` / `.rar`——它们由第三方库/外部工具自己写盘，名字不由本模块决定。
+    用于 `.7z` / `.rar`——它们由第三方库/外部工具自己写盘，名字不由本模块决定，
+    所以包内名就取相对 `root` 的路径。
     """
     root_resolved = root.resolve()
-    found: List[Path] = []
+    found: List[Tuple[str, Path]] = []
     for dir_path, dir_names, file_names in os.walk(root, followlinks=False):
         # 不跟随目录符号链接，顺带不去遍历它
         dir_names[:] = [d for d in dir_names if not Path(dir_path, d).is_symlink()]
@@ -209,7 +268,7 @@ def _collect_txt_files(root: Path, archive_path: Path) -> List[Path]:
                 raise ArchiveError(
                     f'解压产物 {path} 逃出了解压目录 {root}，已拒绝使用：{archive_path.name}'
                 )
-            found.append(path)
+            found.append((path.relative_to(root).as_posix(), path))
     return found
 
 
@@ -234,12 +293,14 @@ def _decode_output(raw: Optional[bytes]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 各格式解压：返回 (txt 候选路径, 包内成员名清单)
+# 各格式解压：返回 ([(txt 包内名, 落盘路径)], 包内成员名清单)
 # ---------------------------------------------------------------------------
 
+_Extracted = Tuple[List[Tuple[str, Path]], List[str]]
 
-def _extract_zip(archive_path: Path, dest_dir: Path) -> Tuple[List[Path], List[str]]:
-    found: List[Path] = []
+
+def _extract_zip(archive_path: Path, dest_dir: Path) -> _Extracted:
+    found: List[Tuple[str, Path]] = []
     try:
         with zipfile.ZipFile(archive_path) as zf:
             infos = zf.infolist()
@@ -255,14 +316,14 @@ def _extract_zip(archive_path: Path, dest_dir: Path) -> Tuple[List[Path], List[s
                 target = _flat_target(dest_dir, index, info.filename)
                 with zf.open(info) as src:
                     _stream_member(src, target)
-                found.append(target)
+                found.append((_zip_member_name(info).replace('\\', '/'), target))
     except (zipfile.BadZipFile, EOFError, OSError) as exc:
         raise ArchiveError(f'解压 .zip 失败：{archive_path.name}（{exc}）') from exc
     return found, names
 
 
-def _extract_tar(archive_path: Path, dest_dir: Path) -> Tuple[List[Path], List[str]]:
-    found: List[Path] = []
+def _extract_tar(archive_path: Path, dest_dir: Path) -> _Extracted:
+    found: List[Tuple[str, Path]] = []
     try:
         with tarfile.open(archive_path, 'r:*') as tf:
             members = tf.getmembers()
@@ -278,13 +339,13 @@ def _extract_tar(archive_path: Path, dest_dir: Path) -> Tuple[List[Path], List[s
                 target = _flat_target(dest_dir, index, member.name)
                 with src:
                     _stream_member(src, target)
-                found.append(target)
+                found.append((member.name.replace('\\', '/'), target))
     except (tarfile.TarError, EOFError, OSError) as exc:
         raise ArchiveError(f'解压 tar 失败：{archive_path.name}（{exc}）') from exc
     return found, names
 
 
-def _extract_7z(archive_path: Path, dest_dir: Path) -> Tuple[List[Path], List[str]]:
+def _extract_7z(archive_path: Path, dest_dir: Path) -> _Extracted:
     try:
         import py7zr
         from py7zr import exceptions as py7zr_exceptions
@@ -322,7 +383,7 @@ def _extract_7z(archive_path: Path, dest_dir: Path) -> Tuple[List[Path], List[st
     return _collect_txt_files(stage, archive_path), names
 
 
-def _extract_rar(archive_path: Path, dest_dir: Path) -> Tuple[List[Path], List[str]]:
+def _extract_rar(archive_path: Path, dest_dir: Path) -> _Extracted:
     tool = _rar_tool()
     if tool is None:
         raise MissingExtractorError(_rar_missing_message(archive_path))
@@ -359,7 +420,7 @@ def _extract_rar(archive_path: Path, dest_dir: Path) -> Tuple[List[Path], List[s
     return _collect_txt_files(stage, archive_path), _listing(stage)
 
 
-_EXTRACTORS: Dict[str, Callable[[Path, Path], Tuple[List[Path], List[str]]]] = {
+_EXTRACTORS: Dict[str, Callable[[Path, Path], _Extracted]] = {
     'zip': _extract_zip,
     'tar': _extract_tar,
     '7z': _extract_7z,
@@ -441,10 +502,11 @@ def _rar_missing_message(archive_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def extract_largest_txt(archive_path: Path, dest_dir: Path) -> Path:
-    """解压 `archive_path` 到 `dest_dir`，返回其中体积最大的 `.txt`。
+def extract_txt_members(archive_path: Path, dest_dir: Path) -> List[TxtMember]:
+    """解压 `archive_path` 到 `dest_dir`，返回其中**全部**非空 `.txt`，按包内名排序。
 
-    取最大而非第一个，是为了避开包里的 `readme.txt` / 广告文件。
+    包里只有一个 txt 是常态；多个时怎么排、要不要全收，由调用方（`bundle.plan`）决定，
+    本函数不做取舍（见模块 docstring"一个包里有好几个 `.txt`"）。
 
     Raises:
         MissingExtractorError: 解压该格式所需的依赖或外部工具缺失（环境问题）。
@@ -464,27 +526,40 @@ def extract_largest_txt(archive_path: Path, dest_dir: Path) -> Path:
         )
 
     dest_dir.mkdir(parents=True, exist_ok=True)
-    txt_paths, member_names = _EXTRACTORS[kind](archive_path, dest_dir)
+    found, member_names = _EXTRACTORS[kind](archive_path, dest_dir)
 
-    sized = [(path.stat().st_size, path) for path in txt_paths]
-    usable = [(size, path) for size, path in sized if size > 0]
+    sized = [TxtMember(name, path, path.stat().st_size) for name, path in found]
+    usable = [member for member in sized if member.size > 0]
     if not usable:
-        raise ArchiveError(_no_txt_message(archive_path, sized, member_names))
+        raise ArchiveError(_no_txt_message(archive_path, len(sized), member_names))
 
-    # 体积降序；同体积按落盘名排序，使选择结果可复现
-    usable.sort(key=lambda item: (-item[0], item[1].name))
-    return usable[0][1]
+    # 同名（不同目录下的同名文件）再按落盘名排，使结果可复现
+    usable.sort(key=lambda member: (member.name, member.path.name))
+    return usable
+
+
+def extract_largest_txt(archive_path: Path, dest_dir: Path) -> Path:
+    """解压 `archive_path` 到 `dest_dir`，返回其中体积最大的 `.txt`。
+
+    旧接口，预处理已不用它（多 txt 的包会丢册，见模块 docstring）；留给只要"正文那一个"
+    的调试脚本。同体积按落盘名取第一个，结果可复现。
+
+    Raises:
+        与 `extract_txt_members` 相同。
+    """
+    members = extract_txt_members(archive_path, dest_dir)
+    return min(members, key=lambda member: (-member.size, member.path.name)).path
 
 
 def _no_txt_message(
     archive_path: Path,
-    sized: Sequence[Tuple[int, Path]],
+    n_empty: int,
     member_names: Sequence[str],
 ) -> str:
-    if sized:
+    if n_empty:
         return (
             f'压缩包内的 .txt 全是空文件，没有可用正文：{archive_path}'
-            f'（{len(sized)} 个 0 字节 .txt）'
+            f'（{n_empty} 个 0 字节 .txt）'
         )
     preview = ', '.join(member_names[:10]) or '（空包）'
     more = f' …共 {len(member_names)} 项' if len(member_names) > 10 else ''

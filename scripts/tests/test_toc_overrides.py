@@ -159,9 +159,8 @@ def test_typo_never_silently_falls_back_to_auto(tmp_path: Path):
         {BOOK_ID: None},
         {BOOK_ID: True},
         {BOOK_ID: ['标准章节']},
-        {BOOK_ID: {'name': '标准章节'}},
     ],
-    ids=['int', 'null', 'bool', 'list', 'object'],
+    ids=['int', 'null', 'bool', 'list'],
 )
 def test_value_must_be_a_rule_name_string(tmp_path: Path, payload: Dict[str, Any]):
     with pytest.raises(OverrideError, match='必须是规则名字符串'):
@@ -207,6 +206,73 @@ def test_surrounding_whitespace_in_the_rule_name_is_tolerated(tmp_path: Path):
     # 手写 JSON 多打一个空格不该变成"规则名不存在"
     overrides = load(write(tmp_path, {BOOK_ID: '  标准章节 '}))
     assert overrides.rule_for(BOOK_ID).name == '标准章节'
+
+
+# ---------------------------------------------------------------------------
+# 3b. 对象写法：{"rule": …, "order": […]}（合集包的并入顺序）
+# ---------------------------------------------------------------------------
+
+ORDER = ['青石巷前传.txt', '青石巷.txt']
+
+
+def test_object_with_only_a_rule_is_the_same_as_the_string_form(tmp_path: Path):
+    overrides = load(write(tmp_path, {BOOK_ID: {'rule': '顶格短行'}}))
+    assert overrides.rule_for(BOOK_ID).name == '顶格短行'
+    assert overrides.order_for(BOOK_ID) is None
+    assert pick_rule_for(BOOK, BOOK_ID, overrides).overridden is True
+
+
+def test_object_with_only_an_order_leaves_the_rule_to_auto_detection(tmp_path: Path):
+    overrides = load(write(tmp_path, {BOOK_ID: {'order': ORDER}}))
+    assert overrides.order_for(BOOK_ID) == tuple(ORDER)
+    assert overrides.rule_for(BOOK_ID) is None
+    assert pick_rule_for(BOOK, BOOK_ID, overrides) == toc.pick_rule(BOOK)
+
+
+def test_object_with_both_and_comment_keys(tmp_path: Path):
+    overrides = load(write(tmp_path, {BOOK_ID: {
+        f'{COMMENT_PREFIX} 为什么': '前传要先读',
+        'rule': ' 标准章节 ',
+        'order': [' 青石巷前传.txt', '青石巷.txt '],
+    }}))
+    assert overrides.rule_for(BOOK_ID).name == '标准章节'
+    assert overrides.order_for(BOOK_ID) == tuple(ORDER), '首尾空白与规则名一样容忍'
+
+
+def test_a_book_with_only_an_order_still_counts_and_can_be_unused(tmp_path: Path):
+    # "点名了几本书"与"哪些键对不上书"都要把只写了 order 的书算进去，
+    # 否则 order 的键写错了就没有任何信号
+    overrides = load(write(tmp_path, {BOOK_ID: '标准章节', '打错的合集-作者': {'order': ORDER}}))
+    assert len(overrides) == 2
+    assert '打错的合集-作者' in overrides
+    assert overrides.unused([BOOK_ID]) == ['打错的合集-作者']
+
+
+@pytest.mark.parametrize(
+    ('value', 'fragment'),
+    [
+        ({'name': '标准章节'}, '不认识的字段 name'),
+        ({}, '至少写一个'),
+        ({f'{COMMENT_PREFIX} 注释': '只有注释'}, '至少写一个'),
+        ({'rule': 1}, '必须是规则名字符串'),
+        ({'rule': '标准章'}, '不存在'),
+        ({'order': []}, '非空的文件名列表'),
+        ({'order': '青石巷.txt'}, '非空的文件名列表'),
+        ({'order': ['青石巷.txt', 3]}, '不是非空字符串'),
+        ({'order': ['青石巷.txt', ' ']}, '不是非空字符串'),
+        ({'order': ['青石巷.txt', '青石巷.txt ']}, '列了两次'),
+    ],
+    ids=['unknown-key', 'empty', 'only-comments', 'rule-type', 'rule-typo', 'order-empty',
+         'order-str', 'order-item-type', 'order-item-blank', 'order-duplicate'],
+)
+def test_malformed_object_raises_at_load_time(tmp_path: Path, value: Dict[str, Any], fragment: str):
+    # 与规则名写错同一条理由：写这一项的人已经否决了自动结果，写坏了不能悄悄不生效
+    path = write(tmp_path, {BOOK_ID: value})
+    with pytest.raises(OverrideError) as excinfo:
+        load(path)
+    message = str(excinfo.value)
+    assert fragment in message
+    assert BOOK_ID in message and str(path) in message
 
 
 # ---------------------------------------------------------------------------
@@ -277,12 +343,15 @@ def test_example_table_documents_its_format():
     # 需求 3.4 (b)：示例是部署者手边唯一的格式说明，用法得写在文件自己身上
     raw = json.loads(toc_overrides.EXAMPLE_PATH.read_text(encoding='utf-8'))
     assert isinstance(raw, dict), '形如 {"书名-作者": "规则名"}'
-    assert all(isinstance(v, str) for v in raw.values())
+    assert all(isinstance(v, (str, dict)) for v in raw.values())
     notes = '\n'.join(v for k, v in raw.items() if k.startswith(COMMENT_PREFIX))
     assert notes, '至少保留 1 个注释键说明用法'
-    # 本机表在哪、它不进版本库、键是什么、值是什么、哪些键是注释
-    for phrase in (LOCAL_OVERRIDE, '不进版本库', '书 id', '规则名', COMMENT_PREFIX):
+    # 本机表在哪、它不进版本库、键是什么、值是什么、哪些键是注释、合集顺序怎么写
+    for phrase in (LOCAL_OVERRIDE, '不进版本库', '书 id', '规则名', COMMENT_PREFIX, 'order'):
         assert phrase in notes, phrase
+    # 两种写法各有一例：只看说明不看实例，照着抄的人仍然不知道对象该长什么样
+    assert any(isinstance(v, str) for k, v in raw.items() if not k.startswith(COMMENT_PREFIX))
+    assert any(isinstance(v, dict) for v in raw.values())
 
 
 def test_example_table_loads():
@@ -293,6 +362,7 @@ def test_example_table_loads():
     for book_id, rule in overrides.table.items():
         assert not book_id.startswith(COMMENT_PREFIX)
         assert by_name(rule.name) is rule
+    assert overrides.orders, '至少有一本书示范 order 的写法'
 
 
 def test_missing_file_loads_as_an_empty_table_marked_not_found(tmp_path: Path):

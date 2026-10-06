@@ -522,9 +522,19 @@ def test_unknown_version_invalidates_the_whole_table(tmp_path: Path):
     {'bookId': BOOK_ID, 'digest': 'd', 'gzSize': True},
     {'bookId': BOOK_ID, 'digest': 'd', 'compressor': 9},
     {'bookId': BOOK_ID, 'digest': 'd', 'pipelineVersion': 'two'},
+    {'bookId': BOOK_ID, 'digest': 'd', 'volumes': [{'title': '上卷', 'start': 0}]},
+    {'bookId': BOOK_ID, 'digest': 'd', 'volumes': [{'title': '上卷', 'start': 3},
+                                                   {'title': '下卷', 'start': 9}]},
+    {'bookId': BOOK_ID, 'digest': 'd', 'volumes': [{'title': '上卷', 'start': 0},
+                                                   {'title': '下卷', 'start': 0}]},
+    {'bookId': BOOK_ID, 'digest': 'd', 'volumes': [{'title': '上卷', 'start': 0},
+                                                   {'title': ' ', 'start': 9}]},
+    {'bookId': BOOK_ID, 'digest': 'd', 'volumes': {'上卷': 0, '下卷': 9}},
     'not-an-object',
 ], ids=['empty', 'no-id', 'no-digest', 'blank-id', 'digest-type',
-        'count-type', 'size-type', 'compressor-type', 'pipeline-type', 'not-object'])
+        'count-type', 'size-type', 'compressor-type', 'pipeline-type',
+        'volumes-single', 'volumes-not-from-0', 'volumes-not-increasing', 'volumes-blank-title',
+        'volumes-not-list', 'not-object'])
 def test_a_broken_entry_only_costs_that_one_book(tmp_path: Path, bad: Any):
     # 降级粒度尽量细：坏一条只重跑那一本，不是全部
     path = tmp_path / '.preprocess-manifest.json'
@@ -555,6 +565,33 @@ def test_entry_roundtrips_through_json():
         processed_at='2026-09-24T11:02:07Z',
     )
     assert Entry.from_json(json.loads(json.dumps(entry.to_json()))) == entry
+
+
+def test_bundle_volumes_roundtrip_and_only_appear_for_bundles(mf: Manifest, tmp_path: Path):
+    # 合集包的分册起点是源包删掉之后逐册重切的唯一依据：必须原样存下、原样读回
+    bundle_src = make_source(tmp_path, '《青石巷合集》作者：夜行.rar')
+    volumes = [{'title': '上卷', 'start': 0}, {'title': '下卷', 'start': 18734}]
+    entry = mf.update(bundle_src, 'd1', meta('青石巷合集-夜行', volumes=volumes))
+    assert entry.volumes == (('上卷', 0), ('下卷', 18734))
+    assert raw_manifest(mf)['books']['《青石巷合集》作者：夜行.rar']['volumes'] == volumes
+    assert reload(mf).entry_for(bundle_src).volumes == entry.volumes
+
+    # 单本书不写这个键（"真时才输出"），读回来是空元组
+    single = make_source(tmp_path)
+    assert mf.update(single, 'd2', meta()).volumes == ()
+    assert 'volumes' not in raw_manifest(mf)['books'][SOURCE_NAME]
+    assert reload(mf).entry_for(single).volumes == ()
+
+
+def test_bad_volumes_in_meta_raise_instead_of_recording_a_broken_layout(
+    mf: Manifest, tmp_path: Path
+):
+    # 编排层交来的分册记录坏了是 bug：写进去，下次重切切出来的目录必然是错的
+    src = make_source(tmp_path)
+    with pytest.raises(ManifestError, match='volumes'):
+        mf.update(src, 'd', meta(volumes=[{'title': '上卷', 'start': 5},
+                                          {'title': '下卷', 'start': 9}]))
+    assert src not in mf
 
 
 def test_warnings_go_to_stderr(tmp_path: Path, capsys: pytest.CaptureFixture):
