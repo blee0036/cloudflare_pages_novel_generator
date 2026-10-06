@@ -1435,7 +1435,9 @@ def test_volumes_with_different_encodings_and_line_endings(bench: Bench) -> None
     assert titles == list(CHAPTER_TITLES) * 2, 'GB18030 那一册也解对了'
 
 
-def test_whole_book_fallback_only_when_every_volume_falls_back(bench: Bench) -> None:
+def test_whole_book_fallback_only_when_every_volume_falls_back(
+    bench: Bench, capsys: pytest.CaptureFixture[str]
+) -> None:
     put_bundle(bench, SERIES_SRC, {
         '青石巷1.txt': filler(12_000).encode('utf-8'),
         '青石巷2.txt': filler(12_000).encode('utf-8'),
@@ -1445,10 +1447,11 @@ def test_whole_book_fallback_only_when_every_volume_falls_back(bench: Bench) -> 
     toc_data = bench.toc(SERIES_ID)
     assert toc_data['fallback'] is True and toc_data['tocRule'] is None
     assert [n['title'] for n in volume_nodes(bench, SERIES_ID)] == ['青石巷1', '青石巷2']
-    rep = bench.rep
-    assert rep is not None
-    (book,) = [b for b in rep.books if b.fallback_reason]
-    assert '第 1 册「青石巷1」' in book.fallback_reason and '第 2 册「青石巷2」' in book.fallback_reason
+    # 每一册各自打一行 [兜底]，紧跟在那一册的 [第 N 册] 行后面
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+    for label in ('[第 1 册] 「青石巷1」', '[第 2 册] 「青石巷2」'):
+        at = next(i for i, line in enumerate(lines) if line.startswith(label))
+        assert lines[at + 1].startswith('[兜底]'), lines[at:at + 2]
 
 
 def test_an_archived_bundle_is_resplit_volume_by_volume(

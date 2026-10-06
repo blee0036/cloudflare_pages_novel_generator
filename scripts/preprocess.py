@@ -422,27 +422,13 @@ def build_toc(
     或者命中过不了全书篇幅门槛（`toc.Coverage`），整本按段落块切。
     逐章兜底（需求 8.8，个别超长章就地再切）不算——规则依然可用，`tocRule` 依然有意义。
     """
-    chapters, rule_name, fallback, _reason = _build_toc(text, book_id, overrides)
-    return chapters, rule_name, fallback
-
-
-def _build_toc(
-    text: str,
-    book_id: str,
-    overrides: Optional[toc_overrides.Overrides],
-) -> Tuple[List[Dict], Optional[str], bool, Optional[str]]:
-    """`build_toc` 的实现，多返回一项：整本兜底的原因（与 `[兜底]` 那行日志同一句），
-    没有兜底时为 `None`。批次汇总要列出本次整本兜底的书和原因，原因只在这里算得出来。
-    """
     # 需求 8.10：本机覆盖表点了名就用那条规则，跳过自动判定；
     # 否则按需求 8.1–8.5 采样择一（只看前 100 万字符）。
     pick = toc_overrides.pick_rule_for(text, book_id, overrides)
-    reason: Optional[str] = None
     if pick.overridden:
         print(f'  [覆盖] 本机覆盖表为本书点名规则: {pick.name}（跳过自动判定）')
     elif pick.rule is None:
-        reason = _no_rule_reason(pick)
-        print(f'  [兜底] {reason}，全书按段落块切分（需求 8.9）')
+        print(f'  [兜底] {_no_rule_reason(pick)}，全书按段落块切分（需求 8.9）')
     else:
         print(
             f'  命中规则: {pick.name}'
@@ -453,9 +439,8 @@ def _build_toc(
     if result.fallback and pick.name is not None:
         # 采样里像有章节、全书却不成目录：要么过滤后凑不出 2 个标题（命中全挤在
         # 前 100 万字符里），要么命中够多、却过不了全书尺度的篇幅门槛。
-        reason = _whole_book_reason(pick.name, result.cover)
-        print(f'  [兜底] {reason}，全书按段落块切分（需求 8.9）')
-    return result.chapters, pick.name, result.fallback, reason
+        print(f'  [兜底] {_whole_book_reason(pick.name, result.cover)}，全书按段落块切分（需求 8.9）')
+    return result.chapters, pick.name, result.fallback
 
 
 def _no_rule_reason(pick: toc.RulePick) -> str:
@@ -524,9 +509,6 @@ class Processed:
 
     compressor: Optional[str]
     """`gz9` / `zopfli`（需求 10.7）。归档书重切时沿用清单记录，旧清单没记就是 `None`。"""
-
-    fallback_reason: Optional[str] = None
-    """整本兜底（需求 8.9）的原因，只进批次汇总、不写进任何产物；没兜底是 `None`。"""
 
     volumes: Tuple[Tuple[str, int], ...] = ()
     """合集包每一册的 `(册名, 起点)`；单本书为空。见 `manifest.Entry.volumes`。"""
@@ -629,7 +611,7 @@ def process_book(
 
     # 章节识别：覆盖表/采样择一规则 → 全文切分（range 含自身标题行）→ 卷标记 → 两级兜底。
     # 合集包逐册做这一整套，册前加卷节点（`_bundle_toc`）。
-    toc_data, fallback_reason = _toc_data(text, book_id, title, author, overrides, volumes)
+    toc_data = _toc_data(text, book_id, title, author, overrides, volumes)
 
     # 压缩（需求 10.7）：按源包体积二选一，写入的字节即解码结果的 UTF-8 编码，
     # 不经任何文本模式翻译（模块 docstring 末节）。
@@ -648,7 +630,6 @@ def process_book(
         meta=_index_meta(toc_data, gz_size),
         toc_data=toc_data,
         compressor=compressor,
-        fallback_reason=fallback_reason,
         volumes=volumes,
     )
 
@@ -704,13 +685,12 @@ def resplit_book(
 
     # 合集包的分册只记在清单里：册名行是拼接时加进正文的，光看正文认不出来
     # （`manifest.Entry.volumes`）。册名行对不上记录的起点时 `_bundle_toc` 抛 ValueError。
-    toc_data, fallback_reason = _toc_data(text, book_id, title, author, overrides, entry.volumes)
+    toc_data = _toc_data(text, book_id, title, author, overrides, entry.volumes)
     _write_toc(toc_data, data_dir)
     return Processed(
         meta=_index_meta(toc_data, len(payload)),
         toc_data=toc_data,
         compressor=entry.compressor,
-        fallback_reason=fallback_reason,
         volumes=entry.volumes,
     )
 
@@ -722,7 +702,7 @@ def _toc_data(
     author: str,
     overrides: Optional[toc_overrides.Overrides],
     volumes: Sequence[Tuple[str, int]] = (),
-) -> Tuple[Dict[str, object], Optional[str]]:
+) -> Dict[str, object]:
     """切章并组装 `_toc.json` 的内容（design §2.1）。`process_book` 与 `resplit_book` 共用。
 
     字段顺序即 design §2.1 的顺序。`fallback` 与 `isVolume` 同一约定——"真时才输出"，
@@ -732,15 +712,11 @@ def _toc_data(
 
     `volumes` 非空时这是合集包，按册切（`_bundle_toc`）；两个调用方传的是同一份分册
     记录，所以处理与重切走的是同一段代码。
-
-    返回 `(_toc.json 的内容, 整本兜底的原因)`；没兜底时原因是 `None`。
     """
     if volumes:
-        chapters, toc_rule, fallback, fallback_reason = _bundle_toc(
-            text, volumes, book_id, overrides
-        )
+        chapters, toc_rule, fallback = _bundle_toc(text, volumes, book_id, overrides)
     else:
-        chapters, toc_rule, fallback, fallback_reason = _build_toc(text, book_id, overrides)
+        chapters, toc_rule, fallback = build_toc(text, book_id, overrides)
     # totalChapters 只数非卷节点（design §2.1 不变量 4）
     total_chapters = toc.count_content_chapters(chapters)
     volume_count = len(chapters) - total_chapters
@@ -757,7 +733,7 @@ def _toc_data(
     if fallback:
         toc_data['fallback'] = True
     toc_data['chapters'] = chapters
-    return toc_data, fallback_reason
+    return toc_data
 
 
 # ---------------------------------------------------------------------------
@@ -875,8 +851,8 @@ def _bundle_toc(
     volumes: Sequence[Tuple[str, int]],
     book_id: str,
     overrides: Optional[toc_overrides.Overrides],
-) -> Tuple[List[Dict], Optional[str], bool, Optional[str]]:
-    """合集包逐册切章，返回值与 `_build_toc` 同形：`(chapters, 规则名, 是否兜底, 兜底原因)`。
+) -> Tuple[List[Dict], Optional[str], bool]:
+    """合集包逐册切章，返回值与 `build_toc` 同形：`(chapters, 规则名, 是否兜底)`。
 
     取舍见本节开头的注释。章节表照样从 0 连续覆盖到全文末尾（需求 8.14）：每册的卷节点
     覆盖册名行，册内章节覆盖其余部分，下一册从上一册的末尾接上。
@@ -893,16 +869,16 @@ def _bundle_toc(
 
     chapters: List[Dict] = []
     weights: List[Tuple[int, Optional[str]]] = []
-    fell_back: List[str] = []
+    fell_back = 0
     for index, ((vol_title, start), end) in enumerate(zip(volumes, bounds[1:]), 1):
         head = _header_length(text[start:end], vol_title)
         body_start = start + head
         body = text[body_start:end]
         print(f'  [第 {index} 册] 「{vol_title}」 {len(body):,} 字')
-        sub, rule_name, fallback, reason = _build_toc(body, book_id, overrides)
+        # 兜底的原因由 `build_toc` 当场打在这一册的 `[兜底]` 行里
+        sub, rule_name, fallback = build_toc(body, book_id, overrides)
         weights.append((len(body), rule_name))
-        if fallback:
-            fell_back.append(f'第 {index} 册「{vol_title}」：{reason}')
+        fell_back += int(fallback)
 
         # 册首只有一行书名之类的短内容时，`toc.split_book` 把它切成"序章 / 前言"、又被
         # `mark_volumes` 标成卷——紧挨在册名卷节点下面，目录里是两个连着的表头。并进册名
@@ -935,8 +911,7 @@ def _bundle_toc(
     toc.renumber(chapters)
     # 正文最长那一册的规则；同样长取靠前的那册（`max` 返回第一个最大值）
     toc_rule = max(weights, key=lambda item: item[0])[1]
-    whole = len(fell_back) == len(volumes)
-    return chapters, toc_rule, whole, ('；'.join(fell_back) if whole else None)
+    return chapters, toc_rule, fell_back == len(volumes)
 
 
 def _write_toc(toc_data: Dict[str, object], data_dir: Path) -> Path:
@@ -1192,7 +1167,6 @@ def process_archived(
     一样逐本记账、继续下一本（需求 7.1）。
     """
     _raw_id, title, author = parse_filename_meta(key)
-    rep.begin_book(key, title)
     book_id = entry.book_id
     gz_ok, toc_ok = mf.artifact_state(book_id)
 
@@ -1254,7 +1228,7 @@ def process_archived(
         rep.warn_all(validate.check(processed.meta, processed.toc_data).warnings)
         mf.update(key, entry.digest, processed.tagged())
         rep.warn_all(mf.drain_warnings())
-        rep.ok(key, processed.tagged(), fallback_reason=processed.fallback_reason)
+        rep.ok(key, processed.tagged())
         batch.books[key] = processed.meta
     except Exception as e:                          # 需求 7.1：记原因，继续下一本
         batch.unindexed.add(book_id)
@@ -1416,7 +1390,6 @@ def run(
 
     for index, (src, (raw_id, title, author)) in enumerate(parsed, 1):
         print(f"\n[{index}/{len(parsed)}] {src.name}")
-        rep.begin_book(src, title)                 # 此后的告警在汇总里标这本书的名字
         book_id = sticky.get(src.name) or rep.unique_id(raw_id, src)   # 需求 7.9
         rep.check_source(src)                      # 需求 7.11：源包 > 30MB 预警
 
@@ -1462,7 +1435,7 @@ def run(
             rep.warn_all(validate.check(processed.meta, processed.toc_data).warnings)
             mf.update(src, digest, processed.tagged())    # 需求 7.3：每本成功即落盘
             rep.warn_all(mf.drain_warnings())
-            rep.ok(src, processed.tagged(), fallback_reason=processed.fallback_reason)
+            rep.ok(src, processed.tagged())
             batch.books[src.name] = processed.meta
             if delete_source:                       # 需求 7.12：产物与清单都已落盘
                 consume_source(src, int(processed.meta['gzSize']), rep, batch)
@@ -1496,8 +1469,6 @@ def run(
             data_dir=data_dir,
             overrides=overrides,
         )
-    # 逐本环节到此为止：之后的告警（孤儿产物、索引自校验）属于整批，汇总里不标书名。
-    rep.end_book()
 
     # 流水线换版的整批账（`manifest.PIPELINE_VERSION`）。没有这一笔，一次"什么都没改"
     # 的运行突然重建 7,681 本就没有任何解释——而"跳过 0 本"恰恰是清单失效时的表现，
