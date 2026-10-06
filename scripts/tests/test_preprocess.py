@@ -510,6 +510,20 @@ def test_unsupported_files_are_reported_not_silently_ignored(
     assert '随手放的笔记.md' in capsys.readouterr().out
 
 
+def test_hidden_files_in_the_source_dir_are_not_listed(
+    bench: Bench, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`.gitkeep`、`.DS_Store` 这类隐藏文件不是书，不出现在"忽略"提示里。"""
+    bench.add('测试书甲', '某甲')
+    (bench.source_dir / '.gitkeep').write_bytes(b'')
+    (bench.source_dir / '.DS_Store').write_bytes(b'\x00')
+
+    assert bench.run() == report_mod.EXIT_OK
+    out = capsys.readouterr().out
+    assert '[忽略]' not in out
+    assert '.gitkeep' not in out and '.DS_Store' not in out
+
+
 # ---------------------------------------------------------------------------
 # ⑥ 两条输出流都重设为 UTF-8
 # ---------------------------------------------------------------------------

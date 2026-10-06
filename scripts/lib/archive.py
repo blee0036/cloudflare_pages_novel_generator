@@ -135,12 +135,17 @@ def unsupported_in(source_dir: Path) -> List[Path]:
     """列出源目录下扩展名不受支持的文件，按文件名排序。
 
     给编排层用来提示"这些文件被忽略了"——静默忽略正是本任务要消掉的缺陷。
+    以 `.` 开头的隐藏文件（`.gitkeep`、`.DS_Store` 等）不是书，不列出。
     """
     source_dir = Path(source_dir)
     if not source_dir.is_dir():
         raise ArchiveError(f'源目录不存在或不是目录：{source_dir}')
     return sorted(
-        (p for p in source_dir.iterdir() if p.is_file() and not is_supported_archive(p)),
+        (
+            p
+            for p in source_dir.iterdir()
+            if p.is_file() and not p.name.startswith('.') and not is_supported_archive(p)
+        ),
         key=lambda p: p.name,
     )
 
