@@ -1,0 +1,207 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+ * 主题变量（design §7.1，需求 6.1 / 6.4）
+ *
+ * **这五组取值是主题配色的唯一真相**（需求 6.1）。它们原先同时存在于
+ * `THEME_CONFIGS`（`src/utils/storage.ts`）与本文件，任务 44 删掉了前者：
+ * 运行时没有任何 TS 代码再持有颜色值，组件也不再接收主题 prop（需求 6.5）。
+ * 改这里的取值就是改视觉设计，不在需求 6 范围内。
+ *
+ * 全站主题由 `<html data-theme>` 决定，由 `src/utils/theme.ts` 在首屏渲染前写入。
+ * 裸 `:root` 与 `default` 共用一块，只为覆盖两种退化：属性还没写上（JS 被禁）、
+ * 或存储里的主题键已不存在。注意此时落到的是"默认明亮"而非 `DEFAULT_SETTINGS`
+ * 的 sepia——退化路径按 CSS 层叠走，不与存储默认值挂钩。
+ *
+ * 选择器是 `[data-theme="..."]` 而不是 `:root[data-theme="..."]`：这样**任何**元素
+ * 带上该属性都能就地重声明这组变量，其子树随之换色。设置抽屉的五个主题色块正是靠
+ * 这一点渲染——它们要同时显示五套配色，而当前生效的只有一套，用 `var(--bg)` 一类的
+ * 类名加 `data-theme={key}` 即可，无需把颜色值搬回 TS（需求 6.1/6.5）。
+ * 与裸 `:root` 同为 (0,1,0) 特异度，靠源码顺序决胜：主题块全部排在 `:root` 之后。
+ *
+ * ## 每块都带 `color-scheme`（任务 45）
+ *
+ * 这里原先在主题块**之前**单独写着 `:root { color-scheme: light dark; }`，字面意思是
+ * "两种都支持，由系统偏好挑一种"。它不驱动任何主题 class，但它管的是 UA 自己画的那部分：
+ * 五个原生 `<input type="range">`（设置抽屉四个 + 阅读器底部章节滑杆）、Firefox 的滚动条
+ * （本文件的 `::-webkit-scrollbar` 规则只覆盖 Chromium/WebKit）、以及根元素的画布底色。
+ * 于是系统深色 + 复古羊皮时，滑杆按深色画，落在一张浅色纸上——正是需求 6 要消掉的
+ * "两套机制并行"的残余，只是范围缩到了原生控件。
+ *
+ * 改成跟着 `data-theme` 走：明亮三套声明 `light`，深色两套声明 `dark`，系统偏好不再是
+ * 输入。这不是加一个深浅色开关（需求 6.3 禁止的是那个）——开关仍然只有主题选择器一个，
+ * 只是把原生控件也接到同一个开关上；也没改任何配色取值（需求 6.4），只是让 UA 画的部分
+ * 与已经选定的调色板一致。
+ *
+ * 裸 `:root` 跟着 `default` 拿 `light`：属性没写上时页面退化成默认明亮，控件也该是明亮的。
+ * ------------------------------------------------------------------------- */
+
+/*
+ * `--accent` 的取值（F-010，reader-defect-fixes 需求 12、D5）：明亮三套原先的强调色对
+ * `--bg` / `--card-bg` 不足 4.5:1（default 3.68 / 3.52、sepia 4.47 / 4.07、eyecare 4.41 / 4.21），
+ * 换成同色相更深一档的颜色（色相差 ≤ 8°），对两种底色均 ≥ 5.7:1。深色两套本就达标，不改。
+ * `--bg`、`--card-bg`、`--text`、`--border` 与主题键、名称都不变（需求 12.2）；下限由
+ * `src/utils/palette.test.ts` 核对。
+ */
+
+/* 默认明亮 */
+:root,
+[data-theme="default"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --text: #1f2937;
+  --border: #e5e7eb;
+  --accent: #1d4ed8;
+  --card-bg: #f9fafb;
+}
+
+/* 复古羊皮 */
+[data-theme="sepia"] {
+  color-scheme: light;
+  --bg: #f8f1e3;
+  --text: #523c21;
+  --border: #ebd9bf;
+  --accent: #92400e;
+  --card-bg: #f2e6d0;
+}
+
+/* 护眼豆绿 */
+[data-theme="eyecare"] {
+  color-scheme: light;
+  --bg: #eaf3e8;
+  --text: #244228;
+  --border: #d1e4cf;
+  --accent: #166534;
+  --card-bg: #dff0dc;
+}
+
+/* 暗色夜间 */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1e2430;
+  --text: #cbd5e1;
+  --border: #334155;
+  --accent: #60a5fa;
+  --card-bg: #283141;
+}
+
+/* 极夜纯黑 */
+[data-theme="black"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --text: #9ca3af;
+  --border: #262626;
+  --accent: #38bdf8;
+  --card-bg: #121212;
+}
+
+/**
+ * 派生量：悬停态的浅淡叠加，取代散落各处的 `hover:bg-black/5 dark:hover:bg-white/5`
+ * 这类成对写法（design §7.1，任务 43 消费）。
+ *
+ * 由 `--text` 派生而不是写死黑/白：每套主题的前景色本身就带色调，8% 的叠加因此
+ * 自动落在该主题的色系里，不需要为五套主题各写一个悬停色。
+ * 放在各主题块之后、且只用裸 `:root`：它引用的是 `var(--text)`，层叠取值时按
+ * 当前生效的主题块解析，无需在每块里重复一遍。代价是它只在根元素上算一次，
+ * 局部重声明主题（设置抽屉的色块）的子树里 `--hover` 仍是页面主题的那一个——
+ * 色块不用悬停态，不必为此在每个主题块里重复一遍。
+ *
+ * 构建产物里这一条会被 Tailwind v4 拆成两段（它对任何含 `color-mix()` 的声明都这么
+ * 做，自家的 `/opacity` 工具类同理）：
+ *
+ *     :root { --hover: var(--text) }
+ *     @supports (color: color-mix(in lab, red, red)) { :root { --hover: color-mix(...) } }
+ *
+ * 前一段是无 `color-mix()` 时的兜底，Tailwind 拿不到 `var(--text)` 的实际取值，只能
+ * 原样透传，于是兜底色是**不透明**的前景色。这条路径实际到不了：`color-mix()` 的支持
+ * 门槛（Chrome 111 / Safari 16.2 / Firefox 113）低于 Tailwind v4 自身的基线，进得来
+ * 这份样式表的浏览器都支持它。看到产物里那行 `--hover:var(--text)` 不必去"修"。
+ *
+ * `--selected`：目录当前章节行的底色（F-007，需求 9.1，design §8）。`--accent` 15%
+ * 混进 `--bg`，得到不透明的浅淡强调色——与卷标题的 `--card-bg` 底色分得开，上面的
+ * `--accent` 文字仍有足够对比度（下限由 `palette.test.ts` 核对）。与 `--hover` 同一
+ * 写法、同一作用域：根元素上算一次，取的是 `<html data-theme>` 那套主题的
+ * `--accent`/`--bg`（`:root` 与 `[data-theme]` 匹配同一个元素，主题块里的声明照常
+ * 生效，`var()` 在声明它的元素上代换）。设置抽屉色块的局部主题子树里它仍是页面主题
+ * 的值，但那里不用它；它只用在目录抽屉里，而目录抽屉没有局部主题。兜底拆分同上，
+ * 产物里会多一行 `--selected:var(--accent)`。
+ *
+ * `--text-muted`：次要文字的颜色（F-010，需求 12，design §11），取代组件里散落的
+ * `opacity-40…80`、`text-[var(--text)]/50`、`text-slate-400` 一类写法。`--text` 80% 混进
+ * `--bg`，得到**不透明**的浅一档前景色：半透明文字的实际颜色取决于下面叠的是什么，同一个
+ * `opacity-60` 在 `--bg` 上与在 `--card-bg` 上对比度不同，五套主题里多处不足 4.5:1。
+ * 五套主题下它对 `--bg` ≥ 5.33、对 `--card-bg` ≥ 4.85（下限由 `palette.test.ts` 核对）。
+ * 作用域与 `--selected` 相同：取的是 `<html data-theme>` 那套主题的值，设置抽屉色块的
+ * 局部主题子树里不用它。兜底拆分同上，产物里会多一行 `--text-muted:var(--text)`。
+ */
+:root {
+  --hover: color-mix(in srgb, var(--text) 8%, transparent);
+  --selected: color-mix(in srgb, var(--accent) 15%, var(--bg));
+  --text-muted: color-mix(in srgb, var(--text) 80%, var(--bg));
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.45);
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/**
+ * 加载进度的不确定态（需求 10.5，design §8.3）。
+ *
+ * 用在一截占轨道 1/3 宽的短条上，轨道 `overflow-hidden`。位移百分比按**自身宽度**算，
+ * 于是 -100% 是整条藏在轨道左侧外、300% 是左端推到轨道右端外，一个周期正好扫过全程。
+ * 这样不确定态不需要知道轨道的实际宽度（`w-48` 改了也不用跟着改）。
+ *
+ * 动的是 `transform` 而不是 `left`/`width`：只进合成层，不触发布局，而这条动画恰好跑在
+ * 主线程正忙着解压几十 MB 文本的时候——用会引起 reflow 的属性，条子自己就会卡住，
+ * 那就又回到"看起来没在动"了。
+ */
+@keyframes progressLoop {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+.animate-progress-loop {
+  animation: progressLoop 1.1s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}

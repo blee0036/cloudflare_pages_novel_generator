@@ -1,0 +1,17 @@
+# Cloudflare Pages 部署配置（需求 9.5）。
+#
+# 只有两项是有意为之：有了它们，`wrangler pages deploy` 不带任何参数就能跑，项目名与
+# 产物目录都不必在命令行或 CI 里重复一遍。
+#
+# 刻意**不**写的东西（本项目用不到，写上去只是噪音）：
+# - `compatibility_date` / `compatibility_flags`：Workers 运行时的语义版本。本站是纯静态
+#   站点（没有 `functions/`，见需求附录 A11），没有运行时代码会去读它。
+# - `[[kv_namespaces]]` / `[[d1_databases]]` / `[vars]` 等绑定：同上，无服务端代码可消费。
+# - `[env.*]`：只有一个部署环境，多加一层会让 `--env` 的行为从"无所谓"变成"需要解释"。
+#
+# `pages_build_output_dir` 必须与 `vite.config.ts` 里的 `build.outDir` 保持一致（均为
+# `dist`）。任务 62 之后 `public/books`、`public/data` 会以硬链接接入 `dist/`，上传的目录
+# 仍然是 `dist` 本身，这里不需要跟着改。
+
+name = "novel-pages"
+pages_build_output_dir = "./dist"

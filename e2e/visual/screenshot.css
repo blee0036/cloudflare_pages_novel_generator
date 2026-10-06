@@ -1,0 +1,10 @@
+/*
+ * Pixel_Baseline 拍摄时注入的样式（playwright.config.ts 中 expect.toHaveScreenshot 的 stylePath；
+ * 需求 12.9，设计"像素视觉回归"）。
+ *
+ * headless Chromium 由 Playwright 以 --hide-scrollbars 启动，这里作兜底：页面与所有可滚动容器都
+ * 不绘制滚动条（px-toc-volumes 中看不到目录列表的滚动条）。插入符由 caret: "hide" 隐藏。
+ * 基线更新运行与比对运行共用本文件，拍摄设置相同。只用于 Pixel_Baseline，Review_Shot 不注入（13.5）。
+ */
+* { scrollbar-width: none !important }
+*::-webkit-scrollbar { display: none !important }

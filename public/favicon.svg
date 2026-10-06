@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">云端小说书架</title>
+  <!--
+    读书的猫：一只眯眼笑的蓝猫扒着翻开的书。
+    可爱感来自：头宽于高的团子脸、眼睛放在脸的下半部、粉内耳 + 腮红 + 粉鼻头、两只爪子搭在书沿。
+    配色取 Google 四色：猫是蓝 #4285f4，左页黄 #fbbc04，右页绿 #34a853，书签红 #ea4335；
+    每块内部加柔和渐变（参照 Google 2026 版图标）。
+    不铺底色；头与书之间的缝是挖空的负形，亮暗标签栏都成立。
+  -->
+  <defs>
+    <linearGradient id="blue" x1="16" y1="6" x2="46" y2="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8ab4f8"/>
+      <stop offset=".5" stop-color="#4285f4"/>
+      <stop offset="1" stop-color="#1a73e8"/>
+    </linearGradient>
+    <linearGradient id="pageL" x1="5" y1="40" x2="32" y2="57" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd54f"/>
+      <stop offset="1" stop-color="#f9a825"/>
+    </linearGradient>
+    <linearGradient id="pageR" x1="59" y1="40" x2="32" y2="57" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5bd27a"/>
+      <stop offset="1" stop-color="#1e8e3e"/>
+    </linearGradient>
+    <!-- 负形：书的轮廓外扩一圈，把猫头下沿切开 -->
+    <mask id="gap">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M5 41Q18.5 37 32 41Q45.5 37 59 41V51.5Q45.5 50.5 32 56Q18.5 50.5 5 51.5Z"
+            fill="none" stroke="#000" stroke-width="3.4" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+
+  <!-- 书签丝带：从书脊底部垂下，先画，让书压住它的上端 -->
+  <path d="M30 54H34V62L32 60L30 62Z" fill="#ea4335" stroke="#ea4335" stroke-width="1" stroke-linejoin="round"/>
+
+  <!-- 耳朵 + 团子脸 -->
+  <g mask="url(#gap)" fill="url(#blue)">
+    <path d="M13.5 21L15 5L26 13.5Z" stroke="url(#blue)" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M50.5 21L49 5L38 13.5Z" stroke="url(#blue)" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M11 30C11 18 20 12 32 12C44 12 53 18 53 30C53 39 46 45 32 45C18 45 11 39 11 30Z"/>
+  </g>
+
+  <!-- 粉内耳 -->
+  <path d="M16.5 17L17.2 10L22 14Z" fill="#f28b82" stroke="#f28b82" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M47.5 17L46.8 10L42 14Z" fill="#f28b82" stroke="#f28b82" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- 腮红 -->
+  <ellipse cx="17" cy="34" rx="3" ry="1.8" fill="#f28b82"/>
+  <ellipse cx="47" cy="34" rx="3" ry="1.8" fill="#f28b82"/>
+
+  <!-- 眯眼笑 ^ ^ -->
+  <g fill="none" stroke="#202124" stroke-width="2.2" stroke-linecap="round">
+    <path d="M20 30Q23.5 25.5 27 30"/>
+    <path d="M37 30Q40.5 25.5 44 30"/>
+  </g>
+
+  <!-- 粉鼻头 + ω 嘴 -->
+  <path d="M30.6 30.6H33.4L32 32.1Z" fill="#f28b82" stroke="#f28b82" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M29.2 33.2Q30.6 35 32 33.2Q33.4 35 34.8 33.2"
+        fill="none" stroke="#202124" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 胡子 -->
+  <g fill="none" stroke="#4285f4" stroke-width="1.8" stroke-linecap="round">
+    <path d="M9.5 29Q6.5 28 3.5 28.5M9.5 33Q6.5 33.5 3.5 35"/>
+    <path d="M54.5 29Q57.5 28 60.5 28.5M54.5 33Q57.5 33.5 60.5 35"/>
+  </g>
+
+  <!-- 翻开的书：左页黄、右页绿，两色交界即书脊 -->
+  <path d="M5 41Q18.5 37 32 41V56Q18.5 50.5 5 51.5Z" fill="url(#pageL)" stroke="url(#pageL)" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M32 41Q45.5 37 59 41V51.5Q45.5 50.5 32 56Z" fill="url(#pageR)" stroke="url(#pageR)" stroke-width="1.5" stroke-linejoin="round"/>
+
+  <!-- 两只爪子搭在书沿 -->
+  <ellipse cx="20.5" cy="41" rx="4.6" ry="3.4" fill="#4285f4"/>
+  <ellipse cx="43.5" cy="41" rx="4.6" ry="3.4" fill="#4285f4"/>
+</svg>
