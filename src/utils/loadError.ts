@@ -58,13 +58,38 @@ export class NetworkError extends Error {
 const defaultFetch: typeof fetch = (input, init) => fetch(input, init);
 
 /**
+ * 响应体的下载进度：已收到的字节数，与总字节数（拿不到时为 `null`）。
+ *
+ * `received` 数的是浏览器交给 JS 的字节，也就是**解压后**的字节；`total` 只在响应没有
+ * `Content-Encoding` 时取 `Content-Length`。有传输压缩时 `Content-Length` 是压缩后的长度
+ * （多数时候干脆没有），拿它当分母会算出一条走过 100% 的进度条——Pages 对 `books.json`
+ * 正是这样（需求 5.2a），所以线上只有已收字节数。与 `decompress.ts` 透明解压那条分支同一个原因。
+ */
+export interface FetchProgress {
+  readonly received: number;
+  readonly total: number | null;
+}
+
+/** `fetchJson` 的进度上报口。每收到一个分片调用一次，开始读响应体之前先报一次 `received: 0`。 */
+export type FetchProgressReporter = (progress: FetchProgress) => void;
+
+/**
  * 取 JSON：`fetch` 拒绝 → `NetworkError`；非 2xx → `HttpStatusError`；
- * `res.json()` 失败 → `ResponseFormatError`。
+ * 响应体解析失败 → `ResponseFormatError`。
  *
  * 返回值只做类型断言，不校验结构；处理数据时抛出的错误不在这里包装
  * （书架阶段按 13.7 判为 `unknown`）。
+ *
+ * 给了 `onProgress` 时自己逐片读响应体并上报进度（见 `FetchProgress`），读完再按 UTF-8 解码、
+ * `JSON.parse`——与 `res.json()` 同一套解码（剥开头的 BOM、坏字节换成 U+FFFD），所以解析结果
+ * 与报错和不给 `onProgress` 时相同。唯一的区别是读响应体途中断网：`res.json()` 把它报成解析
+ * 失败（`ResponseFormatError`），这里能分清是读的时候断的，报 `NetworkError`。
  */
-export async function fetchJson<T>(url: string, fetchImpl: typeof fetch = defaultFetch): Promise<T> {
+export async function fetchJson<T>(
+  url: string,
+  fetchImpl: typeof fetch = defaultFetch,
+  onProgress?: FetchProgressReporter,
+): Promise<T> {
   let res: Response;
   try {
     res = await fetchImpl(url);
@@ -74,11 +99,61 @@ export async function fetchJson<T>(url: string, fetchImpl: typeof fetch = defaul
   if (!res.ok) {
     throw new HttpStatusError(res.status, url);
   }
+  if (onProgress === undefined) {
+    try {
+      return (await res.json()) as T;
+    } catch (cause) {
+      throw new ResponseFormatError(url, cause);
+    }
+  }
+
+  let text: string;
   try {
-    return (await res.json()) as T;
+    text = await readTextWithProgress(res, onProgress);
+  } catch (cause) {
+    throw new NetworkError(url, cause);
+  }
+  try {
+    return JSON.parse(text) as T;
   } catch (cause) {
     throw new ResponseFormatError(url, cause);
   }
+}
+
+/** 响应头给出的未压缩总长；有传输压缩、头缺失或解析不出正整数时为 `null`。 */
+function uncompressedLength(res: Response): number | null {
+  const encoding = (res.headers.get("content-encoding") ?? "").trim().toLowerCase();
+  if (encoding !== "" && encoding !== "identity") return null;
+  const raw = res.headers.get("content-length");
+  if (raw === null || !/^\s*\d+\s*$/.test(raw)) return null;
+  const length = Number(raw);
+  return Number.isSafeInteger(length) && length > 0 ? length : null;
+}
+
+/** 逐片读完响应体，每片上报一次进度，返回 UTF-8 解码后的文本。 */
+async function readTextWithProgress(res: Response, onProgress: FetchProgressReporter): Promise<string> {
+  const total = uncompressedLength(res);
+  onProgress({ received: 0, total });
+  if (res.body === null) return "";
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    onProgress({ received, total });
+  }
+
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return new TextDecoder("utf-8").decode(bytes);
 }
 
 /**

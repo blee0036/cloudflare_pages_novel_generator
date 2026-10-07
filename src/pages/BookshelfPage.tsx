@@ -22,12 +22,14 @@ import {
   withoutTocBookId,
 } from "../utils/bookshelfUrl";
 import {
+  FetchProgress,
   SHELF_LOAD_ERROR_TEXT,
   ShelfLoadErrorCategory,
   classifyLoadError,
   fetchJson,
   formatLoadErrorLog,
 } from "../utils/loadError";
+import { sameShelfLoad } from "../utils/shelfLoadProgress";
 import { hasMore, nextPageCount, remainingCount, visibleCount } from "../utils/pagination";
 import { RecentRead, buildRecentReads } from "../utils/recentReads";
 import { getAllReadingHistory, getBookProgress } from "../utils/storage";
@@ -35,6 +37,7 @@ import { BookCard } from "../components/BookCard";
 import { BookDetailModal } from "../components/BookDetailModal";
 import { BookshelfSkeleton } from "../components/BookshelfSkeleton";
 import { RecentReads } from "../components/RecentReads";
+import { ShelfLoadingOverlay } from "../components/ShelfLoadingOverlay";
 
 export const BookshelfPage: React.FC = () => {
   const navigate = useNavigate();
@@ -52,6 +55,11 @@ export const BookshelfPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [catalog, setCatalog] = useState<BooksCatalog | null>(null);
   const [loading, setLoading] = useState(true);
+  /**
+   * `books.json` 的下载进度，给加载遮罩用；`null` 表示响应还没到（连接、等首字节）。
+   * 每次 `fetchBooks` 开始时归零，重试时遮罩不会接着上一次的读数。
+   */
+  const [catalogProgress, setCatalogProgress] = useState<FetchProgress | null>(null);
   /**
    * 书架加载失败的类别（需求 13.7），`null` 表示没有失败。
    *
@@ -89,12 +97,19 @@ export const BookshelfPage: React.FC = () => {
     const isCurrent = () => loadGenerationRef.current === generation;
     setLoading(true);
     setError(null);
+    setCatalogProgress(null);
     try {
       /*
        * 404、2xx 但响应体不是 JSON（含 SPA 回退的 `index.html`）、其他非 2xx 与网络错误由
        * `fetchJson` 包装成三个错误类，分类见 `classifyLoadError`（需求 13.7）。
+       *
+       * 进度每个分片报一次；`sameShelfLoad` 是渲染闸门——遮罩上的 KB 数与百分比都取过整，
+       * 多数分片不改变显示，不必为它们重渲染整页。
        */
-      const data = await fetchJson<BooksCatalog>("/data/books.json");
+      const data = await fetchJson<BooksCatalog>("/data/books.json", undefined, (progress) => {
+        if (!isCurrent()) return;
+        setCatalogProgress((prev) => (sameShelfLoad(prev, progress) ? prev : progress));
+      });
       if (!isCurrent()) return;
 
       /*
@@ -344,6 +359,7 @@ export const BookshelfPage: React.FC = () => {
             />
           </div>
         </div>
+
       </header>
 
       {/* Main Content */}
@@ -369,7 +385,12 @@ export const BookshelfPage: React.FC = () => {
             )}
           </div>
           <div className="shrink-0 bg-white/10 backdrop-blur-md px-5 py-3 rounded-xl border border-white/10 text-center sm:text-right">
-            <div className="text-2xl font-black">{catalog?.count || 0}</div>
+            {/*
+              藏书数在 books.json 到位之前是未知的，不是 0：加载中与加载失败都显示一道横线。
+              原先一律写 0，慢网下首屏就是"精校藏书 0"，看着像书库是空的。
+              加载中这里不另放转圈：上面盖着加载遮罩，那里已经有一个。
+            */}
+            <div className="text-2xl font-black">{catalog ? catalog.count : "—"}</div>
             <div className="text-xs text-blue-100">{SITE.banner.countLabel}</div>
           </div>
         </div>
@@ -524,6 +545,9 @@ export const BookshelfPage: React.FC = () => {
           navigate(`/read/${encodeURIComponent(bookId)}?ch=${chapterId}`);
         }}
       />
+
+      {/* books.json 加载中盖住整页（含顶栏），下面的骨架照旧在。取舍见组件注释。 */}
+      {loading && <ShelfLoadingOverlay progress={catalogProgress} />}
     </div>
   );
 };

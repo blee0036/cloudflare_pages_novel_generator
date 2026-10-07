@@ -10,6 +10,7 @@ import {
   classifyLoadError,
   fetchJson,
   formatLoadErrorLog,
+  type FetchProgress,
   type LoadErrorCategory,
   type LoadStage,
   type ShelfLoadErrorCategory,
@@ -274,6 +275,131 @@ describe("fetchJson", () => {
           }
         }
       }),
+      { numRuns: 100 },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchJson：带进度上报（书架加载遮罩用）
+// ---------------------------------------------------------------------------
+
+/** 按给定分片构造响应体流：分片边界由测试控制，进度上报就能逐片核对。 */
+function chunkedResponse(chunks: Uint8Array[], init: ResponseInit = {}): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  return new Response(body, init);
+}
+
+/** 把 UTF-8 字节切成大小不等的若干片（可能切开多字节字符，解码要拼完再做）。 */
+function splitBytes(bytes: Uint8Array, cuts: number[]): Uint8Array[] {
+  const points = [...new Set(cuts.map((c) => c % (bytes.length + 1)))].sort((a, b) => a - b);
+  const out: Uint8Array[] = [];
+  let start = 0;
+  for (const point of [...points, bytes.length]) {
+    if (point > start) out.push(bytes.slice(start, point));
+    start = Math.max(start, point);
+  }
+  return out;
+}
+
+describe("fetchJson 带 onProgress", () => {
+  it("逐片上报已收字节数，先报一次 0；结果与不带进度时相同", async () => {
+    const text = JSON.stringify({ books: [{ id: "青石巷-夜行", title: "青石巷" }] });
+    const bytes = new TextEncoder().encode(text);
+    const chunks = splitBytes(bytes, [5, 17, 30]);
+    const reports: FetchProgress[] = [];
+    const fetchImpl: typeof fetch = () => Promise.resolve(chunkedResponse(chunks));
+
+    const got = await fetchJson("/data/books.json", fetchImpl, (p) => reports.push(p));
+
+    expect(got).toEqual(JSON.parse(text));
+    let sum = 0;
+    const expected = [0, ...chunks.map((c) => (sum += c.length))];
+    expect(reports.map((r) => r.received)).toEqual(expected);
+    expect(reports.every((r) => r.total === null)).toBe(true);
+  });
+
+  it.each<[string, Record<string, string>, number | null]>([
+    ["没有 Content-Encoding：取 Content-Length", { "content-length": "42" }, 42],
+    ["Content-Encoding: identity 同上", { "content-length": "42", "content-encoding": "identity" }, 42],
+    ["有传输压缩：Content-Length 是压缩后的长度，不用", { "content-length": "42", "content-encoding": "br" }, null],
+    ["Content-Length 不是数字", { "content-length": "unknown" }, null],
+    ["Content-Length 为 0", { "content-length": "0" }, null],
+    ["没有 Content-Length", {}, null],
+  ])("total：%s", async (_label, headers, total) => {
+    const reports: FetchProgress[] = [];
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(chunkedResponse([new TextEncoder().encode("[]")], { headers }));
+    await fetchJson("/data/books.json", fetchImpl, (p) => reports.push(p));
+    expect(reports.length).toBeGreaterThan(0);
+    expect(reports.every((r) => r.total === total)).toBe(true);
+  });
+
+  it("读响应体途中出错：以 NetworkError 拒绝，cause 为原错误", async () => {
+    const cause = new TypeError("network error");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"books":'));
+        controller.error(cause);
+      },
+    });
+    const fetchImpl: typeof fetch = () => Promise.resolve(new Response(body));
+    const e = rejectedWith(await settle(fetchJson("/data/books.json", fetchImpl, () => {})), NetworkError);
+    expect(e.cause).toBe(cause);
+    expect(e.url).toBe("/data/books.json");
+  });
+
+  // 与上面 Property 6 同一个参照模型：带不带进度，解析结果与三种错误都一样
+  it("对任意状态码、响应体与 fetch 拒绝：结果等于参照模型；任意切片方式下最后一次上报等于响应体字节数", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        requestUrl,
+        fetchOutcome,
+        fc.array(fc.nat(), { maxLength: 4 }),
+        async (url, outcome, cuts) => {
+          const reports: FetchProgress[] = [];
+          let bodyBytes = 0;
+          const fetchImpl: typeof fetch = () => {
+            if (outcome.kind === "reject") {
+              if (outcome.sync) throw outcome.cause;
+              return Promise.reject(outcome.cause);
+            }
+            if (outcome.body === null) return Promise.resolve(new Response(null, { status: outcome.status }));
+            const bytes = new TextEncoder().encode(outcome.body);
+            bodyBytes = bytes.length;
+            return Promise.resolve(chunkedResponse(splitBytes(bytes, cuts), { status: outcome.status }));
+          };
+          const got = await settle(fetchJson<unknown>(url, fetchImpl, (p) => reports.push(p)));
+
+          const want = expectedOutcome(outcome);
+          switch (want.kind) {
+            case "value":
+              expect(got).toEqual({ ok: true, value: want.value });
+              expect(reports.at(-1)?.received).toBe(bodyBytes);
+              break;
+            case "http":
+              expect(rejectedWith(got, HttpStatusError).status).toBe(want.status);
+              expect(reports).toEqual([]);
+              break;
+            case "format": {
+              const e = rejectedWith(got, ResponseFormatError);
+              expect(e.url).toBe(url);
+              expect((e.cause as Error).name).toBe("SyntaxError");
+              expect(reports.at(-1)?.received).toBe(bodyBytes);
+              break;
+            }
+            case "network":
+              expect(rejectedWith(got, NetworkError).cause).toBe(want.cause);
+              expect(reports).toEqual([]);
+              break;
+          }
+        },
+      ),
       { numRuns: 100 },
     );
   });
