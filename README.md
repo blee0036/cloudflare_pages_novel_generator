@@ -88,7 +88,7 @@
 | --- | --- |
 | Node.js | 20.19+、22.13+ 或 24+。用 wrangler 部署到 Cloudflare Pages 要 22+ |
 | Python | 3.x，已验证 3.14.6 |
-| 解压 `.rar` 的工具 | Windows 10/11 自带，不用装；macOS：`brew install unar`；Linux：`apt install unar` |
+| 解压 `.rar` 的工具 | Windows 10/11 自带，不用装；Linux：`apt install p7zip-full p7zip-rar`（p7zip-rar 在 Debian non-free / Ubuntu multiverse）；macOS：`brew install sevenzip`。不推荐 unar，它解部分 RAR5 包会失败 |
 
 `.zip`、`.7z`、`.tar`、`.tar.gz`、`.tgz` 不需要额外工具。
 

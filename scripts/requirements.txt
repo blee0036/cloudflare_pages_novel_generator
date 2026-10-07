@@ -24,9 +24,11 @@ zopfli==0.2.3
 
 # 另需的**非 Python** 依赖：
 # - 解压 .rar 需要一个外部工具。lib/archive.py 按此顺序在 PATH 上探测**一次**：
-#       unar / unrar / 7z / 7zz / 7za / bsdtar / tar
+#       7z / 7zz / unrar / bsdtar / tar / unar
 #   选中的那个若解压失败就直接报错，不再换下一个（不做多级回退）。
+#   推荐 p7zip：Linux 用 `apt install p7zip-full p7zip-rar`（p7zip-rar 在 Debian non-free /
+#   Ubuntu multiverse，没有它 7z 解不了 .rar）；macOS 用 `brew install sevenzip`（7zz）。
 #   Windows 10/11 自带的 C:\Windows\System32\tar.exe 即 bsdtar，libarchive 可读 rar/rar5，
-#   无需额外安装；macOS 用 `brew install unar`，Linux 用 `apt install unar`。
+#   无需额外安装。unar 排最后：它解部分 RAR5 包会失败，而同样的包 bsdtar 解得开。
 #   一个都没有时报错退出，并在信息里指出具体的源文件与修复方式，不静默跳过这本书。
 # - .zip / .tar / .tar.gz / .tgz 走标准库，无外部依赖；.7z 走上面的 py7zr。

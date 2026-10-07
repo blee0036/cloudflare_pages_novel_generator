@@ -411,8 +411,9 @@ def _extract_rar(archive_path: Path, dest_dir: Path) -> _Extracted:
                     f'解压 .rar 失败：{archive_path}',
                     f'  工具：{tool.name}（{tool.executable}）退出码 {proc.returncode}',
                     f'  输出：{detail or "（无）"}',
-                    '  该包很可能损坏、加密或用了此工具不支持的 RAR 变体；'
-                    '请手工确认后重新导出。不做多级回退。',
+                    *([_RAR_FAILURE_HINTS[tool.name]] if tool.name in _RAR_FAILURE_HINTS else []),
+                    '  该包可能损坏、加密或用了此工具不支持的 RAR 变体；'
+                    '请换一个工具手工确认后再处理。不做多级回退。',
                 ]
             )
         )
@@ -452,23 +453,37 @@ class _RarTool:
         return self._build(self.executable, archive_path, dest_dir)
 
 
-#: 候选工具，按"对 RAR 支持度 / 常见度"排序。**探测只做一次**：选中的那个
-#: 若解压失败就直接报错，不再换下一个（需求 7.7 的"不做多级回退"）。
-#: Windows 10/11 自带的 tar.exe 是 bsdtar，libarchive 能读 rar/rar5。
+#: 候选工具，按"对 RAR 支持度"排序。**探测只做一次**：选中的那个若解压失败就直接
+#: 报错，不再换下一个（需求 7.7 的"不做多级回退"）——所以顺序本身就是推荐顺序。
+#:
+#: - `7z`（p7zip-full + p7zip-rar）排第一，是推荐的工具；`7zz` 是 7-Zip 官方 Linux 版。
+#: - `unar` 排最后：实测它在一批 RAR5 包上报 "Attempted to read more data than was
+#:   available" 失败，而同一批包用 bsdtar 解出的大小与 CRC32 都和包头记录一致——包是好的，
+#:   是它的 RAR5 解码有问题。只在别的工具都没有时才用它。
+#: - 不收 `7za`：它是不带插件的独立版，不支持 RAR，选中它只会每本都失败。
+#: - Windows 10/11 自带的 tar.exe 是 bsdtar，libarchive 能读 rar/rar5；7-Zip 的安装程序
+#:   默认不把 7z.exe 加进 PATH，所以 Windows 上通常选中的是它。
 _RAR_CANDIDATES: Sequence[Tuple[str, Callable[[str, Path, Path], List[str]]]] = (
+    ('7z', lambda exe, archive, dest: [exe, 'x', '-y', f'-o{dest}', str(archive)]),
+    ('7zz', lambda exe, archive, dest: [exe, 'x', '-y', f'-o{dest}', str(archive)]),
+    ('unrar', lambda exe, archive, dest: [exe, 'x', '-y', str(archive), str(dest) + os.sep]),
+    ('bsdtar', lambda exe, archive, dest: [exe, '-xf', str(archive), '-C', str(dest)]),
+    ('tar', lambda exe, archive, dest: [exe, '-xf', str(archive), '-C', str(dest)]),
     (
         'unar',
         lambda exe, archive, dest: [
             exe, '-quiet', '-force-overwrite', '-output-directory', str(dest), str(archive),
         ],
     ),
-    ('unrar', lambda exe, archive, dest: [exe, 'x', '-y', str(archive), str(dest) + os.sep]),
-    ('7z', lambda exe, archive, dest: [exe, 'x', '-y', f'-o{dest}', str(archive)]),
-    ('7zz', lambda exe, archive, dest: [exe, 'x', '-y', f'-o{dest}', str(archive)]),
-    ('7za', lambda exe, archive, dest: [exe, 'x', '-y', f'-o{dest}', str(archive)]),
-    ('bsdtar', lambda exe, archive, dest: [exe, '-xf', str(archive), '-C', str(dest)]),
-    ('tar', lambda exe, archive, dest: [exe, '-xf', str(archive), '-C', str(dest)]),
 )
+
+#: 选中的工具解压失败时，按工具名补的一句排查提示。
+_RAR_FAILURE_HINTS: Dict[str, str] = {
+    '7z': '  p7zip 的 7z 要另装 p7zip-rar 才能解 .rar（Debian 在 non-free、Ubuntu 在 multiverse）；'
+          '没装时报 "Can not open the file as archive" 或 "Unsupported Method"。',
+    'unar': '  unar 解部分 RAR5 包会失败（"Attempted to read more data than was available"），'
+            '包本身多半是好的：装 p7zip-full + p7zip-rar 后重跑，预处理会优先用 7z。',
+}
 
 
 @lru_cache(maxsize=1)
@@ -488,10 +503,12 @@ def _rar_missing_message(archive_path: Path) -> str:
             f'解压 .rar 需要外部工具，但系统上一个都没找到：{archive_path}',
             f'  已在 PATH 上探测：{probed}',
             '  修复（任选其一，装好后确认在 PATH 上）：',
+            '    - Linux（推荐）：apt install p7zip-full p7zip-rar'
+            '（p7zip-rar 在 Debian non-free / Ubuntu multiverse）；'
+            '或 apt install libarchive-tools（bsdtar）',
+            '    - macOS：brew install sevenzip（7zz）',
             '    - Windows：系统自带 C:\\Windows\\System32\\tar.exe（bsdtar）即可；'
-            '若缺失可 winget install 7zip.7zip',
-            '    - macOS：brew install unar  或  brew install p7zip',
-            '    - Linux：apt install unar   或  apt install p7zip-full',
+            '若缺失可 winget install 7zip.7zip 并把 7z.exe 加进 PATH',
             '  这本书不会被跳过：缺依赖就报错退出，不静默降级、不做多级回退。',
         ]
     )

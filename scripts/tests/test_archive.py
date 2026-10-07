@@ -18,10 +18,11 @@ r"""`scripts/lib/archive.py` 的 `extract_txt_members`：一个包里有好几�
 from __future__ import annotations
 
 import io
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterator, Optional
 
 import pytest
 
@@ -121,3 +122,66 @@ def test_no_usable_txt_still_raises(tmp_path: Path, files: Dict[str, bytes], fra
     src = make_zip(tmp_path / 'pack.zip', files)
     with pytest.raises(archive.ArchiveError, match=fragment):
         archive.extract_txt_members(src, tmp_path / 'out')
+
+
+# ---------------------------------------------------------------------------
+# .rar 外部工具的探测顺序
+#
+# 只探测一次、选中就不换（不做多级回退），所以顺序就是推荐顺序：p7zip 的 7z 排第一，
+# unar 排最后（它解部分 RAR5 包会失败，同样的包 bsdtar 解得开）。
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fresh_probe() -> Iterator[None]:
+    """探测结果有缓存：前后各清一次，免得测试之间、测试与真实环境之间互相串。"""
+    archive._rar_tool.cache_clear()
+    yield
+    archive._rar_tool.cache_clear()
+
+
+def test_probe_order_prefers_7z_and_puts_unar_last():
+    names = [name for name, _ in archive._RAR_CANDIDATES]
+    assert names[0] == '7z'
+    assert names[-1] == 'unar'
+    assert '7za' not in names, '7za 是不带插件的独立版，解不了 .rar'
+
+
+@pytest.mark.parametrize(
+    ('installed', 'expected'),
+    [
+        ({'unar', '7z', 'tar'}, '7z'),
+        ({'unar', 'bsdtar'}, 'bsdtar'),
+        ({'unar', 'tar'}, 'tar'),
+        ({'unar'}, 'unar'),
+        (set(), None),
+    ],
+    ids=['7z-over-unar', 'bsdtar-over-unar', 'tar-over-unar', 'unar-only', 'none'],
+)
+def test_unar_is_used_only_when_nothing_else_is_installed(
+    monkeypatch: pytest.MonkeyPatch, fresh_probe: None, installed: set, expected: Optional[str]
+):
+    monkeypatch.setattr(
+        archive.shutil, 'which', lambda name: f'/usr/bin/{name}' if name in installed else None
+    )
+    tool = archive._rar_tool()
+    assert (tool.name if tool else None) == expected
+
+
+def test_a_7z_failure_points_at_p7zip_rar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    # p7zip 没装 p7zip-rar 时 7z 解不了 .rar：报错里直接说该装什么
+    failing = archive._RarTool('7z', sys.executable, lambda exe, *_: [exe, '-c', 'raise SystemExit(2)'])
+    monkeypatch.setattr(archive, '_rar_tool', lambda: failing)
+    src = tmp_path / 'pack.rar'
+    src.write_bytes(b'Rar!\x1a\x07\x01\x00')
+
+    with pytest.raises(archive.ArchiveError) as excinfo:
+        archive.extract_txt_members(src, tmp_path / 'out')
+    message = str(excinfo.value)
+    assert '退出码 2' in message and 'p7zip-rar' in message
+
+
+def test_the_missing_tool_message_recommends_p7zip(tmp_path: Path):
+    message = archive._rar_missing_message(tmp_path / 'pack.rar')
+    assert 'p7zip-full p7zip-rar' in message
+    assert '7z / 7zz / unrar / bsdtar / tar / unar' in message
