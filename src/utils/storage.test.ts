@@ -22,9 +22,12 @@ import {
   SliderKey,
   SliderSpec,
   normalizeSliderSettings,
+  normalizeSliderValue,
 } from "./sliderSettings";
 import { DEFAULT_MAX_BOOKS, MAX_MAX_BOOKS, MIN_MAX_BOOKS } from "./bookCache";
 import { READER_THEMES } from "./theme";
+import { type PageAnim, normalizePageAnim } from "./pageAnim";
+import type { ReaderSettings } from "../types";
 
 /**
  * 最小 localStorage 替身。`storage.ts` 只用到 `getItem` / `setItem` / `removeItem` /
@@ -90,6 +93,7 @@ describe("getStoredSettings 的滑杆归一（需求 6.5，D4）", () => {
     fontFamily: "system",
     contentWidth: 820,
     cacheMaxBooks: 10,
+    pageAnim: 3,
   };
 
   it("没有记录、记录坏掉或不是对象时，返回的默认值不变", () => {
@@ -164,7 +168,7 @@ describe("getStoredSettings 的滑杆归一（需求 6.5，D4）", () => {
 });
 
 describe("设置的读写往返（需求 6.4、6.5）", () => {
-  /** `ReaderSettings` 的白名单字段：读出的对象必须恰好是这 7 个键。 */
+  /** `ReaderSettings` 的白名单字段：读出的对象必须恰好是这 8 个键。 */
   const SETTING_KEYS = [
     "theme",
     "fontSize",
@@ -173,6 +177,7 @@ describe("设置的读写往返（需求 6.4、6.5）", () => {
     "fontFamily",
     "contentWidth",
     "cacheMaxBooks",
+    "pageAnim",
   ];
   const SLIDER_KEYS = Object.keys(SLIDER_SPECS) as SliderKey[];
 
@@ -199,6 +204,24 @@ describe("设置的读写往返（需求 6.4、6.5）", () => {
   const rawEnum = (valid: readonly string[]) =>
     fc.oneof(fc.constantFrom(...valid), fc.string(), fc.jsonValue());
 
+  /** 合法翻页模式编号 0–4（覆盖、滑动、仿真、滚动、无动画）。 */
+  const VALID_PAGE_ANIM: readonly PageAnim[] = [0, 1, 2, 3, 4];
+
+  /**
+   * `pageAnim` 在"磁盘"上可能的原始值（需求 1.2）：合法编号、越界整数、非整数（如 2.5）、
+   * 落盘后变成 `null` 的非有限数、数字串（`"2"` 不做宽松转换）、`null`、任意 JSON 值。
+   * 字段缺失（旧存储）同样由外层 `fc.record` 的 `requiredKeys: []` 覆盖。
+   */
+  const rawPageAnim: fc.Arbitrary<unknown> = fc.oneof(
+    fc.constantFrom(...VALID_PAGE_ANIM),
+    fc.oneof(fc.integer({ max: -1 }), fc.integer({ min: 5 })),
+    fc.double({ min: -1, max: 5, noNaN: true }).filter((x) => !Number.isInteger(x)),
+    fc.constantFrom(NaN, Infinity, -Infinity),
+    fc.constantFrom(...VALID_PAGE_ANIM).map(String),
+    fc.constant(null),
+    fc.jsonValue(),
+  );
+
   /** 旧版本遗留键（`viewMode`）与任意多余键；与白名单重名的键交给上面的字段生成器。 */
   const extraKeys = fc.dictionary(
     fc
@@ -219,6 +242,7 @@ describe("设置的读写往返（需求 6.4、6.5）", () => {
           letterSpacing: rawSliderValue(SLIDER_SPECS.letterSpacing),
           contentWidth: rawSliderValue(SLIDER_SPECS.contentWidth),
           cacheMaxBooks: rawSliderValue(SLIDER_SPECS.cacheMaxBooks),
+          pageAnim: rawPageAnim,
         },
         { requiredKeys: [] },
       ),
@@ -247,6 +271,112 @@ describe("设置的读写往返（需求 6.4、6.5）", () => {
       }),
       { numRuns: 100 },
     );
+  });
+
+  describe("pageAnim 的持久化往返（需求 1.1、1.2、1.8）", () => {
+    /** 读"磁盘"上那条原始设置记录，看写入侧到底落了哪些键、什么值。 */
+    const readDisk = () =>
+      JSON.parse(host.localStorage!.getItem(SETTINGS_KEY)!) as Record<string, unknown>;
+
+    /** 一个滑杆字段的合法值：区间内的网格点，经 `normalizeSliderValue` 消除浮点尾差。 */
+    const gridValue = (spec: SliderSpec) =>
+      fc
+        .integer({ min: 0, max: Math.round((spec.max - spec.min) / spec.step) })
+        .map((k) => normalizeSliderValue(spec, spec.min + k * spec.step));
+
+    /** 任意合法的 `ReaderSettings`：每个字段都已是归一的不动点。 */
+    const validSettings: fc.Arbitrary<ReaderSettings> = fc.record({
+      theme: fc.constantFrom(...READER_THEMES.map((t) => t.key)),
+      fontFamily: fc.constantFrom<ReaderSettings["fontFamily"]>("system", "serif", "kaiti"),
+      fontSize: gridValue(SLIDER_SPECS.fontSize),
+      lineHeight: gridValue(SLIDER_SPECS.lineHeight),
+      letterSpacing: gridValue(SLIDER_SPECS.letterSpacing),
+      contentWidth: gridValue(SLIDER_SPECS.contentWidth),
+      cacheMaxBooks: gridValue(SLIDER_SPECS.cacheMaxBooks),
+      pageAnim: fc.constantFrom(...VALID_PAGE_ANIM),
+    });
+
+    // Feature: reader-page-turn-modes, Property 1: pageAnim 归一与持久化往返（往返部分；归一见 pageAnim.test.ts）
+    // **Validates: Requirements 1.1, 1.8**
+    it("Feature: reader-page-turn-modes, Property 1: pageAnim 归一与持久化往返（往返部分）——合法设置存入后再读出，pageAnim 原样返回，磁盘上只有白名单键", () => {
+      fc.assert(
+        fc.property(validSettings, extraKeys, (s, extra) => {
+          // 调用方传入的对象上挂着遗留键或多余键，写入侧也要按白名单收拢
+          saveStoredSettings({ ...extra, ...s });
+
+          const disk = readDisk();
+          expect(Object.keys(disk).sort()).toEqual([...SETTING_KEYS].sort());
+          expect(disk.pageAnim).toBe(s.pageAnim);
+
+          // 刷新页面 = 重新读一次存储（需求 1.8）
+          const read = getStoredSettings();
+          expect(read.pageAnim).toBe(s.pageAnim);
+          expect(read).toStrictEqual(s);
+        }),
+        { numRuns: 100 },
+      );
+    });
+
+    // Feature: reader-page-turn-modes, Property 1: pageAnim 归一与持久化往返（往返部分；归一见 pageAnim.test.ts）
+    // **Validates: Requirements 1.1, 1.2, 1.8**
+    it("Feature: reader-page-turn-modes, Property 1: pageAnim 归一与持久化往返（往返部分）——任意落盘值读出为其归一值，写回后磁盘上只剩白名单键且 pageAnim 不再变化", () => {
+      fc.assert(
+        fc.property(rawSettings, (raw) => {
+          putRaw(SETTINGS_KEY, raw);
+          // 以真正落盘的值为准：NaN / ±Infinity 经 JSON 序列化后已变成 null，缺失则是 undefined
+          const stored = readDisk().pageAnim;
+
+          const s = getStoredSettings();
+          expect(VALID_PAGE_ANIM).toContain(s.pageAnim);
+          expect(s.pageAnim).toBe(normalizePageAnim(stored));
+
+          saveStoredSettings(s);
+          const disk = readDisk();
+          expect(Object.keys(disk).sort()).toEqual([...SETTING_KEYS].sort());
+          expect(disk.pageAnim).toBe(s.pageAnim);
+          expect(getStoredSettings().pageAnim).toBe(s.pageAnim);
+        }),
+        { numRuns: 100 },
+      );
+    });
+
+    it("旧存储没有 pageAnim 时读出 3（滚动），写回后磁盘上补齐为 3、遗留键消失", () => {
+      putRaw(SETTINGS_KEY, { theme: "dark", fontSize: 20, viewMode: "scroll" });
+
+      const s = getStoredSettings();
+      expect(s.pageAnim).toBe(3);
+      expect(s.theme).toBe("dark");
+      expect(s.fontSize).toBe(20);
+
+      saveStoredSettings(s);
+      const disk = readDisk();
+      expect(disk.pageAnim).toBe(3);
+      expect(disk).not.toHaveProperty("viewMode");
+      expect(Object.keys(disk).sort()).toEqual([...SETTING_KEYS].sort());
+    });
+
+    it('脏值（"2"、2.5、-1、5、null、NaN、true、[2]、{}）读出为 3，写回时被白名单收拢', () => {
+      for (const dirty of ["2", 2.5, -1, 5, null, NaN, true, [2], {}]) {
+        putRaw(SETTINGS_KEY, { theme: "eyecare", pageAnim: dirty, viewMode: "paged", 多余: 1 });
+
+        const s = getStoredSettings();
+        expect(s.pageAnim).toBe(3);
+        expect(s.theme).toBe("eyecare");
+
+        saveStoredSettings(s);
+        const disk = readDisk();
+        expect(disk.pageAnim).toBe(3);
+        expect(Object.keys(disk).sort()).toEqual([...SETTING_KEYS].sort());
+      }
+    });
+
+    it("0–4 存入后重新读取仍是同一模式", () => {
+      for (const anim of VALID_PAGE_ANIM) {
+        saveStoredSettings({ ...getStoredSettings(), pageAnim: anim });
+        expect(getStoredSettings().pageAnim).toBe(anim);
+        expect(readDisk().pageAnim).toBe(anim);
+      }
+    });
   });
 });
 

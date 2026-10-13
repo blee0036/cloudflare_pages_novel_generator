@@ -25,11 +25,13 @@
  * - 7.1：每种入口一个用例。以 `?from=…&ch=<起点>&note=…` 打开（`ch` 之外另带两个参数，其一含中文、空格与
  *   `&`、`=`、`?`），记下路径、参数与 `history.length`，执行一次换章，断言 8.1 的当前章节为目标、URL 恰有一个
  *   `ch` 且等于 `String(目标下标)`（十进制、无前导零），路径与 `ch` 以外的参数（键、值与先后顺序）不变，
- *   `history.length` 不变。入口：`→` / `←` 键、底栏"下一章 (→)" / "上一章 (←)"、章末"下一章" / "上一章"、
+ *   `history.length` 不变。入口：`→` / `←` 键、底栏"下一章 (→)" / "上一章 (←)"、
  *   章节进度滑杆（聚焦后按 `End`，方向键与 `End` 归滑杆自己）、目录点击、书签跳转（在 `before` 添加书签，
  *   `→` 到 `after`，经"我的书签"跳回）、检索跳转（`volumesKeyword` 最后一处位于另一个正文章节的命中）、
- *   `Space` 换章（先 `End`）。首次定位一个用例，依次以 `ch` 无效（`abc`）、缺省、指向卷节点、带前导零打开，
- *   `history.length` 的基准取导航前的值加 1（导航本身新增的那条）。
+ *   `Space` 连续滚过章界（先 `End` 到 `before` 章末，再按 `Space` 翻页滚动，直到判定线进入 `after`；滚动模式
+ *   的章节窗口只挂正文章节，`before` 的区段之下紧接 `after`，翻页模式需求 10.4）。正文末尾的章末导航卡已随
+ *   reader-page-turn-modes 删除（需求 12.8），不再是入口。首次定位一个用例，依次以 `ch` 无效（`abc`）、缺省、
+ *   指向卷节点、带前导零打开，`history.length` 的基准取导航前的值加 1（导航本身新增的那条）。
  * - 7.3：写回发生后 `scrollTop`、高亮与待恢复的位置不变。检索跳转（装 Controlled_Clock、书加载后暂停，顶栏与
  *   底栏在度量期间保持可见，高亮的 5 s 定时器也不走）：URL 写回为命中章节后满足需求 3.1（EV 9.2 的全部断言），
  *   再等一轮渲染，`scrollTop` 不变、高亮仍在。书签跳转：长章滚到第 k 段后添加书签，`→` 换章，经"我的书签"跳回，
@@ -41,9 +43,17 @@
  *   以 `?ch=<卷段末个卷节点>` 打开（归一后即 `after`），判定段落为 k，URL 写回为 `after`。
  * - 7.8：打开书架，记下 URL，点书卡"开始阅读"进入，`→`、`→`、`←` 换章 3 次（`history.length` 不变），浏览器后退
  *   一次：URL 与进入前相同，书架检索框可见。
- * - 7.9：长章滚到章中，`history.pushState` 把 `ch` 改为下一个正文章节并派发 `popstate`：渲染该章，章首
- *   （`scrollTop` 为 0）；另一例改为当前章节的下标：章节、`scrollTop` 与 URL 的 `ch` 都不变。两例的
- *   `history.length` 都只多出 `pushState` 那 1 条。
+ * - 7.9：长章滚到章中，`history.pushState` 把 `ch` 改为下一个正文章节并派发 `popstate`：渲染该章，章首；
+ *   另一例改为当前章节的下标：章节、`scrollTop` 与 URL 的 `ch` 都不变。两例的 `history.length` 都只多出
+ *   `pushState` 那 1 条。
+ *
+ * ## 章首（翻页模式 design §3.1、§13.3）
+ *
+ * 默认翻页模式是滚动：`<main>` 里按目录顺序挂着当前章前后的若干正文章节，每章一个
+ * `<section data-chapter-id>`。跳到某章后它的前一章仍挂在上方（读者向上滚能连续读到前一章，需求 10.7），
+ * 所以章首不是 `<main>` 的 `scrollTop` 为 0，而是当前章区段顶边对齐容器顶边：`readChapterScroll` 的
+ * `intoChapter`（`scrollTop − 区段顶边`）在 1 px 取整余量内为 0；有前一个正文章节时，紧挨在当前区段之上的
+ * 区段即为它。"滚到章中"同样以区段为界（章首之下再滚一屏），不用 `<main>` 的绝对 `scrollTop`。
  *
  * 等进度写入用真实时间（7.3 首次定位、7.4、7.5）：停止滚动后 1 s 防抖保存，轮询进度键直到出现本章、偏移 > 0 的
  * 记录（可观测条件，上限 `TIMEOUTS.wait`）。所选的书、章节、k 与读数记在注解 `url-plan`、`url-reading` 里。
@@ -51,8 +61,9 @@
 import type { Locator, Page } from "@playwright/test";
 import type { ReadingProgress } from "../../../src/types";
 import { PAGE_SIZE } from "../../../src/utils/pagination";
+import { KEY_TURN_GAP_MS } from "../../../src/utils/turnInput";
 import { PROGRESS_KEY_PREFIX, expect, test, type BookLog, type Lib } from "../../support/fixtures";
-import type { VolumeRun } from "../../support/library";
+import type { TocFacts, VolumeRun } from "../../support/library";
 import { NAMES, reader, readerJumpHighlight, searchDrawer, shelf, tocDrawer } from "../../support/locators";
 import {
   bookText,
@@ -64,6 +75,8 @@ import {
   openReader,
   openSearchDrawer,
   openTocDrawer,
+  readChapterScroll,
+  readCurrentRegion,
   readJudgeParagraph,
   readMainScroll,
   readSearchResults,
@@ -72,6 +85,7 @@ import {
   setMainScrollTop,
   waitFrames,
   type BookUnderTest,
+  type ChapterScroll,
   type JudgeReading,
 } from "../../support/reader";
 import { CLOCK_STEP_MS } from "../../support/settings";
@@ -88,8 +102,23 @@ const EXTRA_AFTER: [string, string] = ["note", "中 文&=?"];
 /** 检索结果的条数上限（EV 9.1）。 */
 const RESULT_CAP = 150;
 
-/** EV 10.12 的条件：剩余可滚距离 ≤ 2 px 时按 `Space` 换到下一章。 */
+/** 按 `End` 之后 `<main>` 的 `scrollTop` 与当前章章末（`readChapterScroll` 的 `chapterEnd`）之差的上限。 */
 const EDGE_PX = 2;
+
+/** 章首：当前章区段顶边与容器顶边之差（`intoChapter`）的取整余量。 */
+const CHAPTER_START_SLACK_PX = 1;
+
+/**
+ * `Space` 连续滚过章界时最多按几次。每次约滚一屏、保留一行（翻页模式需求 10.10），从章末出发通常
+ * 1–2 次就让判定线进入下一章；超过即视为失败。
+ */
+const MAX_SPACE_PRESSES = 6;
+
+/**
+ * 两次 `Space` 之间的等待：同方向翻页按键不足 `KEY_TURN_GAP_MS` 会被忽略（需求 11.6），这里多留
+ * 50 ms 余量。这是应用按真实时间计的闸门，只能按时长等；它同时覆盖 100 ms 基准的翻页滚动动画。
+ */
+const SPACE_GAP_MS = KEY_TURN_GAP_MS + 50;
 
 /** `settle` 在页面内做的 MessageChannel 往返次数。 */
 const SETTLE_ROUNDS = 3;
@@ -316,6 +345,60 @@ async function expectStillAtK(page: Page, k: number, before: JudgeReading, what:
   });
 }
 
+/** 紧挨在当前章区段之上的那个区段的 `data-chapter-id`；当前区段是窗口首章时为 null（测量）。 */
+function sectionAboveCurrent(page: Page): Promise<number | null> {
+  return reader(page).article.evaluate((article) => {
+    const above = article.closest("section[data-chapter-id]")?.previousElementSibling;
+    return above instanceof HTMLElement && above.matches("section[data-chapter-id]") ? Number(above.dataset.chapterId) : null;
+  });
+}
+
+/**
+ * 断言显示的是下标 `index` 的章首（见文件头"章首"）：当前章区段为 `index`，其顶边对齐 `<main>` 顶边
+ * （`intoChapter` 在 `CHAPTER_START_SLACK_PX` 内为 0）；有前一个正文章节时，它挂在当前区段的正上方。
+ * 导航落地与窗口收敛在随后几次提交里完成，以轮询等待。返回最后一次读数。
+ */
+async function expectAtChapterStart(page: Page, facts: TocFacts, index: number, what: string): Promise<ChapterScroll> {
+  const ordinal = facts.bodyOrdinals[index];
+  if (ordinal === null || ordinal === undefined) throw new Error(`下标 ${index} 不是正文章节`);
+  const prev = ordinal > 0 ? facts.bodyIndices[ordinal - 1] : null;
+  return step(
+    `${what}：显示下标 ${index} 的章首（区段顶边对齐 <main> 顶边，容差 ${CHAPTER_START_SLACK_PX} px）` +
+      (prev === null ? "" : `，前一个正文章节（下标 ${prev}）挂在上方`),
+    async () => {
+      let last: ChapterScroll | null = null;
+      let above: number | null = null;
+      try {
+        await expect
+          .poll(
+            async () => {
+              last = await readChapterScroll(page);
+              above = await sectionAboveCurrent(page);
+              return {
+                chapterId: last.chapterId,
+                atStart: Math.abs(last.intoChapter) <= CHAPTER_START_SLACK_PX,
+                above,
+              };
+            },
+            { message: `当前章区段、章首与上方区段（<main> 的 scrollTop 不为 0：上方挂着前一章）` },
+          )
+          .toEqual({ chapterId: index, atStart: true, above: prev });
+      } finally {
+        const r = last as ChapterScroll | null;
+        if (r !== null) {
+          test.info().annotations.push({
+            type: "url-reading",
+            description:
+              `${what}：当前章区段 ${r.chapterId}，<main> scrollTop ${r.scrollTop}、区段顶边 ${r.chapterStart}` +
+              `（intoChapter ${r.intoChapter}）；上方区段 ${String(above)}`,
+          });
+        }
+      }
+      return readChapterScroll(page);
+    },
+  );
+}
+
 /** 进度键中的记录；键不存在或不是合法 JSON 时为 null。 */
 async function readProgress(page: Page, bookId: string): Promise<Partial<ReadingProgress> | null> {
   const raw = await page.evaluate((key) => window.localStorage.getItem(key), `${PROGRESS_KEY_PREFIX}${bookId}`);
@@ -536,22 +619,6 @@ const ENTRIES: readonly ChangeEntry[] = [
     },
   },
   {
-    label: "章末导航“下一章”",
-    from: (p) => p.before,
-    act: async ({ page, plan }) => {
-      await step("点击正文章末的“下一章”", () => reader(page).nextChapterEndButton.click());
-      return plan.after;
-    },
-  },
-  {
-    label: "章末导航“上一章”",
-    from: (p) => p.after,
-    act: async ({ page, plan }) => {
-      await step("点击正文章末的“上一章”", () => reader(page).prevChapterEndButton.click());
-      return plan.before;
-    },
-  },
-  {
     label: "章节进度滑杆",
     from: (p) => p.before,
     act: async ({ page, plan }) => {
@@ -598,7 +665,7 @@ const ENTRIES: readonly ChangeEntry[] = [
         await drawer.tabBookmarks.click();
         await expect(drawer.bookmarkDeleteButtons, "书签条数").toHaveCount(1);
         const entry = drawer.bookmarkEntry(title);
-        await expect(entry, "页面上与该章节名完全相同的文本应只有条目标题一处").toHaveCount(1);
+        await expect(entry, "书签条目内与该章节名完全相同的文本应恰有标题一处").toHaveCount(1);
         await entry.click();
         await expect(drawer.marker, "目录抽屉应已关闭").toHaveCount(0);
       });
@@ -629,22 +696,55 @@ const ENTRIES: readonly ChangeEntry[] = [
     },
   },
   {
-    label: "Space（先 End）",
+    label: "Space 连续滚过章界（先 End）",
     from: (p) => p.before,
     act: async ({ page, plan }) => {
       await press(page, "End", "End");
-      await step(`前提：<main> 的剩余可滚距离 ≤ ${EDGE_PX} px（EV 10.12 的条件）`, async () => {
+      await step(`前提：在下标 ${plan.before} 的章末（<main> 的 scrollTop 与章末相差 ≤ ${EDGE_PX} px）`, async () => {
         await expect
           .poll(
             async () => {
-              const m = await readMainScroll(page);
-              return m.scrollHeight - m.clientHeight - m.scrollTop;
+              const s = await readChapterScroll(page);
+              return { chapterId: s.chapterId, atEnd: Math.abs(s.scrollTop - s.chapterEnd) <= EDGE_PX };
             },
-            { message: "<main> 的剩余可滚距离" },
+            { message: "当前章区段与是否位于章末" },
           )
-          .toBeLessThanOrEqual(EDGE_PX);
+          .toEqual({ chapterId: plan.before, atEnd: true });
       });
-      await step("按 Space", () => page.keyboard.press("Space"));
+      await step(
+        `按 Space 翻页滚动（每次间隔 ${SPACE_GAP_MS} ms，至多 ${MAX_SPACE_PRESSES} 次），直到判定线进入下标 ${plan.after}`,
+        async () => {
+          for (let i = 1; ; i++) {
+            // "向下滚了"以当前章区段为参照：判定线换章后窗口改以新章为锚，上方的章被卸载，锚点补偿会让
+            // <main> 的 scrollTop 整体变小，不能直接比较 scrollTop
+            const from = await readChapterScroll(page);
+            await page.keyboard.press("Space");
+            await expect
+              .poll(
+                async () => {
+                  const s = await readChapterScroll(page);
+                  return s.chapterId !== from.chapterId || s.intoChapter > from.intoChapter + CHAPTER_START_SLACK_PX;
+                },
+                { message: `第 ${i} 次 Space 后正文应向下滚动（自下标 ${from.chapterId} 章内 ${from.intoChapter} px）` },
+              )
+              .toBe(true);
+            // 等翻页滚动动画走完、同方向按键闸门放行（见 SPACE_GAP_MS）
+            await page.waitForTimeout(SPACE_GAP_MS);
+            const region = await readCurrentRegion(page);
+            test.info().annotations.push({
+              type: "url-reading",
+              description:
+                `第 ${i} 次 Space：自下标 ${from.chapterId} 章内 ${from.intoChapter} px，` +
+                `之后当前章区段 ${String(region?.chapterId)}（<main> scrollTop ${(await readMainScroll(page)).scrollTop}）`,
+            });
+            if (region?.chapterId === plan.after) return;
+            expect(region?.chapterId, `第 ${i} 次 Space 后当前章区段应仍为 ${plan.before} 或已为 ${plan.after}`).toBe(
+              plan.before,
+            );
+            expect(i, `按 ${MAX_SPACE_PRESSES} 次 Space 判定线仍未进入下标 ${plan.after}`).toBeLessThan(MAX_SPACE_PRESSES);
+          }
+        },
+      );
       return plan.after;
     },
   },
@@ -803,8 +903,9 @@ test.describe("RDF 7.3 写回不改变滚动位置、高亮与待恢复的位置
       const drawer = tocDrawer(page);
       await expect(drawer.marker).toBeVisible();
       await drawer.tabBookmarks.click();
+      await expect(drawer.bookmarkDeleteButtons, "书签条数").toHaveCount(1);
       const entry = drawer.bookmarkEntry(title);
-      await expect(entry, "页面上与该章节名完全相同的文本应只有条目标题一处").toHaveCount(1);
+      await expect(entry, "书签条目内与该章节名完全相同的文本应恰有标题一处").toHaveCount(1);
       await entry.click();
       await expect(drawer.marker, "目录抽屉应已关闭").toHaveCount(0);
     });
@@ -972,22 +1073,28 @@ async function pushChapter(page: Page, ch: number): Promise<void> {
   });
 }
 
-/** 打开长章，把 `<main>` 滚到章中（`scrollTop` 设为 `clientHeight`），返回 `history.length` 与滚动读数。 */
+/**
+ * 打开长章，把正文滚到章中：以读者操作把 `<main>` 的 `scrollTop` 设为本章章首（区段顶边）再加一屏
+ * （`clientHeight`）。上方挂着前一章，不能直接设为 `clientHeight`（那可能还在前一章里）。返回
+ * `history.length` 与滚动读数。
+ */
 async function openLongMiddle(page: Page, bookLog: BookLog, plan: LongPlan): Promise<{ history: number; scrollTop: number }> {
   await openReader(page, bookLog, plan.book, plan.chapter);
   await expectCurrentChapter(page, plan.book.facts, plan.chapter);
-  return step("把正文滚到章中（<main> 的 scrollTop 设为其 clientHeight）", async () => {
+  return step("把正文滚到章中（<main> 的 scrollTop 设为本章区段顶边 + clientHeight）", async () => {
     await expectDocumentNotScrollable(page);
-    await setMainScrollTop(page, (await readMainScroll(page)).clientHeight);
+    const start = await readChapterScroll(page);
+    await setMainScrollTop(page, Math.round(start.chapterStart) + start.clientHeight);
     await waitFrames(page);
-    const main = await readMainScroll(page);
-    expect(main.scrollTop, "<main> 的 scrollTop 应 > 0（章中）").toBeGreaterThan(0);
-    return { history: await historyLength(page), scrollTop: main.scrollTop };
+    const now = await readChapterScroll(page);
+    expect(now.chapterId, `当前章区段应仍为长章（下标 ${plan.chapter}）`).toBe(plan.chapter);
+    expect(now.intoChapter, "应已滚过本章章首（章中）").toBeGreaterThan(CHAPTER_START_SLACK_PX);
+    return { history: await historyLength(page), scrollTop: now.scrollTop };
   });
 }
 
 test.describe("RDF 7.9 应用内导航改 URL 的 ch", () => {
-  test("RDF 7.9 pushState + popstate 把 ch 改为另一个有效下标：跳转到该章节，显示章首（<main> 的 scrollTop 为 0），history.length 只多出 pushState 那 1 条", async ({
+  test("RDF 7.9 pushState + popstate 把 ch 改为另一个有效下标：跳转到该章节，显示章首（区段顶边对齐 <main> 顶边，上方挂着前一章），history.length 只多出 pushState 那 1 条", async ({
     page,
     lib,
     bookLog,
@@ -998,8 +1105,8 @@ test.describe("RDF 7.9 应用内导航改 URL 的 ch", () => {
     await expectCurrentChapter(page, plan.book.facts, plan.next);
     await settle(page, false);
     await expectDocumentNotScrollable(page);
-    await step("RDF 7.9 显示章首：<main> 的 scrollTop 为 0；history.length 为 pushState 之前加 1", async () => {
-      expect((await readMainScroll(page)).scrollTop, "<main> 的 scrollTop").toBe(0);
+    await expectAtChapterStart(page, plan.book.facts, plan.next, "RDF 7.9");
+    await step("RDF 7.9 history.length 为 pushState 之前加 1", async () => {
       expect(await historyLength(page), "history.length").toBe(start.history + 1);
     });
   });

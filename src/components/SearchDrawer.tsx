@@ -159,7 +159,7 @@ export const SearchDrawer: React.FC<SearchDrawerProps> = ({
         <div className="flex-1 overflow-y-auto divide-y divide-[var(--border)] p-2">
           {!keyword.trim() ? (
             <div className="py-20 text-center text-[var(--text-muted)] text-xs px-6">
-              输入关键词即可在整本小说几百万字中毫秒级全文检索
+              输入关键词，在整本书里查找
             </div>
           ) : searchResults.length === 0 ? (
             <div className="py-20 text-center text-[var(--text-muted)] text-xs">

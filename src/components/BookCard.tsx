@@ -1,7 +1,8 @@
 import React from "react";
-import { BookOpen, User, HardDrive, Clock } from "lucide-react";
+import { BookOpen, User, Clock, Download, RefreshCw, TriangleAlert } from "lucide-react";
 import { BookSummary, ReadingProgress } from "../types";
 import { isFilterableAuthor } from "../utils/bookSearch";
+import { useBookDownload } from "../hooks/useBookDownload";
 
 interface BookCardProps {
   book: BookSummary;
@@ -42,7 +43,20 @@ export const BookCard: React.FC<BookCardProps> = ({
     book.charCount > 10000
       ? `${(book.charCount / 10000).toFixed(1)}万字`
       : `${book.charCount}字`;
-  const gzSizeStr = `${(book.gzSize / (1024 * 1024)).toFixed(1)}MB`;
+  const download = useBookDownload(book);
+
+  /*
+    下载按钮只放图标：这一行还要放"章节目录"和"开始阅读"，四列网格下卡片只有两百多像素宽。
+    名称随状态变，读屏与悬停提示都能知道进行到哪了；百分比直接替换图标显示在按钮上。
+  */
+  const downloadName =
+    download.state.status === "loading"
+      ? `正在下载《${book.title}》${
+          download.state.progress.kind === "determinate" ? ` ${download.state.progress.pct}%` : ""
+        }`
+      : download.state.status === "failed"
+        ? `下载《${book.title}》失败，点击重试`
+        : `下载《${book.title}》`;
 
   return (
     <div className="group relative bg-[var(--card-bg)] rounded-2xl shadow-sm hover:shadow-xl border border-[var(--border)] transition-all duration-300 flex flex-col overflow-hidden">
@@ -53,13 +67,11 @@ export const BookCard: React.FC<BookCardProps> = ({
         {/* Subtle decorative background circle */}
         <div className="absolute -right-6 -bottom-6 w-28 h-28 rounded-full bg-white/10 blur-xl pointer-events-none" />
 
+        {/* 不显示文件大小：`books.json` 里只有压缩包大小（`gzSize`），下载下来的 TXT 要大两三倍，
+            不加说明地写出来只会误导；书有多长，下面的章数与字数已经说明了。 */}
         <div className="flex justify-between items-start z-10">
           <span className="text-[11px] font-medium tracking-wide uppercase px-2 py-0.5 rounded-full bg-black/20 backdrop-blur-md">
             全本精校
-          </span>
-          <span className="text-[11px] opacity-80 flex items-center bg-black/20 px-2 py-0.5 rounded-full">
-            <HardDrive className="w-3 h-3 mr-1" />
-            {gzSizeStr}
           </span>
         </div>
 
@@ -72,8 +84,8 @@ export const BookCard: React.FC<BookCardProps> = ({
             的 `<span>`：它要能被 Tab 到、被回车/空格触发，这两样浏览器只白送给按钮。
             `<p>` 里放 `<button>` 合法（按钮是 phrasing content）。
 
-            不加 `stopPropagation`：卡片的祖先元素上没有任何点击处理器——"章节目录"与
-            "开始阅读"是下方两枚独立按钮，封面区整块不可点，所以这里不存在会被连带触发的
+            不加 `stopPropagation`：卡片的祖先元素上没有任何点击处理器——"章节目录"、
+            "开始阅读"与下载是下方三枚独立按钮，封面区整块不可点，所以这里不存在会被连带触发的
             上层动作。若日后把整张卡做成可点，那时才需要拦。
           */}
           <p className="text-xs text-white/80 flex items-center mt-1">
@@ -142,11 +154,15 @@ export const BookCard: React.FC<BookCardProps> = ({
           )}
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex items-center space-x-2">
+        {/* Action Buttons
+
+            三枚按钮挤一行：网格在 768px 与 1024px 附近（三列 / 四列的下沿）卡片内容宽只有约 195px。
+            文字一律不折行；行宽不足 13.25rem 时去掉"开始阅读"前的图标，刚好放得下。
+            用容器查询而不是视口断点：卡片宽度随列数跳变，不随视口单调变化。 */}
+        <div className="@container flex items-center space-x-1.5">
           <button
             onClick={() => onOpenToc ? onOpenToc(book) : onRead(book.id)}
-            className="flex-1 py-2.5 px-3 rounded-xl text-xs font-semibold border border-[var(--border)] hover:bg-[var(--hover)] text-[var(--text)] transition-colors flex items-center justify-center space-x-1"
+            className="flex-1 py-2.5 px-2.5 whitespace-nowrap rounded-xl text-xs font-semibold border border-[var(--border)] hover:bg-[var(--hover)] text-[var(--text)] transition-colors flex items-center justify-center space-x-1"
             title="查看完整章节目录"
           >
             <span>章节目录</span>
@@ -154,7 +170,7 @@ export const BookCard: React.FC<BookCardProps> = ({
 
           <button
             onClick={() => onRead(book.id)}
-            className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-semibold flex items-center justify-center space-x-1.5 transition-all shadow-sm ${
+            className={`flex-1 py-2.5 px-2.5 whitespace-nowrap rounded-xl text-xs font-semibold flex items-center justify-center space-x-1.5 transition-all shadow-sm ${
               progress
                 ? "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20"
                 : /* 反色按钮：原先靠深色变体手工翻转（slate-900 ↔ slate-100），
@@ -162,8 +178,31 @@ export const BookCard: React.FC<BookCardProps> = ({
                   "bg-[var(--text)] text-[var(--bg)] hover:opacity-90"
             }`}
           >
-            <BookOpen className="w-3.5 h-3.5" />
+            <BookOpen className="w-3.5 h-3.5 @max-[13.25rem]:hidden" />
             <span>{progress ? "继续阅读" : "开始阅读"}</span>
+          </button>
+
+          {/* 整本下载（书架入口）：取正文的路径与打开这本书相同，见 utils/bookDownload.ts */}
+          <button
+            type="button"
+            onClick={download.start}
+            aria-label={downloadName}
+            title={downloadName}
+            aria-busy={download.state.status === "loading"}
+            className="shrink-0 self-stretch w-10 px-1 rounded-xl font-semibold border border-[var(--border)] hover:bg-[var(--hover)] text-[var(--text)] transition-colors flex items-center justify-center tabular-nums"
+          >
+            {download.state.status === "loading" ? (
+              download.state.progress.kind === "determinate" ? (
+                // 定宽 40px 里放得下 "100%"：字号压到 10px，按钮不会在下载途中变宽把旁边两枚挤折行
+                <span className="text-[10px]" aria-hidden="true">{download.state.progress.pct}%</span>
+              ) : (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+              )
+            ) : download.state.status === "failed" ? (
+              <TriangleAlert className="w-3.5 h-3.5" aria-hidden="true" />
+            ) : (
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+            )}
           </button>
         </div>
       </div>

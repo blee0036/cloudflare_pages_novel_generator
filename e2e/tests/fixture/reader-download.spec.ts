@@ -17,7 +17,7 @@
  * ## 下载与请求的观测
  *
  * 每个用例都是新的浏览器上下文，经 `openReader` 打开 `/read/<id>`（等到本次导航的 `[book-load]` 行与
- * 正文 `<h1>`，即"正文加载完成"），点顶栏"阅读设置 (快捷键: S)"打开设置抽屉，核对"下载 UTF-8 纯文本"
+ * 正文 `<h1>`，即"正文加载完成"），点顶栏"阅读设置 (快捷键: S)"打开设置抽屉，核对"下载 TXT 文件"
  * 可用后点击它。
  *
  * - 下载事件：`page.on("download")` 计数，`page.waitForEvent("download")` 取第一次。下载完成（`saveAs`
@@ -135,7 +135,7 @@ function originOf(url: string): string | null {
 }
 
 /**
- * 10.1 的 WHEN：打开设置抽屉，核对"下载 UTF-8 纯文本"可用，点击它；记录下载事件与期间的请求，
+ * 10.1 的 WHEN：打开设置抽屉，核对"下载 TXT 文件"可用，点击它；记录下载事件与期间的请求，
  * 等下载完成并另存到本用例的输出目录，读回全部字节。
  */
 async function downloadWholeBook(
@@ -149,7 +149,7 @@ async function downloadWholeBook(
     await reader(page).settingsButton.click();
     await expect(drawer.marker).toBeVisible();
   });
-  await step("“下载 UTF-8 纯文本”按钮可用（正文已就绪）", async () => {
+  await step("“下载 TXT 文件”按钮可用（正文已就绪）", async () => {
     await expect(drawer.downloadButton).toBeEnabled();
   });
 
@@ -168,7 +168,7 @@ async function downloadWholeBook(
   context.on("request", onRequest);
   page.on("download", onDownload);
   try {
-    const download = await step("点击“下载 UTF-8 纯文本”，等到下载事件（期间记录请求）", async () => {
+    const download = await step("点击“下载 TXT 文件”，等到下载事件（期间记录请求）", async () => {
       const first = page.waitForEvent("download", { timeout: TIMEOUTS.wait });
       // 点击本身失败时不留下未处理的拒绝；成功路径仍 await 同一个 Promise
       void first.catch(() => undefined);
@@ -260,7 +260,7 @@ function hexOf(bytes: Uint8Array): string {
 // 10.1 下载次数、文件名与请求
 // ---------------------------------------------------------------------------
 
-test("10.1 正文加载完成后在设置抽屉点击“下载 UTF-8 纯文本”：恰好 1 次下载，建议文件名等于 bookTxtFileName(_toc.json 的 title)，点击到下载事件期间 E2E_Server 未收到请求", async ({
+test("10.1 正文加载完成后在设置抽屉点击“下载 TXT 文件”：恰好 1 次下载，建议文件名等于 bookTxtFileName(_toc.json 的 title)，点击到下载事件期间 E2E_Server 未收到请求", async ({
   page,
   context,
   lib,

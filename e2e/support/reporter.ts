@@ -257,7 +257,7 @@ const perfSection: SectionProvider = async ({ cases, startedAt }) => {
 
 /**
  * "A11y_Scan"（15.4、15.5、15.9，任务 20.5）：整理与渲染都在 `a11y/report.ts` 的纯函数里，这里只把
- * `A11Y_SCANS`（顺序即该节 31 个分节的顺序）与本次的 `CaseFacts` 交给它。结果只取本次运行的
+ * `A11Y_SCANS`（顺序即该节 36 个分节的顺序）与本次的 `CaseFacts` 交给它。结果只取本次运行的
  * `a11y-result` 附件，不读 `e2e/.out/a11y/`（globalSetup 不清空该目录，会混入上一次运行的文件）。
  * 本函数只写该节，结果不参与退出码；违规由 `a11y.spec.ts` 的断言使所在用例失败（RDF 15.2，取代
  * EV 1.7 中 A11y_Scan 违规不影响退出码的规定），经用例结果计入退出码。

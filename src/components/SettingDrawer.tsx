@@ -6,6 +6,8 @@ import { clearBookCache, isCacheDegraded, normalizeMaxBooks } from "../utils/boo
 import { listCachedBooks } from "../utils/indexedDB";
 import { CacheUsage, formatByteSize, summarizeCacheUsage } from "../utils/cacheUsage";
 import { SLIDER_SPECS } from "../utils/sliderSettings";
+import { PAGE_ANIM_OPTIONS, showsReducedMotionHint } from "../utils/pageAnim";
+import { useReducedMotion } from "../hooks/useReducedMotion";
 
 interface SettingDrawerProps {
   isOpen: boolean;
@@ -69,6 +71,21 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
   const fontSizeId = useId();
   const lineHeightId = useId();
   const contentWidthId = useId();
+
+  /*
+    "翻页模式"选项组（需求 1.3、1.4、9.5、9.6）。
+
+    组名用 `aria-labelledby` 指向可见标题，与滑杆用 `<label htmlFor>` 同一个理由：名称就是读者
+    看到的那几个字。减弱动态效果的提示经 `aria-describedby` 挂到组上，读屏进入组时一并读出，
+    解释"为什么选了覆盖却没有动画"。
+
+    `useReducedMotion()` 订阅系统设置的变化，抽屉开着时切换系统开关，提示随即出现或消失。
+    所选模式照常标示（需求 9.5）：提示只说明本次不播动画，不改 `pageAnim`。
+    两者都是 hook，与上面的 `useId()` 一样必须在 `if (!isOpen) return null` 之前调用。
+  */
+  const pageAnimLabelId = useId();
+  const pageAnimHintId = useId();
+  const reducedMotion = useReducedMotion();
 
   /*
     卸载标记。`listCachedBooks()` 是异步的，而抽屉关掉后阅读器整页也可能被卸载（切书、
@@ -154,6 +171,7 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
     `normalizeMaxBooks`，对归一后的整数是恒等，留着是与 `bookCache.ts` 的淘汰计算同一口径。
   */
   const maxBooks = normalizeMaxBooks(settings.cacheMaxBooks);
+  const showPageAnimHint = showsReducedMotionHint(settings.pageAnim, reducedMotion);
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end">
@@ -314,6 +332,55 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
             </div>
           </div>
 
+          {/* 3b. 翻页模式 (Page_Mode) — 需求 1.3–1.5、9.5、9.6
+
+              按钮顺序就是 `PAGE_ANIM_OPTIONS` 的数组顺序（覆盖、滑动、仿真、滚动、无动画）。
+              选中态用 `aria-pressed` 告诉辅助技术（需求 1.4），视觉与上面的字体按钮相同。
+              一行 5 列：最长的"无动画"三个字在最窄的抽屉（85vw）里也放得下，不必折行。 */}
+          <div>
+            <div
+              id={pageAnimLabelId}
+              className="text-xs font-semibold text-[var(--text-muted)] flex items-center mb-2"
+            >
+              翻页模式
+            </div>
+            <div
+              role="group"
+              aria-labelledby={pageAnimLabelId}
+              aria-describedby={showPageAnimHint ? pageAnimHintId : undefined}
+              className="grid grid-cols-5 gap-2"
+            >
+              {PAGE_ANIM_OPTIONS.map(({ value, label }) => {
+                const isSelected = settings.pageAnim === value;
+                return (
+                  <button
+                    key={value}
+                    aria-pressed={isSelected}
+                    onClick={() => onUpdateSettings({ pageAnim: value })}
+                    className={`py-2 text-xs rounded-lg border font-medium transition-all ${
+                      isSelected
+                        ? "border-[var(--accent)] bg-blue-500/10 font-bold"
+                        : "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text)]"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {/* 需求 9.6：只在减弱动态效果成立且所选为覆盖、滑动、仿真时出现。
+                字号与颜色同下方"下载整本"的说明文字（11px、`--text-muted`），那一行在 5 套主题的
+                设置抽屉对比度扫描里已在场，这里不另立一个未经扫描的配色。 */}
+            {showPageAnimHint && (
+              <p
+                id={pageAnimHintId}
+                className="mt-2 text-[11px] text-[var(--text-muted)] leading-snug"
+              >
+                系统已开启减弱动态效果，翻页不播放动画
+              </p>
+            )}
+          </div>
+
           {/* 4. 行距、字间距与版心宽度 (Line Height & Letter Spacing & Width) */}
           <div className="space-y-4 pt-2 border-t border-[var(--border)]">
             <div>
@@ -400,7 +467,7 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
             {degraded && (
               <p className="text-[11px] text-[var(--text-muted)] flex items-start leading-snug">
                 <TriangleAlert className="w-3.5 h-3.5 mr-1.5 mt-px shrink-0" />
-                <span>本次会话未能写入离线缓存，阅读不受影响；清空后可再次尝试。</span>
+                <span>这次没能把书存进离线缓存，阅读不受影响；清空缓存后可以再试。</span>
               </p>
             )}
 
@@ -448,10 +515,8 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
 
           {/* 6. 整本下载 (Download whole book) — 需求 9.1 / 差异表 C21
 
-              为什么入口在这里，不在悬浮顶栏：顶栏已经挂了书签、目录、检索、设置、全屏五个
-              图标按钮加一个百分比胶囊，窄屏上书名本来就在 `truncate`，第六个按钮要从书名
-              再夺走 40px；而下载是一次性的、有意图的动作，不是随时要按的阅读控制。放在抽屉
-              里还换来两样图标按钮给不了的东西：文件名能写出来给读者确认，失败能有一句话解释。
+              顶栏另有一个下载图标（同一个回调），这里是带说明的那个入口：图标按钮给不了的
+              两样东西在这里——文件名能写出来给读者确认，失败能有一句话解释。
 
               紧跟"离线缓存"也是有意的——两者回答的是同一个问题"把这本书留在我机器上"，
               一个是给浏览器自己用的缓存，一个是给读者拿走的文件。 */}
@@ -477,16 +542,16 @@ export const SettingDrawer: React.FC<SettingDrawerProps> = ({
               className="w-full py-2 text-xs rounded-lg border border-[var(--border)] font-medium flex items-center justify-center hover:bg-[var(--hover)] disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5 mr-1.5" />
-              下载 UTF-8 纯文本
+              下载 TXT 文件
             </button>
 
             <p className="text-[11px] text-[var(--text-muted)] leading-snug">
-              由当前已加载的正文直接生成，不再向服务器请求。
+              整本保存为一个文件，可以用其他阅读软件打开。
             </p>
 
             {downloadError && (
               <p className="text-[11px] text-red-500" role="alert">
-                生成文件失败，可能是内存不足；关掉几个标签页后重试。
+                保存失败，请关掉几个标签页后重试。
               </p>
             )}
           </div>

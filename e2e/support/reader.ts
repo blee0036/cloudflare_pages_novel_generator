@@ -6,9 +6,18 @@
  * | `bookUnderTest(lib, id)` | 取 `_toc.json` 推导的 `TocFacts` 与 gz 字节数；gz ≥ `BIG_BOOK_GZ_BYTES` 时把本用例超时设为 `TIMEOUTS.bigBookTest`，并给出等待加载的上限（6.8） |
  * | `readerPath(id, ch?)` | `/read/<id>`（可带 `?ch=`），书 id 经百分号编码 |
  * | `openReader(page, bookLog, book, ch?)` | 导航到阅读器，等本次导航的 `[book-load]` 行与正文 `<h1>` |
- * | `expectCurrentChapter(page, facts, index)` | 8.1 的"当前章节"判定（其余各条所说的当前章节均按此判定），并等到 URL 的 `ch` 写回为该下标（reader-defect-fixes 需求 7.1） |
+ * | `readCurrentRegion(page)` | 当前章 / 当前页的区域（带 `data-current="true"` 的 `section[data-chapter-id]` 或分页图层）及其章号（翻页模式任务 21.2 起） |
+ * | `expectCurrentChapter(page, facts, index)` | 8.1 的"当前章节"判定（其余各条所说的当前章节均按此判定），以当前章区域为界，并等到 URL 的 `ch` 写回为该下标（reader-defect-fixes 需求 7.1） |
  * | `urlChapterParams(page)` | 页面 URL 中 `ch` 查询参数的全部取值（读 `page.url()`） |
  * | `readChapterPosition(page)` | 读"第 N / M 章"的 N、M |
+ * | `PAGE_MODES` / `pageModeSpec(anim)` | 五种翻页模式的编号、设置抽屉按钮文字与 `<main data-page-mode>` 取值（翻页模式需求 1.3） |
+ * | `seedPageMode(context, anim)` | 首次导航之前把已存储的 `pageAnim` 写为 `anim`（`addInitScript`，与 `seedTheme` 同一口径） |
+ * | `selectPageMode(page, anim, options?)` | 经设置抽屉"翻页模式"选项组切换，核对 `aria-pressed`、`data-page-mode` 与存储的 `pageAnim`（需求 1.4、1.5） |
+ * | `readStoredPageAnim(page)` | localStorage 设置键里的 `pageAnim` 原值 |
+ * | `readPagedView(page)` / `waitPageTurnSettled(page)` | 读分页视图的 `data-page-mode`、`data-turning`、`data-paginated` 与当前页的 `data-page-*`；等 `data-turning="false"` 且当前页就位 |
+ * | `TAP_ZONES` / `TAP_ZONE_ACTIONS` / `tapZoneCenter(page, zone)` | 九宫格的 9 区、各区的动作（需求 5.2–5.4），按区中心点击 `<main>`（含"点 MC 唤出控制栏"） |
+ * | `readControlsVisible(page)` | 顶栏与底栏的滑入滑出过渡结束后，两者是否完整位于视口内 |
+ * | `reshowControls(page)` | 重新亮起控制栏：可见时先点 MC 隐藏再点 MC 唤出，不可见时点一次 MC；返回时控制栏可见、4.5 s 自动隐藏刚开始计时 |
  * | `openTocDrawer(page)` | 点顶栏"章节目录 (快捷键: T)"打开目录抽屉 |
  * | `readTocList(page)` | 目录抽屉列表的度量快照：等已挂载行集合连续 2 帧不变后返回每行的下标、标签、文本、标题文本及其是否可见、`tabIndex`、`aria-current` 与位置，以及列表内容的总高度 |
  * | `scrollTocList(page, position)` | 把目录抽屉列表直接滚到顶部、中部或底部（8.7 的三处取样位置），等到 `scroll` 事件 |
@@ -18,14 +27,15 @@
  * | `findOccurrences(book, keyword, limit?)` | 关键词在全书中不区分大小写、互不重叠的出现次数 K 与前 `limit` 处的偏移（9.1） |
  * | `openSearchDrawer(page)` | 点顶栏"全书内容检索 (快捷键: F)"打开检索抽屉 |
  * | `readSearchResults(page)` | 检索抽屉结果列表的度量快照：每条的章节名、命中文字及其前后片段 |
- * | `readMainScroll(page)` / `setMainScrollTop(page, top)` | 读 / 设正文滚动容器（`<main>`）的滚动位置 |
+ * | `readMainScroll(page)` / `setMainScrollTop(page, top, options?)` | 读 / 设正文滚动容器（`<main>`）的滚动位置；设定时默认先以一次 `wheel` 标记为读者操作 |
+ * | `readChapterScroll(page)` | 滚动模式下以当前章区段（`section[data-chapter-id]`）为界的滚动位置：章首、章末对应的 `scrollTop` |
  * | `readDocumentScroll(page)` / `setDocumentScrollTop(page, top)` | 读 / 设文档滚动元素的滚动位置（书架页由文档滚动；阅读器正文分支里文档不可滚） |
  * | `expectDocumentNotScrollable(page)` | 需求 2.1：文档滚动元素的最大可滚距离 ≤ 1 px（阅读器的滚动断言之前调用，reader-defect-fixes 14.2） |
  * | `waitFrames(page, n?)` | 等 n 个动画帧（"不变"类断言前的等待；不能与 Controlled_Clock 同用） |
- * | `readJudgeParagraph(page)` | 9.5 的判定段落序号及其所依据的几何量（判定线、可视高度、正文高度、`<main>` 的滚动位置）（任务 10.5 起；10.6 复用） |
+ * | `readJudgeParagraph(page)` | 9.5 的判定段落序号及其所依据的几何量（判定线、可视高度、正文高度、`<main>` 的滚动位置、当前章区段的章首章末）（任务 10.5 起；10.6 复用） |
  * | `judgeScrollTarget(reading, k)` | 使判定段落成为第 k 段的目标 `<main>.scrollTop` |
- * | `scrollJudgeParagraphTo(page, k)` | 把判定段落滚到第 k 段：核对文档不可滚，设定 `<main>` 的 `scrollTop`，等到 `scroll` 事件，核对序号为 k |
- * | `readParagraphStarts(page, lib, bookId, chapter)` / `paragraphRange(starts, k)` | 当前章各正文段落的章内起点（由全书文本与渲染出的段落文本推导），与第 k 段的章内偏移范围（reader-defect-fixes 需求 3.2、3.4） |
+ * | `scrollJudgeParagraphTo(page, k)` | 把判定段落滚到第 k 段：核对文档不可滚，以读者操作设定 `<main>` 的 `scrollTop`，等到 `scroll` 事件，核对序号为 k 且仍在同一章 |
+ * | `readParagraphStarts(page, lib, bookId, chapter)` / `paragraphRange(starts, k)` | 当前章区段各正文段落的章内起点（由全书文本与渲染出的段落文本推导），与第 k 段的章内偏移范围（reader-defect-fixes 需求 3.2、3.4） |
  * | `expectOffsetInParagraph(starts, k, offset, what)` | 断言章内偏移落在第 k 段的范围内：不小于该段起点、小于下一段起点（需求 3.2、3.4） |
  * | `openBookmarkList(page)` | 打开目录抽屉并切到"我的书签"页签（任务 10.6 起） |
  * | `readBookmarkEntries(page)` | "我的书签"列表的度量快照：每条的章节名与预览文字（任务 10.6 起） |
@@ -34,10 +44,20 @@
  *
  * - 期望值一律来自 `TocFacts`（4.4）：下标、标题、正文序号都不写字面量。
  * - 元素经 `locators.ts` 定位（D8）；`countExactText` 与 `readTocList` 是只读的测量性 DOM 遍历，
- *   不用于定位要操作的元素。
- * - 顶栏与底栏在阅读器内导航（换章）后 4.5 s 自动隐藏（`ReaderPage` 的 `triggerShowControls`），
- *   隐藏时平移到视口之外、不可点击；页面刚加载完成时两者可见且不会自动隐藏。需要点击栏内按钮的
- *   步骤应紧跟在加载或换章之后。
+ *   不用于定位要操作的元素。设置抽屉的"翻页模式"选项组在 `locators.ts` 里还没有条目，这里按
+ *   role（`group`）与可访问名称就地定位（`pageModeButton`），同样不用 CSS 选择器。
+ * - **当前章以区段为界**（翻页模式 design §7.1、§13.3）：滚动模式的 `<main>` 里同时挂着若干章，每章
+ *   一个 `<section data-chapter-id>`，判定线所在章的区段带 `data-current="true"`；分页模式的当前页
+ *   图层同样带 `data-current="true"` 与 `data-chapter-id`，`<main>` 里另有整章的测量盒。读当前章、
+ *   章内偏移与滚动位置的函数一律以这个区域为界（经 `reader(page).article` 向上找到它），不再以整个
+ *   `<main>` 为界：`<main>` 的 `scrollTop = 0` 不再是章首，章首是区段顶边对齐容器顶边（design §3.1）。
+ * - **控制栏**：顶栏与底栏显示后 4.5 s 自动隐藏（`ReaderPage` 的 `triggerShowControls`），隐藏时平移到
+ *   视口之外、不可点击。启动这个计时的是：点正文九宫格的 MC 区（中间一格，需求 5.4）、换章等导航
+ *   （底栏按钮、目录、滑杆、滚动模式的 `←`/`→`、检索与书签跳转）、点顶栏。翻页（Tap、按键、滚轮）
+ *   不启动它（需求 11.16）。点正文其余 8 区只翻页、不唤出控制栏
+ *   （需求 5.11）；控制栏可见时点正文任一区只隐藏控制栏、不翻页也不重新计时（需求 5.9）。所以"点一下
+ *   正文让控制栏亮起"不再成立，要用 `reshowControls`（可见时 MC 两下，不可见时 MC 一下）。页面刚加载
+ *   完成时两者可见且不会自动隐藏；需要点击栏内按钮的步骤应紧跟在加载、换章或 `reshowControls` 之后。
  * - `readTocList`、`readDetailGrid` 以 `requestAnimationFrame` 判定稳定，不能在装了 Controlled_Clock
  *   的页面上使用（rAF 随时钟停住）。`scrollTocList`、`scrollDetailGrid` 等的是 `scroll` 事件，同样
  *   不能与 Controlled_Clock 同用。
@@ -46,11 +66,13 @@ import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { gunzip } from "node:zlib";
 import { expect, test } from "@playwright/test";
-import type { Locator, Page } from "@playwright/test";
+import type { BrowserContext, Locator, Page } from "@playwright/test";
 import { ROW_HEIGHT } from "../../src/utils/listWindow";
-import type { BookLog, Lib } from "./fixtures";
+import { PAGE_ANIM, PAGE_ANIM_OPTIONS, type PageAnim, type RenderFamily } from "../../src/utils/pageAnim";
+import type { TapZone } from "../../src/utils/tapZone";
+import { READER_SETTINGS_KEY, type BookLog, type Lib } from "./fixtures";
 import type { TocFacts } from "./library";
-import { detailModal, reader, searchDrawer, tocDrawer } from "./locators";
+import { detailModal, reader, searchDrawer, settingsDrawer, tocDrawer } from "./locators";
 import { BIG_BOOK_GZ_BYTES, TIMEOUTS } from "./settings";
 import { step } from "./step";
 
@@ -111,9 +133,34 @@ export async function openReader(
 // 当前章节（8.1）
 // ---------------------------------------------------------------------------
 
-/** 正文区（`<main>`，不含其自身）内去掉首尾空白后文本与 `text` 完全相同的元素个数（测量）。 */
+/** 当前章 / 当前页的区域（见文件头"当前章以区段为界"）。 */
+export interface CurrentRegion {
+  /** `section`：滚动模式的当前章区段；`page`：分页模式的当前页图层。 */
+  kind: "section" | "page";
+  /** 区域的 `data-chapter-id`：章节在 `toc.chapters[]` 中的下标。 */
+  chapterId: number;
+}
+
+/**
+ * 读 `<main>` 内带 `data-current="true"` 与 `data-chapter-id` 的那个区域（测量）。整页至多一个；
+ * 没有时（分页模式尚未分页完成、滚动模式首帧）为 null。只读，不等待。
+ */
+export function readCurrentRegion(page: Page): Promise<CurrentRegion | null> {
+  return reader(page).main.evaluate((main) => {
+    const el = main.querySelector<HTMLElement>('[data-current="true"][data-chapter-id]');
+    if (el === null) return null;
+    return { kind: el.tagName === "SECTION" ? "section" : "page", chapterId: Number(el.dataset.chapterId) };
+  });
+}
+
+/**
+ * 当前章区域（滚动模式的 `section[data-chapter-id]`、分页模式的当前页图层，不含其自身）内去掉首尾空白
+ * 后文本与 `text` 完全相同的元素个数（测量）。区域由 `reader(page).article` 向上找；窗口里的其余章与
+ * 分页测量盒都不计入。
+ */
 function countExactText(page: Page, text: string): Promise<number> {
-  return reader(page).main.evaluate((root, wanted) => {
+  return reader(page).article.evaluate((article, wanted) => {
+    const root = article.closest("[data-chapter-id]") ?? article;
     let n = 0;
     for (const el of Array.from(root.querySelectorAll("*"))) {
       if ((el.textContent ?? "").trim() === wanted) n += 1;
@@ -128,9 +175,13 @@ export function urlChapterParams(page: Page): string[] {
 }
 
 /**
- * 断言当前章节为下标 `index` 的节点（8.1）：正文区（`<main>`，不含顶栏与底栏）的一级标题文本
- * 等于该节点标题；"第 N / M 章"的 N 为该节点在非卷节点中的序号（从 1 起）、M 为非卷节点数；
- * 正文区内去掉首尾空白后与标题完全相同的元素恰好 1 个。`index` 须为正文章节。
+ * 断言当前章节为下标 `index` 的节点（8.1）：当前章区域（`data-current="true"` 的区段或页面图层，
+ * 见 `readCurrentRegion`）的 `data-chapter-id` 为 `index`；其中的一级标题文本等于该节点标题；
+ * "第 N / M 章"的 N 为该节点在非卷节点中的序号（从 1 起）、M 为非卷节点数；区域内去掉首尾空白后
+ * 与标题完全相同的元素恰好 1 个。`index` 须为正文章节。
+ *
+ * 标题区只在章首：滚动模式下每个区段都有，分页模式下只在本章第 1 页（需求 2.2），分页模式的其余页
+ * 改用 `readPagedView` 的 `data-chapter-id` 判定。
  *
  * 另轮询 URL：`ch` 参数恰有一个，值为 `String(index)`（十进制、无前导零）。阅读器在每次定位（首次
  * 定位与各种换章）后以替换历史记录的方式把当前章写回 URL（reader-defect-fixes 需求 7.1、D2）；写回在
@@ -146,13 +197,18 @@ export async function expectCurrentChapter(page: Page, facts: TocFacts, index: n
   const position = `第 ${ordinal + 1} / ${facts.bodyCount} 章`;
   const view = reader(page);
   await step(`8.1 当前章节为下标 ${index}「${title}」（${position}），URL 的 ch 为 ${index}`, async () => {
-    await expect(view.chapterHeading, "正文区的一级标题应为该节点标题（8.1）").toHaveText(title);
+    await expect
+      .poll(async () => (await readCurrentRegion(page))?.chapterId ?? null, {
+        message: `当前章区域（data-current="true"）的 data-chapter-id 应为 ${index}`,
+      })
+      .toBe(index);
+    await expect(view.chapterHeading, "当前章的一级标题应为该节点标题（8.1）").toHaveText(title);
     await expect(view.chapterPosition, "“第 N / M 章”应为该节点的正文序号与非卷节点数（8.1）").toHaveText(
       position,
     );
     await expect
       .poll(() => countExactText(page, title), {
-        message: `正文区内与标题「${title}」完全相同的元素应恰好 1 个（8.1）`,
+        message: `当前章区域内与标题「${title}」完全相同的元素应恰好 1 个（8.1）`,
       })
       .toBe(1);
     await expect
@@ -641,7 +697,12 @@ export interface MainScroll {
   scrollHeight: number;
 }
 
-/** 读正文滚动容器（`<main>`）的 `scrollTop`、`clientHeight` 与 `scrollHeight`（只读）。 */
+/**
+ * 读正文滚动容器（`<main>`）的 `scrollTop`、`clientHeight` 与 `scrollHeight`（只读）。
+ *
+ * 这是整个容器的读数：滚动模式下容器里挂着当前章前后的若干章，`scrollTop = 0` 是窗口首章的顶边，
+ * 不是当前章的章首。以当前章为界的读数用 `readChapterScroll`。
+ */
 export function readMainScroll(page: Page): Promise<MainScroll> {
   return reader(page).main.evaluate((el) => ({
     scrollTop: el.scrollTop,
@@ -650,16 +711,78 @@ export function readMainScroll(page: Page): Promise<MainScroll> {
   }));
 }
 
+/** `setMainScrollTop` 的选项。 */
+export interface SetScrollOptions {
+  /**
+   * 默认 true：赋值之前先在 `<main>` 上派发一个 `deltaY` 为 0 的 `wheel` 事件，即读者碰了一下滚动输入。
+   *
+   * 滚动视图的位置归约器在每次导航定位后"钉住"，直到 `<main>` 上出现 `wheel`、`pointerdown`、
+   * `touchstart`（或视图处理的翻页键）才松开（design §3.3）：钉住期间的 `scroll` 事件被当作定位与
+   * 补偿，不上报阅读位置、不挪 `data-current`、不写回 `?ch=`。读者真实的滚动总有这类输入在先，测试
+   * 直接赋值 `scrollTop` 时就由这一个事件补上；`deltaY` 为 0，不产生任何位移（分页模式的滚轮闸门同样
+   * 忽略它）。为 false 时不派发，用于"定位不是读者移动"一类断言。
+   */
+  asReader?: boolean;
+}
+
 /**
  * 直接设定正文滚动容器的 `scrollTop`（不经滚轮或键盘，没有平滑滚动；设计"补充场景"10.9 的
- * 前置同样如此），返回赋值后容器报告的值（浏览器会夹到可滚范围内）。不等待 `scroll` 事件；
- * 需要应用处理完滚动时由调用方随后 `waitFrames` 或推进 Controlled_Clock。
+ * 前置同样如此），返回赋值后容器报告的值（浏览器会夹到可滚范围内）。默认作为读者操作（见
+ * `SetScrollOptions.asReader`）。不等待 `scroll` 事件；需要应用处理完滚动时由调用方随后 `waitFrames`
+ * 或推进 Controlled_Clock。
  */
-export function setMainScrollTop(page: Page, top: number): Promise<number> {
-  return reader(page).main.evaluate((el, value) => {
-    el.scrollTop = value;
-    return el.scrollTop;
-  }, top);
+export function setMainScrollTop(page: Page, top: number, options: SetScrollOptions = {}): Promise<number> {
+  const asReader = options.asReader ?? true;
+  return reader(page).main.evaluate(
+    (el, { value, wheel }) => {
+      if (wheel) el.dispatchEvent(new WheelEvent("wheel", { deltaY: 0, bubbles: true, cancelable: true }));
+      el.scrollTop = value;
+      return el.scrollTop;
+    },
+    { value: top, wheel: asReader },
+  );
+}
+
+/** 滚动模式下以当前章区段为界的滚动读数（内容坐标，即与 `scrollTop` 同一坐标系，单位 px）。 */
+export interface ChapterScroll extends MainScroll {
+  /** 当前章区段（`section[data-chapter-id][data-current="true"]`）的章号。 */
+  chapterId: number;
+  /** 章首：区段顶边对齐容器顶边时的 `scrollTop`（design §3.1；导航到章首即定位于此）。 */
+  chapterStart: number;
+  /** 章末：`max(chapterStart, 区段底边 − clientHeight)`（design §7.6 的 `chapterEdgeScrollTop`）。 */
+  chapterEnd: number;
+  /** 区段高度（含上下内边距）。 */
+  sectionHeight: number;
+  /** `scrollTop − chapterStart`：滚过了本章多少（章首为 0）。 */
+  intoChapter: number;
+}
+
+/**
+ * 读滚动模式下以当前章区段为界的滚动位置（只读）。区段由 `reader(page).article` 向上找到；坐标由
+ * `getBoundingClientRect` 换算为内容坐标（`区段边 − (<main> 顶边 + clientTop) + scrollTop`），保留亚像素，
+ * 与 `scrollTop` 比较时请留取整余量。当前章区域不是区段（分页模式）时抛错。
+ */
+export function readChapterScroll(page: Page): Promise<ChapterScroll> {
+  return reader(page).article.evaluate((article) => {
+    const section = article.closest("section[data-chapter-id]");
+    if (!(section instanceof HTMLElement) || section.parentElement === null) {
+      throw new Error("当前章的 <article> 不在 <section data-chapter-id> 里：readChapterScroll 只用于滚动模式");
+    }
+    const main = section.parentElement;
+    const origin = main.getBoundingClientRect().top + main.clientTop - main.scrollTop;
+    const rect = section.getBoundingClientRect();
+    const chapterStart = rect.top - origin;
+    return {
+      scrollTop: main.scrollTop,
+      clientHeight: main.clientHeight,
+      scrollHeight: main.scrollHeight,
+      chapterId: Number(section.dataset.chapterId),
+      chapterStart,
+      chapterEnd: Math.max(chapterStart, rect.bottom - origin - main.clientHeight),
+      sectionHeight: rect.height,
+      intoChapter: main.scrollTop - chapterStart,
+    };
+  });
 }
 
 /**
@@ -732,6 +855,11 @@ export async function waitFrames(page: Page, count = 2): Promise<void> {
 // 9.5：判定段落是 `<article>` 中章节标题区之后的正文 `<p>` 里，边界框上边 ≤ 滚动容器（`<main>`）
 // 边界框上边 + 56 px（顶栏高度）+ 1 px 取整余量的最后一个；无此段时取第 0 段；序号从 0 起算。
 //
+// 连续滚动（翻页模式需求 10）之后 `<main>` 里挂着若干章，这里的 `<article>` 是当前章区段
+// （`section[data-chapter-id][data-current="true"]`，即判定线所在的那章）里的那一篇，段落、正文高度与
+// 章首章末都以该区段为界；`<main>` 的 `scrollTop` 与可滚距离仍是整个容器的。判定段落只在滚动模式下
+// 有定义，当前章区域不是区段（分页模式）时这些函数抛错。
+//
 // `<main>` 是唯一的正文滚动容器（reader-defect-fixes 需求 2.1、2.2）：它占满一屏（边界框上边为视口
 // 顶边），正文在它里面滚动，文档本身不可滚。判定线因此落在视口 56 px 处（顶栏下沿）加 1 px，即读者
 // 看到的"视口首个可见段落"，与应用自己的判定（`ReaderPage` 的 `scrollTop + TOP_BIAS`）同义。
@@ -751,11 +879,13 @@ export const JUDGE_TOP_BAR_PX = 56;
 /** 9.5：判定线的取整余量。 */
 export const JUDGE_ROUNDING_PX = 1;
 
-/** 判定段落的一次读数（几何量均为视口坐标，单位 px）。 */
+/** 判定段落的一次读数（几何量除注明为内容坐标的以外均为视口坐标，单位 px）。 */
 export interface JudgeReading {
+  /** 当前章区段的 `data-chapter-id`（`toc.chapters[]` 下标）；以下段落均属这一章。 */
+  chapterId: number;
   /** 判定段落序号（从 0 起）。 */
   index: number;
-  /** 正文段落数（`<article>` 内章节标题区之后的 `<p>`）。 */
+  /** 正文段落数（当前章 `<article>` 内章节标题区之后的 `<p>`）。 */
   count: number;
   /** 判定线：`mainTop + 56 + 1`。 */
   line: number;
@@ -771,6 +901,10 @@ export interface JudgeReading {
   scrollTop: number;
   /** `<main>` 的最大可滚距离 `scrollHeight − clientHeight`。 */
   maxScrollTop: number;
+  /** 内容坐标：当前章区段的章首 `scrollTop`（同 `ChapterScroll.chapterStart`）。 */
+  chapterStart: number;
+  /** 内容坐标：当前章区段的章末 `scrollTop`（同 `ChapterScroll.chapterEnd`）。 */
+  chapterEnd: number;
 }
 
 interface JudgeProbe {
@@ -781,8 +915,9 @@ interface JudgeProbe {
 }
 
 /**
- * 读判定段落（9.5）。段落经 `reader(page).paragraphs` 定位（D8）；`<main>`、`<article>` 的几何量与
- * 章节标题区（`<article>` 的 `<header>` 子元素）只作度量。只读，不改动页面。
+ * 读判定段落（9.5）。段落经 `reader(page).paragraphs` 定位（D8，即当前章区段里的段落）；`<main>`、
+ * `<article>` 及其所在区段的几何量与章节标题区（`<article>` 的 `<header>` 子元素）只作度量。只读，
+ * 不改动页面。当前章区域不是 `<main>` 下的区段（分页模式）时抛错。
  */
 export async function readJudgeParagraph(page: Page): Promise<JudgeReading> {
   const view = reader(page);
@@ -792,6 +927,10 @@ export async function readJudgeParagraph(page: Page): Promise<JudgeReading> {
     const probe = { main, article, topBar: JUDGE_TOP_BAR_PX, rounding: JUDGE_ROUNDING_PX };
     return await view.paragraphs.evaluateAll((elements, arg): JudgeReading => {
       const { main: mainEl, article: articleEl, topBar, rounding } = arg as unknown as JudgeProbe;
+      const section = articleEl.closest("section[data-chapter-id]");
+      if (!(section instanceof HTMLElement) || section.parentElement !== mainEl) {
+        throw new Error("当前章的 <article> 不在 <main> 下的 <section data-chapter-id> 里：判定段落只在滚动模式下有定义");
+      }
       // 章节标题区之后的 <p>：标题区里目前没有 <p>，仍按定义排除它及其之前的段落
       const header = articleEl.querySelector(":scope > header");
       const body = elements.filter(
@@ -800,7 +939,8 @@ export async function readJudgeParagraph(page: Page): Promise<JudgeReading> {
           (!header.contains(p) && (header.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0),
       );
 
-      const mainTop = mainEl.getBoundingClientRect().top;
+      const mainRect = mainEl.getBoundingClientRect();
+      const mainTop = mainRect.top;
       const line = mainTop + topBar + rounding;
 
       const rects = body.map((p) => p.getBoundingClientRect());
@@ -810,7 +950,13 @@ export async function readJudgeParagraph(page: Page): Promise<JudgeReading> {
         if (top <= line) index = i;
       });
 
+      // 区段边换算为内容坐标（与 `readChapterScroll` 相同）
+      const origin = mainTop + mainEl.clientTop - mainEl.scrollTop;
+      const sectionRect = section.getBoundingClientRect();
+      const chapterStart = sectionRect.top - origin;
+
       return {
+        chapterId: Number(section.dataset.chapterId),
         index,
         count: body.length,
         line,
@@ -820,6 +966,8 @@ export async function readJudgeParagraph(page: Page): Promise<JudgeReading> {
         tops,
         scrollTop: mainEl.scrollTop,
         maxScrollTop: mainEl.scrollHeight - mainEl.clientHeight,
+        chapterStart,
+        chapterEnd: Math.max(chapterStart, sectionRect.bottom - origin - mainEl.clientHeight),
       };
     }, probe);
   } finally {
@@ -844,11 +992,15 @@ const SCROLL_SEEN_FLAG = "__e2eJudgeScrollSeen";
 /**
  * 把判定段落滚到第 `k` 段：先核对文档不可滚动（需求 2.1，`expectDocumentNotScrollable`），再对 `<main>`
  * 直接赋值 `judgeScrollTarget` 算出的 `scrollTop`（不经滚轮或键盘，没有平滑滚动），等到 `<main>` 的
- * `scroll` 事件，再读一次判定段落并断言序号为 `k`。返回滚动后的读数。目标超出可滚范围、或滚后序号
- * 不为 `k` 时失败（测试自身的问题，16.6）。
+ * `scroll` 事件，再读一次判定段落并断言序号为 `k`、当前章没有变。返回滚动后的读数。目标超出可滚范围、
+ * 或滚后序号不为 `k` 时失败（测试自身的问题，16.6）。
+ *
+ * 这一滚是读者的移动：赋值之前先在 `<main>` 上派发一个 `deltaY` 为 0 的 `wheel` 事件（见
+ * `SetScrollOptions.asReader`），滚动视图的位置归约器因此松开，随后的阅读位置照常上报、落盘，书签取
+ * 判定线处的偏移（design §3.3）。
  */
 export async function scrollJudgeParagraphTo(page: Page, k: number): Promise<JudgeReading> {
-  return step(`把判定段落滚到第 ${k} 段（设定 <main> 的 scrollTop，等到 scroll 事件）`, async () => {
+  return step(`把判定段落滚到第 ${k} 段（以读者操作设定 <main> 的 scrollTop，等到 scroll 事件）`, async () => {
     await expectDocumentNotScrollable(page);
     const before = await readJudgeParagraph(page);
     if (before.maxScrollTop < 1) throw new Error("<main> 没有可滚距离，无法滚动正文");
@@ -867,6 +1019,7 @@ export async function scrollJudgeParagraphTo(page: Page, k: number): Promise<Jud
           },
           { once: true },
         );
+        mainEl.dispatchEvent(new WheelEvent("wheel", { deltaY: 0, bubbles: true, cancelable: true }));
         const from = mainEl.scrollTop;
         mainEl.scrollTop = top;
         return { from, to: mainEl.scrollTop };
@@ -882,6 +1035,7 @@ export async function scrollJudgeParagraphTo(page: Page, k: number): Promise<Jud
         .toBe(true);
     }
     const after = await readJudgeParagraph(page);
+    expect(after.chapterId, `滚动前后当前章区段应同为下标 ${before.chapterId}`).toBe(before.chapterId);
     expect(
       after.index,
       `判定段落应为第 ${k} 段（<main> scrollTop ${applied.from} → ${applied.to}，判定线 ${after.line}，` +
@@ -991,7 +1145,9 @@ export interface ParagraphStarts {
 }
 
 /**
- * 读当前章各正文段落的章内起点（见上方说明）。`chapter` 须为当前显示的章节；调用前正文须已渲染，
+ * 读当前章各正文段落的章内起点（见上方说明）。段落取当前章区段（`section[data-chapter-id]`）里的那篇
+ * `<article>`（`reader(page).paragraphs`），窗口里的其余章不计入。`chapter` 须为当前章区段的章号，
+ * 否则抛错（滚动模式下才有整章段落；分页模式的当前页只有页片段，同样抛错）。调用前正文须已渲染，
  * 且没有检索高亮以外的改写（高亮的 `<mark>` 不改变 `<p>` 的 `textContent`）。
  */
 export async function readParagraphStarts(
@@ -1000,6 +1156,12 @@ export async function readParagraphStarts(
   bookId: string,
   chapter: number,
 ): Promise<ParagraphStarts> {
+  const region = await readCurrentRegion(page);
+  if (region === null || region.kind !== "section" || region.chapterId !== chapter) {
+    throw new Error(
+      `readParagraphStarts 须在滚动模式下、当前章区段为下标 ${chapter} 时调用（当前区域：${JSON.stringify(region)}）`,
+    );
+  }
   const [toc, book, texts] = await Promise.all([
     lib.toc(bookId),
     bookText(lib, bookId),
@@ -1107,4 +1269,377 @@ export function readSearchResults(page: Page): Promise<SearchResultSnapshot[]> {
       };
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// 翻页模式（reader-page-turn-modes 任务 21.2 起；23.x 的新用例复用）
+// ---------------------------------------------------------------------------
+
+/** 一种翻页模式在 e2e 里用到的各个名字（翻页模式需求 1.1、1.3；design §2.1、§4.5、§7.1）。 */
+export interface PageModeSpec {
+  /** `ReaderSettings.pageAnim` 的编号（覆盖 0、滑动 1、仿真 2、滚动 3、无动画 4）。 */
+  anim: PageAnim;
+  /** 设置抽屉"翻页模式"选项组里的按钮文字。 */
+  label: string;
+  /** `<main data-page-mode>` 的取值。 */
+  attr: string;
+  /** 渲染族：滚动为 `scroll`（`ScrollReader`），其余为 `paged`（`PagedReader`）。 */
+  family: RenderFamily;
+}
+
+/** `<main data-page-mode>` 的取值：分页视图按读者所选的模式（不是本次实际动画），滚动视图为 `scroll`。 */
+const PAGE_MODE_ATTRS: Readonly<Record<PageAnim, string>> = {
+  [PAGE_ANIM.cover]: "cover",
+  [PAGE_ANIM.slide]: "slide",
+  [PAGE_ANIM.simulation]: "simulation",
+  [PAGE_ANIM.scroll]: "scroll",
+  [PAGE_ANIM.none]: "none",
+};
+
+/** 五种翻页模式，按设置抽屉的按钮顺序：覆盖、滑动、仿真、滚动、无动画（需求 1.3）。 */
+export const PAGE_MODES: readonly PageModeSpec[] = PAGE_ANIM_OPTIONS.map(
+  ({ value, label }): PageModeSpec => ({
+    anim: value,
+    label,
+    attr: PAGE_MODE_ATTRS[value],
+    family: value === PAGE_ANIM.scroll ? "scroll" : "paged",
+  }),
+);
+
+/** 编号对应的翻页模式。 */
+export function pageModeSpec(anim: PageAnim): PageModeSpec {
+  const spec = PAGE_MODES.find((m) => m.anim === anim);
+  if (spec === undefined) throw new Error(`没有编号为 ${String(anim)} 的翻页模式`);
+  return spec;
+}
+
+/**
+ * 在 `context` 的首次导航之前，把已存储设置的 `pageAnim` 写为 `anim`（`addInitScript`，设置键
+ * `koodo_novel_reader_settings`；与 `fixtures.ts` 的 `seedTheme` 同一口径）。
+ *
+ * 只在存储的设置里还没有 `pageAnim` 时写入：初始脚本在每次导航（含重载）都会执行，应用此后保存的设置
+ * （保存时写全部字段，含 `pageAnim`）与用例经设置抽屉的切换都不会被它改回去。已存储的其余字段原样
+ * 保留；存储值不是 JSON 对象时不动它。
+ *
+ * 与 `seedTheme` 同用时须先调用 `seedTheme`：它只在设置键整体不存在时写入，本函数先写过的话它就会跳过。
+ */
+export async function seedPageMode(context: BrowserContext, anim: PageAnim): Promise<void> {
+  const navigated = context.pages().find((p) => p.url() !== "about:blank");
+  if (navigated !== undefined) {
+    throw new Error(`seedPageMode() 须在首次导航之前调用；页面已在 ${navigated.url()}`);
+  }
+  await context.addInitScript(
+    ({ key, value }) => {
+      try {
+        const raw = window.localStorage.getItem(key);
+        let stored: Record<string, unknown> = {};
+        if (raw !== null) {
+          const parsed: unknown = JSON.parse(raw);
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return;
+          stored = parsed as Record<string, unknown>;
+        }
+        if ("pageAnim" in stored) return;
+        window.localStorage.setItem(key, JSON.stringify({ ...stored, pageAnim: value }));
+      } catch {
+        // about:blank 等不透明源没有 localStorage；存储值不是 JSON 时同样不动它
+      }
+    },
+    { key: READER_SETTINGS_KEY, value: anim },
+  );
+}
+
+/** localStorage 设置键里 `pageAnim` 的原值（不归一）；键不存在、不是 JSON 或没有该字段时为 undefined。 */
+export function readStoredPageAnim(page: Page): Promise<unknown> {
+  return page.evaluate((key) => {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return undefined;
+    try {
+      const parsed = JSON.parse(raw) as { pageAnim?: unknown } | null;
+      return parsed?.pageAnim;
+    } catch {
+      return undefined;
+    }
+  }, READER_SETTINGS_KEY);
+}
+
+/** 设置抽屉"翻页模式"选项组的名称：`role="group"` 经 `aria-labelledby` 取自可见标题（需求 1.3、1.4）。 */
+const PAGE_MODE_GROUP_NAME = "翻页模式";
+
+/**
+ * 设置抽屉"翻页模式"选项组里某个模式的按钮（role `button`，名称为按钮文字，选中态为 `aria-pressed`）。
+ * 抽屉须已打开。`locators.ts` 的 `settingsDrawer` 里还没有这一组，这里按 role 与名称就地定位。
+ */
+export function pageModeButton(page: Page, anim: PageAnim): Locator {
+  return page
+    .getByRole("group", { name: PAGE_MODE_GROUP_NAME, exact: true })
+    .getByRole("button", { name: pageModeSpec(anim).label, exact: true });
+}
+
+/** `selectPageMode` 的选项。 */
+export interface SelectPageModeOptions {
+  /** 选完后保持设置抽屉打开。默认按 `Esc` 关上：抽屉的遮罩会挡住正文上的点击。 */
+  keepOpen?: boolean;
+}
+
+/**
+ * 经设置抽屉切换翻页模式（需求 1.5）。抽屉没开时按快捷键 `S` 打开（不点顶栏按钮：顶栏可能已自动隐藏，
+ * 按键也不启动自动隐藏计时）；点"翻页模式"选项组里该模式的按钮，再核对：
+ *
+ * - 该按钮 `aria-pressed="true"`，其余四个为 `"false"`（需求 1.4）；
+ * - `<main data-page-mode>` 为该模式的取值，当前章 / 当前页的 `<article>` 恰有 1 个（新视图已定位；
+ *   切换渲染族时 `<main>` 整个换成另一种视图）；
+ * - localStorage 设置键里的 `pageAnim` 为该编号（需求 1.5）。
+ *
+ * 默认随后按 `Esc` 关上抽屉（见 `SelectPageModeOptions.keepOpen`）。调用前不得有其他面板打开。
+ */
+export async function selectPageMode(
+  page: Page,
+  anim: PageAnim,
+  options: SelectPageModeOptions = {},
+): Promise<void> {
+  const mode = pageModeSpec(anim);
+  await step(`在设置抽屉“翻页模式”中选择“${mode.label}”（pageAnim ${anim}，data-page-mode="${mode.attr}"）`, async () => {
+    const drawer = settingsDrawer(page);
+    if ((await drawer.marker.count()) === 0) {
+      await page.keyboard.press("s");
+      await expect(drawer.marker, "按 S 应打开设置抽屉").toBeVisible();
+    }
+    await pageModeButton(page, anim).click();
+    for (const other of PAGE_MODES) {
+      await expect(
+        pageModeButton(page, other.anim),
+        `“${other.label}”按钮的 aria-pressed（需求 1.4）`,
+      ).toHaveAttribute("aria-pressed", String(other.anim === anim));
+    }
+    const view = reader(page);
+    await expect(view.main, "<main> 的 data-page-mode").toHaveAttribute("data-page-mode", mode.attr);
+    await expect(view.article, "当前章 / 当前页的 <article>").toHaveCount(1);
+    await expect
+      .poll(() => readStoredPageAnim(page), {
+        message: `localStorage ${READER_SETTINGS_KEY} 的 pageAnim 应为 ${anim}（需求 1.5）`,
+      })
+      .toBe(anim);
+    if (options.keepOpen !== true) {
+      await page.keyboard.press("Escape");
+      await expect(drawer.marker, "按 Esc 应关上设置抽屉").toHaveCount(0);
+    }
+  });
+}
+
+/** 分页视图当前页图层上的测试钩子（design §4.5）。 */
+export interface CurrentPage {
+  /** 当前页所在章（`toc.chapters[]` 下标）。 */
+  chapterId: number;
+  /** 当前页在本章中的序号，从 0 起。 */
+  pageIndex: number;
+  /** 本章的页数（≥ 1）。 */
+  pageCount: number;
+  /** Page_Start_Offset：当前页首字的章内字符偏移。 */
+  pageStart: number;
+}
+
+/** 阅读区 `<main>` 上翻页测试钩子的一次读数（design §4.5、§6.4）。 */
+export interface PagedViewReading {
+  /** `data-page-mode`；滚动视图为 `scroll`。 */
+  mode: string | null;
+  /** `data-turning`；滚动视图没有这个属性，为 null。 */
+  turning: boolean | null;
+  /** `data-paginated`：当前排版下已分页完成的章号，按属性里的顺序。 */
+  paginated: number[];
+  /** 当前页图层（带 `data-current="true"` 与 `data-page-index`）；尚未分页完成或在滚动视图里为 null。 */
+  current: CurrentPage | null;
+}
+
+/**
+ * 读分页视图的测试钩子（只读，不等待）：`<main>` 的 `data-page-mode`、`data-turning`、`data-paginated`，
+ * 与当前页图层的 `data-chapter-id`、`data-page-index`、`data-page-count`、`data-page-start`。翻页途中
+ * 只有当前页图层带这些属性，目标页图层没有（design §4.5）。页码只存在于这些运行时属性里（需求 2.8）。
+ */
+export function readPagedView(page: Page): Promise<PagedViewReading> {
+  return reader(page).main.evaluate((main) => {
+    const el = main.querySelector<HTMLElement>('[data-current="true"][data-page-index]');
+    const { pageMode, turning, paginated } = main.dataset;
+    return {
+      mode: pageMode ?? null,
+      turning: turning === undefined ? null : turning === "true",
+      paginated: paginated === undefined || paginated === "" ? [] : paginated.split(",").map(Number),
+      current:
+        el === null
+          ? null
+          : {
+              chapterId: Number(el.dataset.chapterId),
+              pageIndex: Number(el.dataset.pageIndex),
+              pageCount: Number(el.dataset.pageCount),
+              pageStart: Number(el.dataset.pageStart),
+            },
+    };
+  });
+}
+
+/**
+ * 等翻页落定（轮询，上限为 expect 超时）：`<main data-turning="false">` 且当前页图层就位，返回当前页。
+ * 动画中的翻页、刚切到分页模式还没分页完成时都会等。只用于分页模式：`<main>` 为滚动视图时抛错。
+ * 只读属性，不依赖 `requestAnimationFrame`；但翻页动画本身由应用的 rAF 推进，装了 Controlled_Clock
+ * 的页面要由调用方推进时钟。
+ */
+export async function waitPageTurnSettled(page: Page): Promise<CurrentPage> {
+  return step('等翻页落定：<main data-turning="false">，当前页图层就位', async () => {
+    let last: PagedViewReading | null = null;
+    await expect
+      .poll(
+        async () => {
+          last = await readPagedView(page);
+          if (last.mode === PAGE_MODE_ATTRS[PAGE_ANIM.scroll]) {
+            throw new Error("waitPageTurnSettled 只用于分页模式，<main> 当前为滚动视图");
+          }
+          return last.turning === false && last.current !== null;
+        },
+        { message: '<main> 的 data-turning 应为 "false"，且当前页图层带 data-page-index' },
+      )
+      .toBe(true);
+    const settled = last as PagedViewReading | null;
+    if (settled === null || settled.current === null) throw new Error("翻页落定后读不到当前页");
+    return settled.current;
+  });
+}
+
+/** 九宫格的 9 区（Glossary Tap_Zone），按行（上、中、下）、行内按列（左、中、右）。 */
+export const TAP_ZONES: readonly TapZone[] = ["TL", "TC", "TR", "ML", "MC", "MR", "BL", "BC", "BR"];
+
+/**
+ * 各区的动作（需求 5.2–5.4）：TL、TC、ML、BL 上一页，TR、MR、BC、BR 下一页，MC 唤出控制栏。
+ * 五种翻页模式相同（需求 5.5）。控制栏可见时任一区都只隐藏控制栏（需求 5.9），见 `reshowControls`。
+ */
+export const TAP_ZONE_ACTIONS: Readonly<Record<TapZone, "prev" | "next" | "menu">> = {
+  TL: "prev",
+  TC: "prev",
+  TR: "next",
+  ML: "prev",
+  MC: "menu",
+  MR: "next",
+  BL: "prev",
+  BC: "next",
+  BR: "next",
+};
+
+/** 九宫格的两条分界线，占阅读视口宽 / 高的比例（Glossary Tap_Zone：33% 与 66%）。 */
+const TAP_ZONE_SPLIT_LOW = 0.33;
+const TAP_ZONE_SPLIT_HIGH = 0.66;
+
+/** 各列（L/C/R）、各行（T/M/B）的中心比例：相邻两条分界线（含 0 与 1）的中点。 */
+const TAP_ZONE_CENTER: Readonly<Record<string, number>> = {
+  L: TAP_ZONE_SPLIT_LOW / 2,
+  C: (TAP_ZONE_SPLIT_LOW + TAP_ZONE_SPLIT_HIGH) / 2,
+  R: (TAP_ZONE_SPLIT_HIGH + 1) / 2,
+  T: TAP_ZONE_SPLIT_LOW / 2,
+  M: (TAP_ZONE_SPLIT_LOW + TAP_ZONE_SPLIT_HIGH) / 2,
+  B: (TAP_ZONE_SPLIT_HIGH + 1) / 2,
+};
+
+/** 视口坐标（CSS px）。 */
+export interface ViewportPoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * 用鼠标点击正文九宫格 `zone` 区的中心，返回点击的视口坐标。区域以阅读区 `<main>` 的
+ * `getBoundingClientRect()` 为参照（需求 5.1）；点击前核对该点最上层的元素在 `<main>` 之内，被控制栏、
+ * 面板或遮罩挡住时抛错（测试自身的问题，16.6），不去点挡住它的东西。
+ *
+ * 点 MC 即"点 MC 唤出控制栏"（需求 5.4）：控制栏不可见时唤出并开始 4.5 s 计时；可见时按需求 5.9 只隐藏。
+ * 要的是"点完之后控制栏可见"，用 `reshowControls`。滚动模式下鼠标按下同时算作读者操作（design §3.3）。
+ */
+export async function tapZoneCenter(page: Page, zone: TapZone): Promise<ViewportPoint> {
+  return step(`点击正文九宫格 ${zone} 区的中心`, async () => {
+    const fractions = { fx: TAP_ZONE_CENTER[zone[1]], fy: TAP_ZONE_CENTER[zone[0]] };
+    const at = await reader(page).main.evaluate((main, { fx, fy }) => {
+      const r = main.getBoundingClientRect();
+      const x = r.left + r.width * fx;
+      const y = r.top + r.height * fy;
+      const hit = document.elementFromPoint(x, y);
+      return { x, y, inside: hit !== null && main.contains(hit), hit: hit === null ? null : hit.tagName.toLowerCase() };
+    }, fractions);
+    if (!at.inside) {
+      throw new Error(
+        `${zone} 区中心 (${at.x}, ${at.y}) 处最上层的元素是 ${at.hit ?? "（无）"}，不在 <main> 内（被控制栏、面板或遮罩挡住）`,
+      );
+    }
+    await page.mouse.click(at.x, at.y);
+    return { x: at.x, y: at.y };
+  });
+}
+
+/**
+ * 顶栏与底栏此刻是否可见（测量）：先等两者自身的 CSS 过渡（`transition-transform` 的滑入滑出）全部结束，
+ * 再在同一次读数里取两者的边界框，完整位于视口内为可见、完全移出视口为隐藏。
+ *
+ * `getAnimations()` 会先刷新样式，所以刚提交的显隐（点击的 `pointerup` 里同步提交）也能在这里看到对应
+ * 的过渡，不会读到过渡开始前的旧位置。两者显隐不一致、或停在视口边缘时抛错。CSS 过渡不受
+ * Controlled_Clock 控制，可与之同用；可见只表示此刻可见，不表示自动隐藏计时何时到期。
+ */
+export async function readControlsVisible(page: Page): Promise<boolean> {
+  const view = reader(page);
+  const footer = await view.bottomBar.elementHandle();
+  try {
+    return await view.topBar.evaluate(async (header, footerEl) => {
+      const bars = [header, footerEl];
+      const running = () => bars.flatMap((el) => el.getAnimations().filter((a) => a instanceof CSSTransition));
+      for (let pending = running(); pending.length > 0; pending = running()) {
+        await Promise.allSettled(pending.map((a) => a.finished));
+      }
+      const vh = window.innerHeight;
+      const placement = (el: Element): boolean | null => {
+        const r = el.getBoundingClientRect();
+        if (r.top >= -0.5 && r.bottom <= vh + 0.5) return true;
+        if (r.bottom <= 0.5 || r.top >= vh - 0.5) return false;
+        return null;
+      };
+      const [top, bottom] = bars.map(placement);
+      if (top === null || bottom === null || top !== bottom) {
+        const describe = (el: Element) => {
+          const r = el.getBoundingClientRect();
+          return `top ${r.top}、bottom ${r.bottom}`;
+        };
+        throw new Error(
+          `顶栏（${describe(header)}）与底栏（${describe(footerEl)}）应同时完整可见或同时完全移出视口（视口高 ${vh}）`,
+        );
+      }
+      return top;
+    }, footer);
+  } finally {
+    await footer.dispose();
+  }
+}
+
+/** `reshowControls` 最多点几次 MC：正常 1–2 次，下面几种情形各多一次，再留一次余量。 */
+const RESHOW_MAX_TAPS = 5;
+
+/**
+ * 重新亮起控制栏（design §13.3）：控制栏可见时点正文只会把它隐藏（需求 5.9），所以可见时先点 MC 隐藏、
+ * 再点 MC 唤出；不可见时点一次 MC（需求 5.4）。返回时两栏完整可见，4.5 s 自动隐藏刚从最后那一下开始计时，
+ * 栏内按钮随即可点。
+ *
+ * 判定"唤出成功"的依据是观察到一次"点前隐藏 → 点后可见"：点前隐藏时，能让控制栏亮起的只有这一下 MC。
+ * 以下情形里那一下不改变显隐，循环会再点：按下时页面有非空选区（只清除选区，需求 5.8）、按下时结束了
+ * 进行中的翻页动画或惯性（需求 5.10）、自动隐藏恰在读数与点击之间到期（那一下其实已唤出，但无从分辨）。
+ * 分页模式下先等 `data-turning` 不为 `"true"`。
+ *
+ * 不用"点正文标题"：标题在 TL/TC 区，控制栏不可见时点它会回翻（滚动模式）或翻到上一页（分页模式）。
+ * 调用前不得有面板打开（抽屉的遮罩会挡住 MC，`tapZoneCenter` 抛错）。
+ */
+export async function reshowControls(page: Page): Promise<void> {
+  await step("重新亮起控制栏：可见时先点 MC 隐藏再点 MC 唤出，不可见时点一次 MC", async () => {
+    const view = reader(page);
+    const history: string[] = [];
+    for (let tap = 1; tap <= RESHOW_MAX_TAPS; tap++) {
+      await expect(view.main, "点 MC 之前，分页翻页应已落定").not.toHaveAttribute("data-turning", "true");
+      const before = await readControlsVisible(page);
+      await tapZoneCenter(page, "MC");
+      const after = await readControlsVisible(page);
+      history.push(`${before ? "可见" : "隐藏"} → ${after ? "可见" : "隐藏"}`);
+      if (!before && after) return;
+    }
+    throw new Error(`点了 ${RESHOW_MAX_TAPS} 次 MC 仍未观察到“隐藏 → 可见”：${history.join("；")}`);
+  });
 }

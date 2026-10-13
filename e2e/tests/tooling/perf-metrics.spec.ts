@@ -358,14 +358,22 @@ function assertBudgetVerdict(item: PerfItem, budget: number): PerfEvaluated {
 // 生成器
 // ---------------------------------------------------------------------------
 
+/** `PERF.budgetsMs` 的全部取值（去重），随 `PERF_KEYS` 自动覆盖新增的项。 */
+const CONFIGURED_BUDGETS: readonly number[] = [...new Set(PERF_KEYS.map((k) => PERF.budgetsMs[k]))];
+
+/** 各项预算及其上下各 1 ms 的值（不含负数），用来让读数落在判定翻转处。 */
+const BUDGET_EDGES: readonly number[] = [
+  ...new Set(CONFIGURED_BUDGETS.flatMap((b) => [b - 1, b, b + 1]).filter((v) => v >= 0)),
+];
+
 /**
  * 一次读数（有限非负毫秒）：大量并列的小整数、贴近真实的整数毫秒（含长任务的 0 与 ≥ 50）、
- * 四项预算上下各 1 ms 的值，以及任意有限非负 double（含次正规数与 Number.MAX_VALUE）。
+ * 各项预算上下各 1 ms 的值，以及任意有限非负 double（含次正规数与 Number.MAX_VALUE）。
  */
 const readingArb: fc.Arbitrary<number> = fc.oneof(
   fc.nat(3),
   fc.integer({ min: 0, max: 1000 }),
-  fc.constantFrom(0, 50, 99, 100, 101, 349, 350, 351, 499, 500, 501),
+  fc.constantFrom(0, 50, ...BUDGET_EDGES),
   fc.double({ min: 0, max: 1000, noNaN: true }),
   fc.double({ min: 0, max: Number.MAX_VALUE, noNaN: true }),
 );
@@ -391,11 +399,11 @@ const perfItemArb: fc.Arbitrary<PerfItem> = fc.record(
 );
 
 /**
- * 与读数无关的预算：14.3 的四个取值、0、整数毫秒与任意有限非负 double。设计写"任意非负预算"；
+ * 与读数无关的预算：`PERF.budgetsMs` 的各个取值、0、整数毫秒与任意有限非负 double。设计写"任意非负预算"；
  * +Infinity 不是可配置的预算，`evaluatePerfItem` 对它抛 RangeError（见下方例子），不在此生成。
  */
 const independentBudgetArb: fc.Arbitrary<number> = fc.oneof(
-  fc.constantFrom(0, 100, 350, 500),
+  fc.constantFrom(0, ...CONFIGURED_BUDGETS),
   fc.integer({ min: 0, max: 1000 }),
   fc.double({ min: 0, max: Number.MAX_VALUE, noNaN: true }),
 );
@@ -454,9 +462,19 @@ test.describe("evaluatePerfItem（需求 14.3、14.4、14.5、14.7）", () => {
   // 例子
   // -------------------------------------------------------------------------
 
-  test("预算取自 14.3：(a) 500、(b) 100、(c) 350、(d) 100 ms；四项按 (a)–(d) 排列，每项取样 5 次", () => {
-    expect(PERF.budgetsMs).toEqual({ tocOpen: 500, tocScrollLongTask: 100, shelfSearch: 350, readerSearchLongTask: 100 });
-    expect(PERF_KEYS).toEqual(["tocOpen", "tocScrollLongTask", "shelfSearch", "readerSearchLongTask"]);
+  test("预算取自需求原文：14.3 的 (a) 500、(b) 100、(c) 350、(d) 100 ms，翻页模式 14.1–14.3 的 (f) 50、(g) 300、(h) 600 ms；PERF_KEYS 按此顺序列出全部各项，每项取样 5 次", () => {
+    // 期望值按需求原文写成字面量；PERF_KEYS 由 PERF.budgetsMs 的键派生，二者的项与顺序一致
+    const expected = {
+      tocOpen: 500,
+      tocScrollLongTask: 100,
+      shelfSearch: 350,
+      readerSearchLongTask: 100,
+      pagedTurnLongTask: 50,
+      repaginate: 300,
+      neighborPaginate: 600,
+    };
+    expect(PERF.budgetsMs).toEqual(expected);
+    expect(PERF_KEYS).toEqual(Object.keys(expected));
     expect(PERF.samples).toBe(SAMPLES);
   });
 
@@ -484,6 +502,19 @@ test.describe("evaluatePerfItem（需求 14.3、14.4、14.5、14.7）", () => {
       median: 120,
       max: 180,
       budgetMs: 100,
+      status: "over",
+    });
+    // (f) 的预算 50 恰为长任务的下限：中位数为 50 的长任务不算超预算，51 即超预算
+    expect(evaluatePerfItem({ key: "pagedTurnLongTask", readings: [0, 50, 50, 50, 0] })).toMatchObject({
+      median: 50,
+      max: 50,
+      budgetMs: 50,
+      status: "within",
+    });
+    expect(evaluatePerfItem({ key: "pagedTurnLongTask", readings: [0, 51, 60, 55, 0] })).toMatchObject({
+      median: 51,
+      max: 60,
+      budgetMs: 50,
       status: "over",
     });
   });
@@ -532,7 +563,7 @@ test.describe("evaluatePerfItem（需求 14.3、14.4、14.5、14.7）", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 最长长任务读数（14.2 (b)(d)、14.6）
+// 最长长任务读数（14.2 (b)(d)、翻页模式 14.1 的 (f)、14.6）
 // ---------------------------------------------------------------------------
 
 /** Long Tasks API 只报告持续 ≥ 50 ms 的任务（14.6），按需求原文写成字面量，不从被测代码取。 */

@@ -8,7 +8,7 @@
  * 该节正文。`PerfReport` 的字段与设计的数据模型一致（`runStartedAt`、`env`、`items`、`bookLoads`），
  * `e2e/acceptance/acceptance.py` 的 `render_perf` 按这些字段读取；其余字段是补充说明。
  *
- * ## (a)–(d)
+ * ## 设预算的各项（`PERF_KEYS`：(a)–(d) 与翻页模式的 (f)–(h)）
  *
  * - 读数取自各 perf 用例的 `perf-metrics` 附件（`PerfMetricsAttachment`），按 `PERF_KEYS` 的顺序
  *   每项一行，由 `evaluatePerfItem` 给出中位数、最大值与状态（14.4、14.7）。同一项出现在多份附件里
@@ -78,14 +78,23 @@ export const PERF_CASE_OF_KEY: Readonly<Record<PerfKey, string>> = {
   tocScrollLongTask: "perf-toc",
   shelfSearch: "perf-shelf-search",
   readerSearchLongTask: "perf-reader-search",
+  pagedTurnLongTask: "perf-paged-turn",
+  repaginate: "perf-repaginate",
+  neighborPaginate: "perf-paged-turn",
 };
 
-/** 表中各项的写法（14.2 (a)–(d)）。 */
+/**
+ * 表中各项的写法：(a)–(d) 为 14.2 的各项；(f)–(h) 为 reader-page-turn-modes 需求 14.1–14.3，
+ * 接在 (e) `[book-load]` 之后编号。
+ */
 export const PERF_ITEM_LABELS: Readonly<Record<PerfKey, string>> = {
   tocOpen: "(a) 点击目录按钮到首个目录行进入视口",
   tocScrollLongTask: "(b) 目录抽屉直接滚到第 ⌈N/2⌉ 与第 N 个节点期间的最长长任务",
   shelfSearch: "(c) 书架检索末次按键到结果更新",
   readerSearchLongTask: "(d) 阅读器检索逐字键入期间的最长长任务",
+  pagedTurnLongTask: "(f) 分页模式拖拽一页并释放、连续点击翻页期间的最长长任务",
+  repaginate: "(g) 拖动字号滑杆到显示包含原阅读位置的页（重新分页）",
+  neighborPaginate: "(h) 跨章翻页提交到新相邻章分页完成",
 };
 
 /** 状态列的三种取值（14.5）。 */
@@ -169,7 +178,7 @@ export interface PerfReport {
   /** 运行开始时间，与 `results.json` 的 `startedAt` 为同一字符串。 */
   runStartedAt: string;
   env: PerfEnv;
-  /** (a)–(d)，按 `PERF_KEYS` 的顺序，恰好 4 项。 */
+  /** 设预算的各项，按 `PERF_KEYS` 的顺序，恰好 `PERF_KEYS.length` 项。 */
   items: PerfEvaluated[];
   /** (e)，只含满足 `bookLoadFilter` 的行。 */
   bookLoads: BookLoadRow[];
@@ -540,7 +549,7 @@ export function renderPerfSection(r: PerfReport): string[] {
     `- perf 用例：${casesText(r.cases)}`,
     `- 结果：${countsText(r.items)}；超预算只做标注，不影响用例结果与退出码（1.7、14.4）`,
     "",
-    "读数、中位数、最大值与 Perf_Budget 的单位均为 ms；(b)(d) 是观测窗口内的最长长任务，只会是 0 或 ≥ 50" +
+    "读数、中位数、最大值与 Perf_Budget 的单位均为 ms；(b)(d)(f) 是观测窗口内的最长长任务，只会是 0 或 ≥ 50" +
       `（14.6）。Perf_Budget 只在 ${mdCode("e2e/support/settings.ts")} 的 ${mdCode("PERF.budgetsMs")} 配置（14.3）；` +
       "中位数大于 Perf_Budget 即超预算（14.4）。",
     "",

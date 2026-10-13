@@ -33,7 +33,8 @@
  *   全部已挂载的 Volume_Header 与 Current_Row 的计算 `background-color`，在页面内画到 1×1 的画布上读回 8 位
  *   RGBA（`color-mix()` 的计算值在 Chromium 中序列化为 `color(srgb …)`，`--card-bg` 则是 `rgb(…)`，两种写法
  *   都经画布换算为同一表示），断言每个 Volume_Header 的 RGBA 都与 Current_Row 的不同。
- * - 10.1（桌面 / 移动）：打开该章，核对前提（至少 1 个段落含 ≥ 58 个连续 `=`），等 2 个动画帧后对 `<article>`
+ * - 10.1（桌面 / 移动）：打开该章，核对前提（至少 1 个段落含 ≥ 58 个连续 `=`），等 2 个动画帧后对当前章的
+ *   `<article>`（`reader().article`；滚动模式下窗口里同时挂着相邻章，只取 `[data-current="true"]` 区段里的那篇）
  *   内的全部正文 `<p>` 断言 `scrollWidth ≤ clientWidth`，且边界框右边 ≤ `<article>` 内容框右边（边界框右边减
  *   右边框与右内边距）+ 1 px。
  * - 10.3（移动 390×844）：先核对前提（不成立时 `expect` 判失败），再打开该章、按 8.1 判定当前章节，等 2 个动画帧

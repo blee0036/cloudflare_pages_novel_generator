@@ -128,8 +128,19 @@ describe("index.css 的主题机制", () => {
     "",
   );
 
-  /** 每套主题都必须自带的全套变量（缺一个就会串到 `:root` 的兜底值上）。 */
-  const REQUIRED_VARS = ["--bg", "--text", "--border", "--accent", "--card-bg"];
+  /**
+   * 每套主题都必须自带的全套变量（缺一个就会串到 `:root` 的兜底值上）。后两个是翻页阴影色
+   * （reader-page-turn-modes 需求 13.1，design §2.4），同样按主题取值。
+   */
+  const REQUIRED_VARS = [
+    "--bg",
+    "--text",
+    "--border",
+    "--accent",
+    "--card-bg",
+    "--turn-shadow",
+    "--turn-fold-shadow",
+  ];
 
   /**
    * 取出以 `[data-theme="key"]` 为（其中一条）选择器的那个块的声明体。

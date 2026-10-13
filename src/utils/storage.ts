@@ -1,5 +1,6 @@
 import { ReaderSettings, ReadingProgress, Bookmark } from "../types";
 import { SLIDER_SPECS, normalizeSliderSettings } from "./sliderSettings";
+import { DEFAULT_PAGE_ANIM, normalizePageAnim } from "./pageAnim";
 
 /*
  * 这里曾有 `ThemeConfig` 与 `THEME_CONFIGS`（5 套 × 5 个颜色），任务 44 一并删除：
@@ -22,6 +23,9 @@ const DEFAULT_SETTINGS: ReaderSettings = {
   // 它必须与 `utils/bookCache.ts` 的 `DEFAULT_MAX_BOOKS` 一致（有单测钉住）；不 import 的原因
   // 见 `sliderSettings.ts` 的模块说明（bookCache 要读本模块的设置，会成环）。
   cacheMaxBooks: SLIDER_SPECS.cacheMaxBooks.fallback,
+  // 翻页模式默认滚动（3，D5）。旧存储没有这个键，浅合并后落到这里，老用户升级后仍是滚动阅读。
+  // 取自 `pageAnim.ts` 的 `DEFAULT_PAGE_ANIM`，与归一时"不认识取默认值"是同一个数。
+  pageAnim: DEFAULT_PAGE_ANIM,
 };
 
 // 白名单：只有这些字段会被写回 localStorage。旧版本遗留的键（如 viewMode）
@@ -36,6 +40,7 @@ function pickSettings(raw: ReaderSettings): ReaderSettings {
     fontFamily: raw.fontFamily,
     contentWidth: raw.contentWidth,
     cacheMaxBooks: raw.cacheMaxBooks,
+    pageAnim: raw.pageAnim,
   };
 }
 
@@ -136,13 +141,16 @@ function asCharOffset(value: unknown): number {
  * 浅合并保证新增字段（如 `cacheMaxBooks`）对旧存储自动取默认值；随后 `normalizeSliderSettings`
  * 把 5 个滑杆项归一到各自的区间与步进网格上（需求 6.5，D4）：手改过的存储给出的字符串、越界值、
  * 不在网格上的值在这里就收拢，滑杆位置、显示数值与生效值因此一致；
+ * 接着 `normalizePageAnim` 把 `pageAnim` 归一到 0–4 的整数，缺失、字符串、小数、越界一律为 3
+ * （需求 1.2）；
  * 最后 `pickSettings` 把结果收拢到白名单字段，旧版遗留键不会漏进返回值。
  * `theme` 与 `fontFamily` 不在归一范围内，仍是浅合并的原值。
  */
 export function getStoredSettings(): ReaderSettings {
   const raw = readJson(SETTINGS_KEY);
   if (typeof raw !== "object" || raw === null) return DEFAULT_SETTINGS;
-  return pickSettings(normalizeSliderSettings({ ...DEFAULT_SETTINGS, ...raw }));
+  const merged = normalizeSliderSettings({ ...DEFAULT_SETTINGS, ...raw });
+  return pickSettings({ ...merged, pageAnim: normalizePageAnim(merged.pageAnim) });
 }
 
 export function saveStoredSettings(settings: ReaderSettings) {

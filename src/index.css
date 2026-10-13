@@ -42,6 +42,12 @@
  * 换成同色相更深一档的颜色（色相差 ≤ 8°），对两种底色均 ≥ 5.7:1。深色两套本就达标，不改。
  * `--bg`、`--card-bg`、`--text`、`--border` 与主题键、名称都不变（需求 12.2）；下限由
  * `src/utils/palette.test.ts` 核对。
+ *
+ * 翻页阴影（reader-page-turn-modes 需求 13.1，design §2.4）：`--turn-shadow` 是覆盖模式
+ * 阴影与仿真前景/背面阴影渐变的起始色，`--turn-fold-shadow` 是仿真背面的折痕色。两者都是
+ * 半透明色，只叠在不透明的 `var(--bg)` 页面上，不参与对比度核对。default 沿用 Legado 的
+ * `0x66111111` / `0xB0333333`，sepia 与 eyecare 取各自 `--text` 的 RGB，dark 用纯黑；黑底上
+ * 没有更暗的阴影，black 改用淡亮边区分层次。取值是视觉初稿，可在评审时调。
  */
 
 /* 默认明亮 */
@@ -53,6 +59,8 @@
   --border: #e5e7eb;
   --accent: #1d4ed8;
   --card-bg: #f9fafb;
+  --turn-shadow: rgba(17, 17, 17, 0.40);
+  --turn-fold-shadow: rgba(51, 51, 51, 0.69);
 }
 
 /* 复古羊皮 */
@@ -63,6 +71,8 @@
   --border: #ebd9bf;
   --accent: #92400e;
   --card-bg: #f2e6d0;
+  --turn-shadow: rgba(82, 60, 33, 0.40);
+  --turn-fold-shadow: rgba(82, 60, 33, 0.55);
 }
 
 /* 护眼豆绿 */
@@ -73,6 +83,8 @@
   --border: #d1e4cf;
   --accent: #166534;
   --card-bg: #dff0dc;
+  --turn-shadow: rgba(36, 66, 40, 0.38);
+  --turn-fold-shadow: rgba(36, 66, 40, 0.52);
 }
 
 /* 暗色夜间 */
@@ -83,6 +95,8 @@
   --border: #334155;
   --accent: #60a5fa;
   --card-bg: #283141;
+  --turn-shadow: rgba(0, 0, 0, 0.55);
+  --turn-fold-shadow: rgba(0, 0, 0, 0.60);
 }
 
 /* 极夜纯黑 */
@@ -93,6 +107,8 @@
   --border: #262626;
   --accent: #38bdf8;
   --card-bg: #121212;
+  --turn-shadow: rgba(255, 255, 255, 0.10);
+  --turn-fold-shadow: rgba(255, 255, 255, 0.08);
 }
 
 /**

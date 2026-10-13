@@ -42,7 +42,7 @@
  * 每个用例首次导航前 `clock.install()`，书加载完成后暂停（`pauseAt` 须跳向将来，取 `PAUSE_LEAD_MS` 的余量；
  * 此时尚无点击与滚动），此后只经 `page.clock.runFor` 推进。9.5 的"推进 100 ms"在收到 `scroll` 事件之后
  * 执行：应用的 rAF 与 1,000 ms 的进度保存防抖都受时钟控制，100 ms 足以跑过若干帧而早于保存。
- * 时钟暂停还保证顶栏不会自动隐藏（阅读器内的点击与换章都会启动 4.5 s 的隐藏定时器，全程推进量只有
+ * 时钟暂停还保证顶栏不会自动隐藏（点顶栏与换章、书签跳转都会启动 4.5 s 的隐藏定时器，全程推进量只有
  * 100 ms）。9.7 不涉及时长，同样装时钟并暂停，只为让顶栏在连续点击期间保持可见。
  *
  * 9.7 的"任何时刻"：点击之间只等顶栏按钮的可访问名称切换（读者看到图标变化再点下一次），并读一次
@@ -314,7 +314,7 @@ async function jumpFromOtherChapter(
   await step(`点击“我的书签”中「${entry.chapterTitle}」的条目`, async () => {
     const drawer = tocDrawer(page);
     const target = drawer.bookmarkEntry(entry.chapterTitle);
-    await expect(target, "页面上与该章节名完全相同的文本应只有条目标题一处").toHaveCount(1);
+    await expect(target, "书签条目内与该章节名完全相同的文本应恰有标题一处").toHaveCount(1);
     await target.click();
     await expect(drawer.marker, "目录抽屉应已关闭").toHaveCount(0);
   });

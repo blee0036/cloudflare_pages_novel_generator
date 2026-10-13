@@ -25,10 +25,20 @@
  * 需求 2.1、14.2）。
  *
  * 应用的进度保存监听 `<main>` 的 `scroll` 事件（rAF 里算判定段落，再以 1,000 ms 防抖落盘），恢复位置
- * 赋值 `<main>.scrollTop`。同一场景的断言分在两个用例中：9.8 的 900 ms 未写入 / 1,100 ms 已更新，9.9 的
+ * 赋值 `<main>.scrollTop`。导航定位之后滚动视图的位置"钉住"，直到读者操作（`wheel` 等）才上报位置
+ * （翻页模式 design §3.3）；`scrollJudgeParagraphTo` 赋值前先派发一个 `deltaY` 为 0 的 `wheel`，即读者的
+ * 滚动。同一场景的断言分在两个用例中：9.8 的 900 ms 未写入 / 1,100 ms 已更新，9.9 的
  * 同一章 / 判定段落仍为 k，9.10 的新字号 / 判定段落仍为 k；两个用例都执行该条 WHEN 中的全部操作（滚到
  * 第 k 段、推进 1,100 ms、调字号、重新载入）。9.12 不依赖滚动保存。打开进度章节本身就会写一条"该章章首"
- * 的进度记录（`ReaderPage` 的落盘 effect），9.8 的"滚动前的值"即这一条。
+ * 的进度记录（`useReadingPosition` 的落盘 effect），9.8 的"滚动前的值"即这一条。
+ *
+ * ## 章首（翻页模式 design §3.1、§13.3）
+ *
+ * 默认翻页模式是滚动：`<main>` 里按目录顺序挂着当前章前后的若干正文章节，每章一个
+ * `<section data-chapter-id>`，判定段落、段落起点与正文高度都以当前章区段为界（`e2e/support/reader.ts`）。
+ * 跳到某章后它的前一章仍挂在上方（需求 10.7），所以 9.12 的"章首"不是 `<main>` 的 `scrollTop` 为 0，而是
+ * 当前章区段顶边对齐容器顶边：`readChapterScroll` 的 `intoChapter` 在 1 px 取整余量内为 0；有前一个正文章节
+ * 时，紧挨在当前区段之上的区段即为它。文档本身仍不可滚，`scrollTop` 为 0。
  *
  * `RDF 3.4`（reader-defect-fixes 需求 3.4 的偏移范围）：同样执行 9.8 的 WHEN 并推进 1,100 ms，等进度键更新后
  * 读出记录，断言其 `chapterId` 为进度章节、`charOffset` 不小于第 k 段的章内起点、小于第 k + 1 段的起点。
@@ -56,7 +66,7 @@
  *
  * 重新载入用 `page.goto`（不带 `?ch=` 的 `/read/<id>`，9.9 的"重新访问"）。首次打开的 URL 带 `?ch=`，
  * 两者不同，是一次新的导航，浏览器不做重载时的滚动位置还原。Controlled_Clock 在新文档里按日志重放，
- * 保持暂停；书的加载只依赖 fetch、IndexedDB 与解压流，不需要推进时钟。9.12 的"scrollTop 为 0"读数前推进
+ * 保持暂停；书的加载只依赖 fetch、IndexedDB 与解压流，不需要推进时钟。9.12 的章首读数前推进
  * 2 帧（`2 × CLOCK_STEP_MS`），让受时钟控制的 rAF 回调执行到（`waitFrames` 不能与时钟同用）。
  */
 import type { Page } from "@playwright/test";
@@ -70,12 +80,13 @@ import {
   expectOffsetInParagraph,
   judgeScrollTarget,
   openReader,
+  readChapterScroll,
   readDocumentScroll,
   readJudgeParagraph,
-  readMainScroll,
   readParagraphStarts,
   scrollJudgeParagraphTo,
   type BookUnderTest,
+  type ChapterScroll,
   type JudgeReading,
 } from "../../support/reader";
 import { CLOCK_STEP_MS } from "../../support/settings";
@@ -578,8 +589,19 @@ test.describe("RDF 3.6 行高改变后恢复进度", () => {
 // 9.12 带 ?ch= 时回到章首
 // ---------------------------------------------------------------------------
 
+/** 章首：当前章区段顶边与容器顶边之差（`intoChapter`）的取整余量。 */
+const CHAPTER_START_SLACK_PX = 1;
+
+/** 紧挨在当前章区段之上的那个区段的 `data-chapter-id`；当前区段是窗口首章时为 null（测量）。 */
+function sectionAboveCurrent(page: Page): Promise<number | null> {
+  return reader(page).article.evaluate((article) => {
+    const above = article.closest("section[data-chapter-id]")?.previousElementSibling;
+    return above instanceof HTMLElement && above.matches("section[data-chapter-id]") ? Number(above.dataset.chapterId) : null;
+  });
+}
+
 test.describe("9.12 带 ?ch= 重新载入", () => {
-  test("9.12 进度写入后以带有效 ?ch=<n> 的 URL 重新载入：显示第 n 章章首（<main> 与文档 scrollTop 为 0），不按已存进度恢复段落", async ({
+  test("9.12 进度写入后以带有效 ?ch=<n> 的 URL 重新载入：显示第 n 章章首（区段顶边对齐 <main> 顶边，上方挂着前一章；文档 scrollTop 为 0），不按已存进度恢复段落", async ({
     page,
     lib,
     bookLog,
@@ -599,17 +621,46 @@ test.describe("9.12 带 ?ch= 重新载入", () => {
     await expectCurrentChapter(page, book.facts, other);
     await advanceClock(page, 2 * CLOCK_STEP_MS, "2 帧，让受时钟控制的 rAF 回调执行到");
     await expectDocumentNotScrollable(page);
-    await step("9.12 显示章首：<main> 与文档滚动元素的 scrollTop 均为 0，判定段落为第 0 段", async () => {
-      const [main, doc, judge] = await Promise.all([
-        readMainScroll(page),
-        readDocumentScroll(page),
-        readJudgeParagraph(page),
-      ]);
-      expect({ main: main.scrollTop, document: doc.scrollTop }, "<main> 与文档的 scrollTop").toEqual({
-        main: 0,
-        document: 0,
-      });
-      expect(judge.index, "判定段落序号（章首）").toBe(0);
-    });
+    const ordinal = book.facts.bodyOrdinals[other];
+    if (ordinal === null || ordinal === undefined) throw new Error(`下标 ${other} 不是正文章节`);
+    const prev = ordinal > 0 ? book.facts.bodyIndices[ordinal - 1] : null;
+    await step(
+      `9.12 显示章首：下标 ${other} 的区段顶边对齐 <main> 顶边（容差 ${CHAPTER_START_SLACK_PX} px）` +
+        (prev === null ? "" : `，前一个正文章节（下标 ${prev}）挂在上方`) +
+        "；文档滚动元素的 scrollTop 为 0，判定段落为第 0 段",
+      async () => {
+        let last: ChapterScroll | null = null;
+        let above: number | null = null;
+        try {
+          await expect
+            .poll(
+              async () => {
+                last = await readChapterScroll(page);
+                above = await sectionAboveCurrent(page);
+                return {
+                  chapterId: last.chapterId,
+                  atStart: Math.abs(last.intoChapter) <= CHAPTER_START_SLACK_PX,
+                  above,
+                };
+              },
+              { message: "当前章区段、章首与上方区段（<main> 的 scrollTop 不为 0：上方挂着前一章）" },
+            )
+            .toEqual({ chapterId: other, atStart: true, above: prev });
+        } finally {
+          const r = last as ChapterScroll | null;
+          if (r !== null) {
+            test.info().annotations.push({
+              type: "progress-plan",
+              description:
+                `9.12 重新载入后：当前章区段 ${r.chapterId}，<main> scrollTop ${r.scrollTop}、区段顶边 ${r.chapterStart}` +
+                `（intoChapter ${r.intoChapter}）；上方区段 ${String(above)}`,
+            });
+          }
+        }
+        const [doc, judge] = await Promise.all([readDocumentScroll(page), readJudgeParagraph(page)]);
+        expect(doc.scrollTop, "文档滚动元素的 scrollTop").toBe(0);
+        expect(judge.index, "判定段落序号（章首）").toBe(0);
+      },
+    );
   });
 });

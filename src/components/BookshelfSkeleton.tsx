@@ -81,7 +81,7 @@ export const BookshelfSkeleton: React.FC = () => (
    * 占位方块全部包在 `aria-hidden` 里：它们是装饰，逐个读出来就是一串无意义的空节点。
    */
   <div role="status" aria-busy="true" className="py-2">
-    <span className="sr-only">正在载入书架索引...</span>
+    <span className="sr-only">正在载入书架...</span>
     <div
       aria-hidden="true"
       className={`${SHELF_GRID_CLASS} motion-safe:animate-pulse`}

@@ -114,7 +114,9 @@ export const VISUAL = {
 /**
  * 性能观测（需求 14）。
  * - samples / keyIntervalMs：每项 5 次取样，逐字输入的按键间隔 100 ms（14.2、14.7）
- * - budgetsMs：Perf_Budget，只在此处配置（14.3）；(e) `[book-load]` 不设预算
+ * - budgetsMs：Perf_Budget，只在此处配置（14.3）；(e) `[book-load]` 不设预算。键的书写顺序即
+ *   Perf_Metrics 表的行序（`e2e/perf/metrics.ts` 的 `PERF_KEYS`）。(a)–(d) 来自 e2e-visual-testing
+ *   需求 14.2；(f)–(h) 来自 reader-page-turn-modes 需求 14.1–14.3（该规格的需求 14.4 要求记入 perf.json）
  *
  * (c) 的书架检索词与 (d) 的阅读器关键词不在此处配置：`perf` 用例在运行时从 Fixture_Library 的
  * `roles.json` 推导（`e2e/tests/perf/perf.spec.ts`）。
@@ -131,6 +133,12 @@ export const PERF = {
     shelfSearch: 350,
     /** (d) 阅读器检索期间的最长长任务 */
     readerSearchLongTask: 100,
+    /** (f) 分页模式拖拽翻页与连续点击翻页期间的最长长任务（翻页模式 14.1） */
+    pagedTurnLongTask: 50,
+    /** (g) 排版输入变化到显示包含原阅读位置的页（翻页模式 14.2） */
+    repaginate: 300,
+    /** (h) 跨章翻页提交到新相邻章分页完成（翻页模式 14.3） */
+    neighborPaginate: 600,
   },
 } as const;
 

@@ -3,20 +3,29 @@
  *
  * 规则：
  * - 只用 role（含可访问名称）、`aria-label`（经 role 名称或 `getByLabel`）与可见文本；不用
- *   `data-testid`、CSS 选择器或 DOM 层级路径，也不向 `src/` 添加任何属性。
+ *   `data-testid`、CSS 选择器或 DOM 层级路径，也不为定位向 `src/` 添加属性。
+ * - 唯一的例外是阅读器的"当前章 / 当前页"：滚动模式的章节窗口同时挂着多章，分页模式翻页途中同时
+ *   有多张页面图层，各章 / 各页的 role 与结构完全相同，没有可访问名称能区分哪一个是读者正在读的。
+ *   正文类定位因此以阅读器视图自带的运行时标记 `[data-current="true"]` 为作用域（滚动模式的当前章
+ *   `<section>`、分页模式的当前页图层；reader-page-turn-modes design §4.5、§7.1、§13.3），见 `reader()`。
+ * - 另一个例外是"我的书签"条目：它是没有 role 的 `<div>`，整个目录抽屉也没有可命名的容器。条目以 role
+ *   定位到的"删除此书签"按钮为锚，取其父元素（即条目，`readBookmarkEntries` 的度量也按这个结构）作作用域，
+ *   见 `tocDrawer().bookmarkEntry`。
  * - 需要在某个区域内查找时，用 role 定位到的区域作为作用域（`getByRole("article").getByRole(...)`），
  *   或以 role 过滤（`filter({ has: getByRole("mark") })`）。应用里的弹窗与三个抽屉都没有
  *   `role="dialog"` 或其他可命名的容器，所以它们不提供"容器"定位，只提供各自内部的锚点；
  *   `marker` 是判断该弹窗 / 抽屉是否打开用的唯一锚点。
  * - 名称一律精确匹配（字符串配 `exact: true`，或首尾锚定的正则）：非精确匹配是不区分大小写的
- *   子串匹配，"上一章"会同时命中"上一章 (←)"。
+ *   子串匹配，"目录"会同时命中"关闭目录"与"章节目录 (快捷键: T)"。
  * - 测量性 DOM 遍历（找滚动祖先、读网格列数等）不在本文件，由调用方从这里定位到的元素出发自行
  *   完成，且只用于度量。
  *
  * 可访问名称的来历（以 Playwright 1.62 的计算为准）：按钮先取内容文本，内容为空才退到 `title`；
  * 文本输入框无 `<label>` 时取 `placeholder`；块级子元素两侧补空格，整串空白折叠为一个空格。
  * 因此：
- * - 纯图标按钮（顶栏各按钮、底栏"上一章 (←)""下一章 (→)"、"删除此书签"）的名称就是 `title`。
+ * - 纯图标按钮（顶栏各按钮、"删除此书签"）的名称就是 `title`。
+ * - 底栏换章按钮也是纯图标，但名称来自 `aria-label`"上一章""下一章"，两种渲染族下相同；`title` 只是
+ *   悬停提示（可访问描述），滚动模式附按键"上一章 (←)""下一章 (→)"，分页模式没有换章键，不附。
  * - 底栏目录 / 检索按钮在 `sm`（640 px）及以上显示文字"目录""全书搜索"，名称取文字；窄屏文字
  *   被隐藏，名称退到 `title`"查看完整章节列表 (T)""全文检索 (F)"。定位写成两者之一。
  * - 设置抽屉的主题色块显示主题名的前两个字（`name.slice(0, 2)`），名称取这两个字，完整主题名
@@ -34,8 +43,8 @@
  * 定位不到的元素（已渲染但没有可用的 role 名称或文本，需求 16.4 的可测性缺口，由各场景任务按需
  * 记 Finding）：
  * - 弹窗与抽屉的遮罩：无 role 的 `<div>`。
- * - "我的书签"列表条目是带点击处理器的 `<div>`，没有 role；只能按其中的章节标题文本定位，见
- *   `tocDrawer().bookmarkEntry`。
+ * - "我的书签"列表条目是带点击处理器的 `<div>`，没有 role；只能在条目之内按其中的章节标题文本定位，见
+ *   文件头规则的例外与 `tocDrawer().bookmarkEntry`。
  */
 import type { Locator, Page } from "@playwright/test";
 import type { ReaderThemeKey } from "../../src/types";
@@ -109,21 +118,19 @@ export const NAMES = {
   headerSettings: "阅读设置 (快捷键: S)",
   fullscreen: "全屏切换 (快捷键: F11)",
 
-  // 阅读器底栏与章末导航（ReaderPage）
-  prevChapter: "上一章 (←)",
-  nextChapter: "下一章 (→)",
+  // 阅读器底栏（ReaderPage）。换章按钮的名称来自 `aria-label`，两种渲染族下相同（见文件头）
+  prevChapter: "上一章",
+  nextChapter: "下一章",
   footerTocWide: "目录",
   footerTocNarrow: "查看完整章节列表 (T)",
   footerSearchWide: "全书搜索",
   footerSearchNarrow: "全文检索 (F)",
   chapterProgress: "章节进度",
-  prevChapterEnd: "上一章",
-  nextChapterEnd: "下一章",
 
   // 加载与错误视图（ReaderPage）
   loadProgress: "书籍加载进度",
-  loadingHeading: "正在流式解压书籍...",
-  loadingNote: "原生 Gzip 解压加速中",
+  loadingHeading: "正在打开书籍...",
+  loadingNote: "正在载入正文",
   loadErrorHeading: "未能打开书籍",
   noContentHeading: "这本书没有可阅读的章节",
 
@@ -153,7 +160,7 @@ export const NAMES = {
   cacheMaxBooks: "离线缓存本数上限",
   clearCache: "清空缓存",
   clearingCache: "清空中…",
-  download: "下载 UTF-8 纯文本",
+  download: "下载 TXT 文件",
 } as const;
 
 /**
@@ -362,15 +369,28 @@ export function detailModal(page: Page) {
 /**
  * 正文中的检索跳转高亮（`<article>` 内的 `<mark>`，role mark）。检索抽屉结果里的 `<mark>`
  * 不在 `<article>` 内，不计入。
+ *
+ * 不限定在当前章 / 当前页之内：高亮按其所属章渲染，滚动模式下窗口里挂着的任一章都可能带着它，
+ * "正文中没有高亮"一类断言要覆盖全部已挂载的章。分页模式的非当前页图层与测量盒都设了
+ * `aria-hidden`，不在可访问性树里，`getByRole` 本就不会命中其中的 `<article>`。
  */
 export function readerJumpHighlight(page: Page): Locator {
   return page.getByRole("article").getByRole(MARK_ROLE);
 }
 
+/**
+ * 读者正在读的那一章 / 那一页的正文 `<article>`：滚动模式下是带 `data-current="true"` 的章节
+ * `<section>` 里的那篇，分页模式下是带 `data-current="true"` 的当前页图层里的那篇（见文件头的例外）。
+ * 整页恰有一个；不带标记的其余章、翻页途中的其余页图层、分页测量盒都不计入。
+ */
+function currentArticle(page: Page): Locator {
+  return page.locator('[data-current="true"]').getByRole("article");
+}
+
 /** 阅读器正文视图（`/read/<id>` 加载完成后）。 */
 export function reader(page: Page) {
   const banner = page.getByRole("banner");
-  const article = page.getByRole("article");
+  const article = currentArticle(page);
   return {
     /** 顶栏（`<header>`，banner）。正文 `<article>` 内的 `<header>` 不是 banner。 */
     topBar: banner,
@@ -402,19 +422,17 @@ export function reader(page: Page) {
     footerSearchButton: page.getByRole("button", { name: FOOTER_SEARCH_NAME }),
     chapterSlider: page.getByRole("slider", { name: NAMES.chapterProgress, exact: true }),
 
-    /** 滚动容器（`<main>`）。 */
+    /** 阅读区（`<main>`）：滚动模式下是滚动容器，分页模式下是页面图层的包含块。 */
     main: page.getByRole("main"),
+    /** 当前章（滚动模式）/ 当前页（分页模式）的正文 `<article>`，整页恰有一个。 */
     article,
-    /** 正文章节标题（`<article>` 内的 `<h1>`）。 */
+    /** 当前章的正文章节标题（`<article>` 内的 `<h1>`）。分页模式下只在本章第 1 页（需求 2.2）。 */
     chapterHeading: article.getByRole("heading", { level: 1 }),
-    /** 章节标题下的"第 N / M 章"。 */
+    /** 章节标题下的"第 N / M 章"。分页模式下同样只在本章第 1 页。 */
     chapterPosition: article.getByText(/^第 \d+ \/ \d+ 章$/),
-    /** 正文段落（`<article>` 内的 `<p>`）。 */
+    /** 当前章的正文段落（`<article>` 内的 `<p>`）；分页模式下是当前页上的段落片段。 */
     paragraphs: article.getByRole("paragraph"),
     jumpHighlight: readerJumpHighlight(page),
-    /** 章末导航的"上一章""下一章"（带文字的按钮，区别于底栏的纯图标按钮）。 */
-    prevChapterEndButton: article.getByRole("button", { name: NAMES.prevChapterEnd, exact: true }),
-    nextChapterEndButton: article.getByRole("button", { name: NAMES.nextChapterEnd, exact: true }),
   };
 }
 
@@ -427,7 +445,9 @@ export interface BottomBarControl {
 /**
  * Bottom_Bar（`<footer>`，contentinfo）的 5 个控件，按从左到右的顺序：上一章、目录、章节进度滑杆、
  * 全文检索、下一章（reader-defect-fixes 需求 8 的 Glossary）。都以 contentinfo 区域为作用域按 role 与
- * 名称定位，章末导航的"上一章""下一章"（在 `<article>` 内）不在其中。
+ * 名称定位。底栏的"上一章""下一章"是阅读器里仅有的换章按钮。历史：正文 `<article>` 末尾
+ * 曾有带文字"上一章""下一章"的章末导航卡，已随 reader-page-turn-modes 删除（需求 12.8），分页模式
+ * 跨章靠翻页、滚动模式跨章靠连续滚动。
  */
 export function bottomBarControls(page: Page): readonly BottomBarControl[] {
   const bar = page.getByRole("contentinfo");
@@ -444,7 +464,7 @@ export function bottomBarControls(page: Page): readonly BottomBarControl[] {
 export function readerLoading(page: Page) {
   return {
     heading: page.getByRole("heading", { name: NAMES.loadingHeading, exact: true }),
-    /** 标题下的说明带百分比时（确定态）："原生 Gzip 解压加速中 (N%)"；不确定态不带百分比，不匹配。 */
+    /** 标题下的说明带百分比时（确定态）："正在载入正文 (N%)"；不确定态不带百分比，不匹配。 */
     percentNote: page.getByText(new RegExp(`^${escapeRegExp(NAMES.loadingNote)} \\(\\d{1,3}%\\)$`)),
     /** "书籍加载进度"进度条；确定态带 `aria-valuenow`，不确定态不带。 */
     progress: page.getByRole("progressbar", { name: NAMES.loadProgress, exact: true }),
@@ -473,6 +493,7 @@ export function readerError(page: Page) {
  */
 export function tocDrawer(page: Page) {
   const tabToc = page.getByRole("button", { name: /^章节目录 \(\d+\)$/ });
+  const bookmarkDeleteButtons = button(page, NAMES.deleteBookmark);
   return {
     marker: tabToc,
     /** 右上角的关闭按钮（×），名称"关闭目录"（需求 11.1）。 */
@@ -499,13 +520,17 @@ export function tocDrawer(page: Page) {
     empty: page.getByText(NAMES.noMatchingChapter, { exact: true }),
 
     /**
-     * "我的书签"页签里某条书签（按其章节标题文本）。条目本身没有 role，定位到的是标题所在的
-     * 文本元素，点击会冒泡到条目的点击处理器。该章节恰为当前章时，顶栏副标题与正文 `<h1>`
-     * 也是同一段文字，会匹配多个。
+     * "我的书签"页签里某条书签（按其章节标题文本）。定位到的是条目内标题所在的文本元素，点击会冒泡到
+     * 条目的点击处理器。
+     *
+     * 只在书签条目之内找（见文件头的例外）：在整页按文本找会同时命中顶栏副标题（该章为当前章时）与
+     * 正文 `<h1>`——滚动模式的章节窗口同时挂着多章，书签所在章常挂在当前章旁边（翻页模式需求 10.7）。
+     * 条目内与标题同文的只有标题一处；同一章有几条书签就匹配几个。
      */
-    bookmarkEntry: (chapterTitle: string) => page.getByText(chapterTitle, { exact: true }),
+    bookmarkEntry: (chapterTitle: string) =>
+      bookmarkDeleteButtons.locator("..").getByText(chapterTitle, { exact: true }),
     /** 每条书签各一个"删除此书签"按钮，计数即书签条数。 */
-    bookmarkDeleteButtons: button(page, NAMES.deleteBookmark),
+    bookmarkDeleteButtons,
     noBookmarks: page.getByText(/^暂无书签。/),
   };
 }
@@ -536,7 +561,7 @@ export function searchDrawer(page: Page) {
     /** 结果条目里的命中片段（`<mark>`）。 */
     resultMarks: results.getByRole(MARK_ROLE),
     /** 未输入关键词时的提示。 */
-    idleHint: page.getByText(/^输入关键词即可在整本小说/),
+    idleHint: page.getByText(/^输入关键词，在整本书里查找/),
     /** 无命中时的提示。 */
     noHits: page.getByText(/^未在全书中找到与 ".*" 相关的内容$/),
   };
@@ -617,10 +642,13 @@ export function overlayCloseButtons(page: Page): Record<OverlayKey, Locator> {
   };
 }
 
-/** 两个主视图的标志：书架的检索框、阅读器的正文 `<article>`。 */
+/**
+ * 两个主视图的标志：书架的检索框、阅读器当前章 / 当前页的正文 `<article>`（与 `reader().article`
+ * 相同；滚动模式下窗口里有多篇 `<article>`，不限定当前章会让"恰好 1 个且可见"的判断失效）。
+ */
 export function viewMarkers(page: Page): { shelf: Locator; reader: Locator } {
   return {
     shelf: shelf(page).searchBox,
-    reader: page.getByRole("article"),
+    reader: currentArticle(page),
   };
 }

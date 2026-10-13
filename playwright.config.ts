@@ -29,7 +29,7 @@
  *   `.txt.gz` 响应头只由其项目决定（6.11）。
  * - `visual.spec.ts` 只在 `tests/fixture/`，只有 `fixture` 项目收集它（12.1）。
  * - `perf` 是其余全部项目（含 `tooling`）的 `dependencies`：它先于一切用例单独运行，需求 14.2 的
- *   用例不与任何其它用例并发（6.10）。它只含 `perf.spec.ts` 一个文件，不开 `fullyParallel`，3 个
+ *   用例不与任何其它用例并发（6.10）。它只含 `perf.spec.ts` 一个文件，不开 `fullyParallel`，5 个
  *   用例在同一 worker 里顺序执行。注意 Playwright 不把命令行的 `-g` 与文件过滤作用于依赖项目：
  *   带过滤的运行也会先完整执行 `perf`，需要时可透传 `--no-deps` 跳过（`npm run e2e:update`
  *   即如此，见 `run.mjs`）。

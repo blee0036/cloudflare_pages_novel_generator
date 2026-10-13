@@ -1,7 +1,18 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { X, Search, BookOpen, User, HardDrive, Play, RefreshCw } from "lucide-react";
+import {
+  X,
+  Search,
+  BookOpen,
+  User,
+  Play,
+  RefreshCw,
+  Download,
+  TriangleAlert,
+} from "lucide-react";
 import { BookSummary, BookToc, ReadingProgress } from "../types";
 import { loadToc } from "../utils/tocCache";
+import { downloadButtonLabel } from "../utils/bookDownload";
+import { useBookDownload } from "../hooks/useBookDownload";
 import {
   GRID_CELL_HEIGHT,
   GRID_ROW_PITCH,
@@ -144,6 +155,10 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
     });
   };
 
+  // 与书卡上的下载按钮共用同一个任务（按 bookId），在这里点和在书卡上点是同一件事。
+  // hook 必须在下面的提前返回之前调用。
+  const download = useBookDownload(isOpen ? book : null);
+
   if (!isOpen || !book) return null;
 
   const charCountStr =
@@ -178,11 +193,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
               <span>共 {book.totalChapters} 章</span>
               <span>·</span>
               <span>{charCountStr}</span>
-              <span>·</span>
-              <span className="flex items-center">
-                <HardDrive className="w-3.5 h-3.5 mr-1 opacity-70" />
-                {(book.gzSize / (1024 * 1024)).toFixed(1)}MB Gzip
-              </span>
+              {/* 不显示文件大小：手里只有压缩包大小，与下载下来的 TXT 不是一个数（见 BookCard） */}
             </div>
           </div>
 
@@ -200,7 +211,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
         {/* Quick Read / Resume Button & Search */}
         <div className="p-4 border-b border-[var(--border)] flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="relative w-full sm:w-72">
+          <div className="relative w-full sm:w-72 min-w-0">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
             <input
               type="text"
@@ -211,17 +222,36 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
             />
           </div>
 
-          <button
-            onClick={() => onSelectChapter(book.id, progress ? progress.chapterId : 0)}
-            className="w-full sm:w-auto px-5 py-2 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center space-x-1.5 shadow-md shadow-blue-500/20 transition-all shrink-0"
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>
-              {progress
-                ? `继续阅读 (第 ${progress.chapterId + 1} 章)`
-                : "从第 1 章开始阅读"}
-            </span>
-          </button>
+          <div className="w-full sm:w-auto flex items-center gap-2 shrink-0">
+            {/* 整本下载：带文字，与"开始阅读"并排。进度与失败直接写在按钮上 */}
+            <button
+              type="button"
+              onClick={download.start}
+              aria-busy={download.state.status === "loading"}
+              className="shrink-0 px-4 py-2 rounded-xl text-xs font-semibold border border-[var(--border)] hover:bg-[var(--hover)] text-[var(--text)] flex items-center justify-center space-x-1.5 transition-colors tabular-nums"
+            >
+              {download.state.status === "loading" ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+              ) : download.state.status === "failed" ? (
+                <TriangleAlert className="w-3.5 h-3.5" aria-hidden="true" />
+              ) : (
+                <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              )}
+              <span>{downloadButtonLabel(download.state, "下载整本")}</span>
+            </button>
+
+            <button
+              onClick={() => onSelectChapter(book.id, progress ? progress.chapterId : 0)}
+              className="flex-1 sm:flex-none px-5 py-2 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center space-x-1.5 shadow-md shadow-blue-500/20 transition-all"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>
+                {progress
+                  ? `继续阅读 (第 ${progress.chapterId + 1} 章)`
+                  : "从第 1 章开始阅读"}
+              </span>
+            </button>
+          </div>
         </div>
 
         {/*

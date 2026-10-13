@@ -1,16 +1,18 @@
 /**
  * 无障碍冒烟（A11y_Scan；需求 15.1、15.2、15.9、16.4；设计"无障碍冒烟（需求 15）"；任务 20.4。
- * 违规即失败：reader-defect-fixes（RDF）需求 15.1、15.2、15.3，任务 17.1）。
+ * 违规即失败：reader-defect-fixes（RDF）需求 15.1、15.2、15.3，任务 17.1。分页模式的对比度扫描：
+ * reader-page-turn-modes（翻页模式）需求 13.4、15.5，任务 23.4）。
  * `fixture` 项目（:4611，Opaque_Mode），桌面视口（全局默认 1280×800），不装 Controlled_Clock。
  *
  * ## 用例
  *
- * `A11Y_SCANS`（`e2e/a11y/scans.ts`，31 次）每项一个用例，各自新上下文（6.1）。标题由
+ * `A11Y_SCANS`（`e2e/a11y/scans.ts`，36 次）每项一个用例，各自新上下文（6.1）。标题由
  * `a11yTestTitle` 生成，形如 `15.1 a11y-toc：目录抽屉 · 默认主题（未存储，实际 sepia）`、
  * `15.2 a11y-contrast-dark：阅读器正文 · dark（暗色夜间）· 仅 color-contrast`、
- * `RDF 15.6 a11y-contrast-toc-dark：目录抽屉 · dark（暗色夜间）· 仅 color-contrast`，节名部分取自
- * `describeA11yScan`。reporter（20.5）按 `a11y-result` 附件里的扫描名归节，不解析标题；没有附件的
- * 用例按与 `a11yTestTitle` 相等的标题找回。
+ * `RDF 15.6 a11y-contrast-toc-dark：目录抽屉 · dark（暗色夜间）· 仅 color-contrast`、
+ * `翻页模式 15.5 a11y-contrast-paged-dark：阅读器正文（翻页模式：覆盖）· dark（暗色夜间）· 仅 color-contrast`，
+ * 节名部分取自 `describeA11yScan`。reporter（20.5）按 `a11y-result` 附件里的扫描名归节，不解析标题；
+ * 没有附件的用例按与 `a11yTestTitle` 相等的标题找回。
  *
  * 每个用例：
  *
@@ -18,13 +20,20 @@
  *    的 20 次 Contrast_Extension_Scan）时首次导航前 `seedTheme`；15.1 的 6 个视图是"默认主题"
  *    （`THEME_UNSET`，localStorage 中没有已存储的主题），不 seed，`runA11yScan` 据
  *    `seededTheme(context)` 核对。Contrast_Extension_Scan 的 `book`、`url` 与同一视图的 15.1 扫描
- *    相同，第 2 步按 `view` 分支，进入方式与等待条件因此也相同（RDF 15.6）。
+ *    相同，第 2 步按 `view` 分支，进入方式与等待条件因此也相同（RDF 15.6）。翻页模式 15.5 的 5 次
+ *    分页模式扫描（`def.pageAnim` 不为 null）另在 `seedTheme` 之后 `seedPageMode(context, 覆盖)`
+ *    （`seedTheme` 只在设置键整体不存在时写入，顺序不能反）。其余 31 次不 seed 翻页模式，阅读器为默认
+ *    的滚动模式。
  * 2. 进入视图：按 `resolveA11yUrl(def, id)` 导航（书为 `lib.role("volumes")`，3.3 (b)；书架首屏
  *    不涉及某本书）。
  *    - 书架首屏：等首批书卡挂载、骨架移除。
  *    - 详情弹窗：等弹窗标志与该书书名、完整章节目录载入完、网格挂载章节单元。
  *    - 阅读器正文及三个抽屉：等本次导航的 `[book-load]` 行，再按 8.1 断言当前章节为下标 0
- *      （设计表格"下标 0"；15.2 的 5 次对比度扫描因此是同一章）。然后：目录抽屉点顶栏"章节目录"；
+ *      （设计表格"下标 0"；15.2 的 5 次对比度扫描因此是同一章）。分页模式扫描再等 `<main
+ *      data-page-mode>` 为所 seed 的模式、翻页落定（`data-turning="false"`，需求 13.4"无动画进行"）
+ *      在本章第 1 页，底栏页码标签显示 `1 / y`，顶栏与底栏完整可见（加载后不做任何操作，控制栏不会
+ *      自动隐藏）；扫描后再核对两栏仍可见，页码标签与两栏因此确在扫描范围内。边界提示的实时区域常驻
+ *      DOM，此时没有提示、空着，没有可查的文字。然后：目录抽屉点顶栏"章节目录"；
  *      检索抽屉先核对 `volumesKeyword` 在该书全文中命中 ≥ 1 次，点顶栏"全书内容检索"、等检索框
  *      自动获得焦点后输入它，等结果列出（15.1）；设置抽屉点顶栏"阅读设置"，等缓存占用统计完成
  *      （抽屉只在打开时统计一次，之后不再变化）。
@@ -34,7 +43,7 @@
  *
  * ## 判定（RDF 15.1–15.3；15.9、16.4）
  *
- * - 违规即失败（RDF 15.2，取代 EV D6 与 EV 15.8 的"违规与 incomplete 从不断言"，31 个扫描都适用）：
+ * - 违规即失败（RDF 15.2，取代 EV D6 与 EV 15.8 的"违规与 incomplete 从不断言"，36 个扫描都适用）：
  *   `runA11yScan` 返回 `status: "ok"` 后断言 `violations` 为空，不论影响级别。报出 ≥ 1 条违规时
  *   用例失败，失败信息首行概括扫描名、视图与主题和每条规则的 id、影响级别、节点数，其后逐个节点
  *   列出 `target`、`html`、`failureSummary` 与对比度数据。附件与结果文件照常是 `ok`，reporter 在
@@ -46,7 +55,7 @@
  *   "未执行"或违规数 0。
  * - 16.4：目标元素已渲染却按 role、`aria-label` 与可见文本都定位不到时，先在 Findings_Log 记
  *   可测性缺口，再在 `TESTABILITY_GAPS` 登记该扫描与 Finding 编号，用例在进入视图之前以
- *   `skipA11yScan` 跳过（`[16.4 F-xxx]`）。目前 31 个扫描依赖的元素（书架检索框、详情弹窗的
+ *   `skipA11yScan` 跳过（`[16.4 F-xxx]`）。目前 36 个扫描依赖的元素（书架检索框、详情弹窗的
  *   "章节目录 · 全本精校"、正文 `<article>`、三个抽屉的页签或标题、顶栏三个按钮、检索框与结果）
  *   都能定位，表为空。F-003（字号、行高与版心宽度滑杆曾没有可访问名称，已修复（reader-defect-fixes））
  *   也不曾影响定位：扫描不操作滑杆，修复前它由 axe 在 `a11y-settings` 里作为 `label` 违规报出。
@@ -63,6 +72,7 @@ import {
   type A11yScanName,
 } from "../../a11y/scans";
 import { expect, test, type BookLog, type Lib } from "../../support/fixtures";
+import type { PageAnim } from "../../../src/utils/pageAnim";
 import { detailModal, reader, searchDrawer, settingsDrawer, shelf } from "../../support/locators";
 import {
   bookText,
@@ -71,6 +81,10 @@ import {
   findOccurrences,
   openSearchDrawer,
   openTocDrawer,
+  pageModeSpec,
+  readControlsVisible,
+  seedPageMode,
+  waitPageTurnSettled,
   type BookUnderTest,
 } from "../../support/reader";
 import { step } from "../../support/step";
@@ -128,6 +142,33 @@ async function openReaderView(page: Page, bookLog: BookLog, book: BookUnderTest,
   await expectCurrentChapter(page, book.facts, READER_CHAPTER_INDEX);
 }
 
+/**
+ * 分页模式扫描（翻页模式 15.5）的阅读器正文：`<main data-page-mode>` 为所 seed 的模式，翻页已落定
+ * （`data-turning="false"`，需求 13.4"无动画进行"），当前页是本章（下标 0）第 1 页，底栏的页码标签
+ * 显示 `1 / y`，顶栏与底栏完整可见。页面加载后不做任何操作，控制栏没有自动隐藏的计时（只有点击与导航
+ * 才启动），扫描期间因此一直可见；扫描后由 `expectControlsStillVisible` 再核对一次。
+ */
+async function expectPagedReaderReady(page: Page, anim: PageAnim): Promise<void> {
+  const mode = pageModeSpec(anim);
+  await step(`等分页视图（${mode.label}）落定在本章第 1 页，页码标签与顶栏、底栏可见`, async () => {
+    const view = reader(page);
+    await expect(view.main, "<main> 的 data-page-mode").toHaveAttribute("data-page-mode", mode.attr);
+    const current = await waitPageTurnSettled(page);
+    expect(current.chapterId, "当前页所在章").toBe(READER_CHAPTER_INDEX);
+    expect(current.pageIndex, "当前页在本章中的序号").toBe(0);
+    // 页码标签（PageNumberBadge）：可见的 `x / y` 设 aria-hidden，读屏文字另在视觉隐藏的 span 里
+    await expect(view.bottomBar.getByText(`1 / ${current.pageCount}`, { exact: true }), "底栏的页码标签").toBeVisible();
+    expect(await readControlsVisible(page), "顶栏与底栏应完整可见").toBe(true);
+  });
+}
+
+/** 扫描之后核对顶栏与底栏仍完整可见：页码标签与两栏确实在扫描范围内（翻页模式 15.5）。 */
+async function expectControlsStillVisible(page: Page, def: A11yScanDef): Promise<void> {
+  await step(`核对 ${def.name} 扫描期间顶栏、底栏与页码标签一直可见`, async () => {
+    expect(await readControlsVisible(page), "扫描后顶栏与底栏应仍完整可见").toBe(true);
+  });
+}
+
 /** 检索抽屉：输入 `volumesKeyword` 并列出结果（15.1）。 */
 async function searchVolumesKeyword(page: Page, keyword: string): Promise<void> {
   await openSearchDrawer(page);
@@ -176,6 +217,7 @@ async function enterView(def: A11yScanDef, { page, lib, bookLog }: ScanFixtures)
   await openReaderView(page, bookLog, book, url);
   switch (def.view) {
     case "reader":
+      if (def.pageAnim !== null) await expectPagedReaderReady(page, def.pageAnim);
       return;
     case "toc":
       await openTocDrawer(page);
@@ -204,13 +246,21 @@ for (const def of A11Y_SCANS) {
   if (SCAN_BY_TITLE.has(title)) throw new Error(`A11y_Scan 用例标题重复：${title}`);
   SCAN_BY_TITLE.set(title, def);
 
-  test(title, async ({ page, lib, bookLog, seedTheme }) => {
+  test(title, async ({ page, context, lib, bookLog, seedTheme }) => {
     const gap = TESTABILITY_GAPS[def.name];
     if (gap !== undefined) await skipA11yScan(def, gap.finding, gap.detail);
 
     const seed = themeToSeed(def.theme);
     if (seed !== null) {
       await step(`首次导航前把已存储主题写为 ${seed}（${a11yClause(def)}）`, () => seedTheme(seed));
+    }
+    const anim = def.pageAnim;
+    if (anim !== null) {
+      // 须在 seedTheme 之后：它只在设置键整体不存在时写入（见 seedPageMode）
+      const { label } = pageModeSpec(anim);
+      await step(`首次导航前把已存储的翻页模式写为${label}（pageAnim ${anim}，${a11yClause(def)}）`, () =>
+        seedPageMode(context, anim),
+      );
     }
     await enterView(def, { page, lib, bookLog });
     // runA11yScan 只在扫描本身失败时抛错（15.9）；违规由下面的断言判失败，incomplete 不断言（RDF 15.3）
@@ -219,6 +269,7 @@ for (const def of A11Y_SCANS) {
       // 断言违规数而不是数组本身：节点明细已在失败信息里，不再由 Playwright 把整个数组打印一遍
       expect(result.violations.length, formatA11yViolations(result)).toBe(0);
     });
+    if (anim !== null) await expectControlsStillVisible(page, def);
   });
 }
 

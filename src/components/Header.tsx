@@ -1,5 +1,15 @@
 import React from "react";
-import { ArrowLeft, List, Settings, Maximize, Minimize, Search, Bookmark } from "lucide-react";
+import {
+  ArrowLeft,
+  List,
+  Settings,
+  Maximize,
+  Minimize,
+  Search,
+  Bookmark,
+  Download,
+  TriangleAlert,
+} from "lucide-react";
 
 interface HeaderProps {
   title: string;
@@ -12,6 +22,15 @@ interface HeaderProps {
   onToggleSearch: () => void;
   onToggleBookmark: () => void;
   onToggleSettings: () => void;
+  /**
+   * 整本下载（需求 9.1）。正文未就绪时为 `null`，按钮置灰。回调允许抛错（超大书分配不出
+   * 那个 Blob），由这里兜住，按钮改成"下载失败"的样子，再按一次即重试。
+   */
+  onDownload: (() => void) | null;
+  /**
+   * 顶栏上任何一处点击（含按钮，冒泡上来）。阅读页用它重置控制栏的 4.5 秒自动隐藏计时。
+   */
+  onClick?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -25,8 +44,22 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleSearch,
   onToggleBookmark,
   onToggleSettings,
+  onDownload,
+  onClick,
 }) => {
   const [isFullscreen, setIsFullscreen] = React.useState(false);
+  const [downloadFailed, setDownloadFailed] = React.useState(false);
+
+  const handleDownload = () => {
+    if (!onDownload) return;
+    try {
+      onDownload();
+      setDownloadFailed(false);
+    } catch {
+      setDownloadFailed(true);
+    }
+  };
+  const downloadName = downloadFailed ? "下载失败，点击重试" : "下载整本";
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -40,6 +73,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header
+      onClick={onClick}
       className={`fixed top-0 left-0 right-0 h-14 z-30 transition-transform duration-300 ease-in-out border-b shadow-sm bg-[var(--bg)] text-[var(--text)] border-[var(--border)] ${
         show ? "translate-y-0" : "-translate-y-full"
       }`}
@@ -94,6 +128,21 @@ export const Header: React.FC<HeaderProps> = ({
             title="全书内容检索 (快捷键: F)"
           >
             <Search className="w-5 h-5" />
+          </button>
+
+          {/* 整本下载：手机上也显示。窄屏上书名会多截掉一截，换来不用进设置抽屉找下载 */}
+          <button
+            onClick={handleDownload}
+            disabled={onDownload === null}
+            className="p-2 rounded-lg hover:bg-[var(--hover)] transition-colors disabled:opacity-50"
+            aria-label={downloadName}
+            title={downloadName}
+          >
+            {downloadFailed ? (
+              <TriangleAlert className="w-5 h-5" aria-hidden="true" />
+            ) : (
+              <Download className="w-5 h-5" aria-hidden="true" />
+            )}
           </button>
 
           <button

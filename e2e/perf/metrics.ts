@@ -7,10 +7,10 @@
  * - `parseBookLoadLine`：解析应用打出的 `[book-load]` 控制台行（14.2 (e)，任务 7.2）。
  * - `LongTaskEntry`：`longtask` 条目中计量所需的两个字段（14.6），由页内探针
  *   `e2e/perf/probes.ts` 的 `openLongTaskWindow` 产出（任务 19.4）。
- * - `evaluatePerfItem`：(a)–(d) 每项 5 次读数的中位数、最大值与预算判定（14.3、14.4、14.7，
+ * - `evaluatePerfItem`：`PERF_KEYS` 每项 5 次读数的中位数、最大值与预算判定（14.3、14.4、14.7，
  *   设计 Property 7），供 reporter 写 Perf_Metrics 表（任务 19.1）。
- * - `maxLongTask`：观测窗口内的最长长任务读数（14.6，设计 Property 8），供 (b)(d) 的取样
- *   使用（任务 19.1）。
+ * - `maxLongTask`：观测窗口内的最长长任务读数（14.6，设计 Property 8），供各"最长长任务"项
+ *   （(b)(d) 与 (f) `pagedTurnLongTask`）的取样使用（任务 19.1）。
  */
 import { LOAD_LOG_PREFIX } from "../../src/utils/loadMetrics";
 import { PERF } from "../support/settings";
@@ -114,7 +114,8 @@ export interface LongTaskEntry {
 // ---------------------------------------------------------------------------
 
 /**
- * 观测窗口 `[t0, t1]` 内的最长长任务读数（毫秒），14.2 (b)(d) 用（设计 Property 8）。
+ * 观测窗口 `[t0, t1]` 内的最长长任务读数（毫秒），14.2 (b)(d) 与 (f) `pagedTurnLongTask`
+ * 用（设计 Property 8）。
  *
  * - 条目占据闭区间 `[startTime, startTime + duration]`；与窗口闭区间 `[t0, t1]` 有公共点即算
  *   "相交"，即 `startTime <= t1 && startTime + duration >= t0`。窗口开始前已在执行、延续进窗口
@@ -149,12 +150,16 @@ export function maxLongTask(
 // ---------------------------------------------------------------------------
 
 /**
- * 14.2 的 (a)–(d) 四项，即 `PERF.budgetsMs` 的键：(a) `tocOpen`、(b) `tocScrollLongTask`、
- * (c) `shelfSearch`、(d) `readerSearchLongTask`。(e) `[book-load]` 不设预算，不在其中。
+ * 设有 Perf_Budget 的各项，即 `PERF.budgetsMs` 的键（项数与取值只在 `e2e/support/settings.ts`
+ * 定义）：14.2 的 (a) `tocOpen`、(b) `tocScrollLongTask`、(c) `shelfSearch`、(d) `readerSearchLongTask`，
+ * 以及 reader-page-turn-modes 需求 14.1–14.3 的 (f) `pagedTurnLongTask`、(g) `repaginate`、
+ * (h) `neighborPaginate`。
+ * (e) `[book-load]` 不设预算，不在其中。新增一项只需在 `PERF.budgetsMs` 加键；`report.ts` 中以
+ * `Record<PerfKey, …>` 声明的表漏写时编译期报错。
  */
 export type PerfKey = keyof typeof PERF.budgetsMs;
 
-/** 四项按 (a)–(d) 的顺序（即 `PERF.budgetsMs` 的书写顺序），供 reporter 排表与测试生成。 */
+/** 各项按 `PERF.budgetsMs` 的书写顺序，供 reporter 排表与测试生成；其他地方不另写项数。 */
 export const PERF_KEYS = Object.keys(PERF.budgetsMs) as readonly PerfKey[];
 
 /**

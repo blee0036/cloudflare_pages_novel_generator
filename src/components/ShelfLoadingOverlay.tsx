@@ -17,7 +17,7 @@ import { readShelfLoad } from "../utils/shelfLoadProgress";
  *   直接是书卡，骨架原有的"不跳动"也还在。
  * - **延迟 150ms 再淡入**（`.animate-overlay-in`）：有缓存或网快时 `books.json` 几十毫秒就
  *   到了，一闪而过的全屏遮罩比没有更难受。延迟期间骨架照常可见。
- * - **不用 `role="status"`**：骨架已经是这一页唯一的状态区（读屏会念它的"正在载入书架索引"，
+ * - **不用 `role="status"`**：骨架已经是这一页唯一的状态区（读屏会念它的"正在载入书架"，
  *   e2e 也按这个角色定位它）。这里只给进度条一个名字和 `aria-valuetext`，读屏软件聚焦到它时
  *   能读出"已载入 312 KB"。
  * - 进度条两态与阅读器的加载页同一套写法（`ReaderPage`）：确定态按百分比给宽度、
@@ -36,7 +36,7 @@ export const ShelfLoadingOverlay: React.FC<{ progress: FetchProgress | null }> =
         <div
           className="w-full bg-[var(--hover)] h-1.5 rounded-full overflow-hidden"
           role="progressbar"
-          aria-label="书架索引加载进度"
+          aria-label="书架加载进度"
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={bar.kind === "determinate" ? bar.pct : undefined}

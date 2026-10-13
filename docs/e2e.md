@@ -22,7 +22,7 @@ npm run e2e:update                                     # 更新像素基线
 - `--profile` 只接受 `fixture`。
 - `--profile` 之后可以接 Playwright 自己的参数。
 - 在 PowerShell 里，`-g` 的值以 `@` 开头时要加引号，比如 `-g '@selfcheck'`。
-- 每次运行都会先完整跑一遍 `perf` 项目的 3 个性能用例，带 `-g` 或文件过滤时也一样。加 `--no-deps` 可以跳过。`npm run e2e:update` 已经带了 `--no-deps`，只跑 `fixture` 项目的 `visual.spec`。
+- 每次运行都会先完整跑一遍 `perf` 项目的 5 个性能用例，带 `-g` 或文件过滤时也一样。加 `--no-deps` 可以跳过。`npm run e2e:update` 已经带了 `--no-deps`，只跑 `fixture` 项目的 `visual.spec`。
 
 下面两组用例只在 `-g` 点名时才跑，跑之前同样会先跑 `perf`，加 `--no-deps` 可以跳过：
 
@@ -88,7 +88,7 @@ E2E 用 `e2e/fixture/` 生成的 52 本示例书，不读本机 `public/` 下的
 
 ## 无障碍扫描
 
-fixture 下用 axe 扫 31 次：6 个视图在默认主题下完整扫描，并在全部 5 套主题下检查颜色对比度。
+fixture 下用 axe 扫 36 次：6 个视图在默认主题下完整扫描，并在全部 5 套主题下检查颜色对比度；阅读器正文另在分页模式（覆盖）下按 5 套主题各检查一次颜色对比度。
 
 - 任一次扫描报出违规就判失败，汇总里列出规则、影响级别和节点明细。
 - axe 判为需要人工复核（incomplete）的结果只列出，不判失败。明细在 `e2e/.out/a11y/`。

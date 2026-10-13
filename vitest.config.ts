@@ -8,7 +8,8 @@ import { configDefaults, defineConfig, mergeConfig } from "vitest/config";
  * Vitest 一旦发现本文件就不再读取 `vite.config.ts`，所以这里把它整份合并进来：
  * 原有的 `define`（`__SITE_CONFIG__`）与插件照旧生效，单测的运行环境与改动前相同。
  * 唯一的差别是排除 `e2e/**`：那里是 Playwright 的用例（`*.spec.ts`，会被 Vitest 的
- * 默认 include 误收）与运行产物（`e2e/.out/`），两套测试互不串收。
+ * 默认 include 误收）与运行产物（`e2e/.out/`），两套测试互不串收。同样排除 `legado/**`：
+ * 那是独立仓库的 Legado 源码，只作翻页行为的参照，其中的 `*.test.js` 不属于本项目的单测。
  *
  * `vite.config.ts` 经 `loadConfigFromFile` 在运行时读入，而不是 `import` 进来：静态导入会把
  * 它拉进 `npm run typecheck` 的程序，而它用到的 `new Error(msg, { cause })` 需要 ES2022 的
@@ -24,7 +25,7 @@ export default defineConfig(async (env) => {
     loaded.config,
     defineConfig({
       test: {
-        exclude: [...configDefaults.exclude, "e2e/**"],
+        exclude: [...configDefaults.exclude, "e2e/**", "legado/**"],
       },
     }),
   );

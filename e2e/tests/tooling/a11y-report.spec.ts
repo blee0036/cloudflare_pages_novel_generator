@@ -11,11 +11,12 @@
  * `toCaseFacts` 相同，附件按 Playwright 交给 reporter 的样子带 `body`。未选中 fixture 时该节写
  * "未运行"，由 `run-summary.spec.ts` 的"未运行"一例覆盖。
  *
- * reader-defect-fixes（RDF）任务 6.4（需求 15.3、15.6）另加两例：`A11Y_SCANS` 恰为 31 次，名称、
- * 顺序、视图、主题与规则集按需求原文写成字面量（EV 15.1、15.2 的 11 次不变，RDF 15.6 的 20 次
+ * reader-defect-fixes（RDF）任务 6.4（需求 15.3、15.6）另加两例：`A11Y_SCANS` 的名称、顺序、视图、
+ * 主题与规则集按需求原文写成字面量（EV 15.1、15.2 的 11 次不变，RDF 15.6 的 20 次
  * Contrast_Extension_Scan 的书与进入路径同 15.1 中同一视图）；违规节点明细表的渲染（对比度列、
  * 缺数据与空字段写"—"、多项 target、单元格中的 `|`、反引号与标签、failureSummary 的换行），
- * incomplete 带明细时仍只列规则 id 与节点数。
+ * incomplete 带明细时仍只列规则 id 与节点数。reader-page-turn-modes（翻页模式）任务 23.4（需求 15.5）
+ * 在其后追加 5 次分页模式扫描，`A11Y_SCANS` 共 36 次；另加一例核对这 5 次的定义、标题与节名。
  *
  * RDF 任务 17.2（需求 15.2、15.3）另加 `formatA11yViolations` 的例子：违规时 `a11y.spec.ts` 断言失败
  * 所用的纯文本说明按字面量逐行核对（首行概括、逐条规则与节点的 target、html、failureSummary、
@@ -36,9 +37,11 @@ import {
 } from "../../a11y/report";
 import {
   A11Y_CONTRAST_EXT_VIEWS,
+  A11Y_PAGED_ANIM,
   A11Y_RESULT_ATTACHMENT,
   A11Y_SCANS,
   EXTENSION_THEMES,
+  a11yResultFile,
   a11yScan,
   a11yTestTitle,
   describeA11yScan,
@@ -207,7 +210,7 @@ function runFacts(cases: CaseFacts[], lines: string[], status: RunFacts["status"
 // ---------------------------------------------------------------------------
 
 test.describe("A11y_Scan 一节（任务 20.5）", () => {
-  test("31 次扫描都完成：按 A11Y_SCANS 的顺序逐节列出，critical 与 serious 标记、minor 与 moderate 只列出，无违规写违规数 0", () => {
+  test("36 次扫描都完成：按 A11Y_SCANS 的顺序逐节列出，critical 与 serious 标记、minor 与 moderate 只列出，无违规写违规数 0", () => {
     const settings = okResult("a11y-settings", {
       violations: [
         // flagged 故意写反：标记只看影响级别（15.5）
@@ -224,20 +227,21 @@ test.describe("A11y_Scan 一节（任务 20.5）", () => {
     );
     const { data, lines } = section(cases);
 
-    // RDF 15.1、15.6：6 个视图扫描、5 次阅读器正文对比度扫描与 20 次 Contrast_Extension_Scan
-    expect(A11Y_SCANS).toHaveLength(31);
+    // RDF 15.1、15.6：6 个视图扫描、5 次阅读器正文对比度扫描与 20 次 Contrast_Extension_Scan；
+    // 翻页模式 15.5：5 次分页模式扫描
+    expect(A11Y_SCANS).toHaveLength(36);
     expect(data.entries.map((e) => e.name)).toEqual(A11Y_SCANS.map((d) => d.name));
     expect(data.entries.every((e) => e.result.kind === "ok")).toBe(true);
     expect(data.axeVersions).toEqual([AXE_VERSION]);
     expect(data.problems).toEqual([]);
 
-    // 15.4：31 节，节名标明视图与主题
+    // 15.4：36 节，节名标明视图与主题
     expect(headings(lines)).toEqual(A11Y_SCANS.map((d, i) => `### ${i + 1}. ${describeA11yScan(d)}`));
     expect(headings(lines)[0]).toBe("### 1. 书架首屏 · " + describeTheme(THEME_UNSET));
     expect(headings(lines)[10]).toMatch(/^### 11\. 阅读器正文 · .+ · 仅 color-contrast$/);
 
     expect(lines).toContain(`- axe-core：${AXE_VERSION}`);
-    expect(lines).toContain("- 结果：完成 31、扫描失败 0、跳过 0、未执行 0（共 31 次）");
+    expect(lines).toContain("- 结果：完成 36、扫描失败 0、跳过 0、未执行 0（共 36 次）");
     expect(lines.some((l) => l.includes("4 条违规规则，其中 critical 或 serious 2 条") && l.includes(FLAG))).toBe(true);
     // RDF 15.2、15.3：任一违规即判用例失败，incomplete 只列出
     expect(lines.some((l) => l.includes("任一违规即判该扫描的用例失败") && l.includes("incomplete 只列出，不使用例失败"))).toBe(
@@ -318,18 +322,18 @@ test.describe("A11y_Scan 一节（任务 20.5）", () => {
       scanCase("a11y-search", { status: "skipped", annotations: [{ type: "skip", description: fixtureFailed }] }),
       // 通过却只留下无法解析的附件
       scanCase("a11y-settings", { attachments: [attachment("{not json")] }),
-      // 25 次对比度扫描（15.2 的 5 次与 RDF 15.6 的 20 次）本次未收集
+      // 30 次对比度扫描（15.2 的 5 次、RDF 15.6 的 20 次与翻页模式 15.5 的 5 次）本次未收集
     ]);
 
     expect(data.collected).toBe(6);
     expect(data.entries.map((e) => e.result.kind)).toEqual([
       "failed", "skipped", "failed", "notRun", "skipped", "failed",
-      ...Array.from({ length: 25 }, () => "notRun"),
+      ...Array.from({ length: 30 }, () => "notRun"),
     ]);
     expect(data.axeVersions).toEqual([]);
     expect(lines).toContain("- axe-core：未知（没有完成的扫描）");
-    expect(lines).toContain("- 结果：完成 0、扫描失败 3、跳过 2、未执行 26（共 31 次）");
-    expect(headings(lines)).toHaveLength(31);
+    expect(lines).toContain("- 结果：完成 0、扫描失败 3、跳过 2、未执行 31（共 36 次）");
+    expect(headings(lines)).toHaveLength(36);
 
     // 15.9：标"扫描失败"，附视图名、主题与失败原因
     expect(bodyOf(lines, "a11y-shelf")).toEqual([
@@ -440,8 +444,8 @@ function cellCount(row: string): number {
 }
 
 test.describe("A11y_Scan 扫描集合与节点明细（RDF 任务 6.4）", () => {
-  test("RDF 15.6 A11Y_SCANS 恰为 31 次：EV 15.1 的 6 次与 15.2 的 5 次不变，其后是 5 个视图 × default、eyecare、dark、black 的 20 次 color-contrast 扫描", () => {
-    expect(A11Y_SCANS).toHaveLength(31);
+  test("RDF 15.6 A11Y_SCANS 的前 31 次：EV 15.1 的 6 次与 15.2 的 5 次不变，其后是 5 个视图 × default、eyecare、dark、black 的 20 次 color-contrast 扫描（之后是翻页模式 15.5 的 5 次）", () => {
+    expect(A11Y_SCANS).toHaveLength(36);
     expect(A11Y_SCANS.map((d) => d.name)).toEqual([
       // EV 15.1：6 次视图扫描
       "a11y-shelf",
@@ -477,7 +481,15 @@ test.describe("A11y_Scan 扫描集合与节点明细（RDF 任务 6.4）", () =>
       "a11y-contrast-settings-eyecare",
       "a11y-contrast-settings-dark",
       "a11y-contrast-settings-black",
+      // 翻页模式 15.5：分页模式（覆盖）下阅读器正文 5 个主题的对比度扫描
+      "a11y-contrast-paged-default",
+      "a11y-contrast-paged-sepia",
+      "a11y-contrast-paged-eyecare",
+      "a11y-contrast-paged-dark",
+      "a11y-contrast-paged-black",
     ]);
+    // 前 31 次不 seed 翻页模式（阅读器为默认的滚动模式）
+    expect(A11Y_SCANS.slice(0, 31).map((d) => d.pageAnim)).toEqual(Array.from({ length: 31 }, () => null));
 
     // EV 15.1、15.2 的 11 次：名称、视图、主题、规则集与所用的书不变
     expect(A11Y_SCANS.slice(0, 11).map(({ name, view, theme, rules, book }) => ({ name, view, theme, rules, book }))).toEqual([
@@ -508,7 +520,7 @@ test.describe("A11y_Scan 扫描集合与节点明细（RDF 任务 6.4）", () =>
 
     // RDF 15.6 的 20 次：只运行 color-contrast、seed 该主题键；书与进入路径同 15.1 中同一视图
     const expected = EXT_VIEWS.flatMap(([view, label]) => EXT_THEMES.map((theme) => ({ view, label, theme })));
-    const ext = A11Y_SCANS.slice(11);
+    const ext = A11Y_SCANS.slice(11, 31);
     expect(ext).toHaveLength(expected.length);
     expected.forEach(({ view, label, theme }, i) => {
       const def = ext[i];
@@ -528,8 +540,8 @@ test.describe("A11y_Scan 扫描集合与节点明细（RDF 任务 6.4）", () =>
 
     // Run_Summary：20 次与 15.2 的对比度扫描同样计为对比度扫描，节名标明视图、主题与规则
     const { lines } = section(A11Y_SCANS.map((def) => scanCase(def.name, { attachments: [attachment(okResult(def.name))] })));
-    expect(lines.some((l) => l.includes("6 个视图只启用") && l.includes("25 次对比度扫描只运行 `color-contrast`"))).toBe(true);
-    expect(headings(lines).slice(11)).toEqual(
+    expect(lines.some((l) => l.includes("6 个视图只启用") && l.includes("30 次对比度扫描只运行 `color-contrast`"))).toBe(true);
+    expect(headings(lines).slice(11, 31)).toEqual(
       expected.map(({ label, theme }, i) => `### ${12 + i}. ${label} · ${describeTheme(theme)} · 仅 color-contrast`),
     );
     expect(bodyOf(lines, "a11y-contrast-toc-dark")).toEqual([
@@ -629,6 +641,56 @@ test.describe("A11y_Scan 扫描集合与节点明细（RDF 任务 6.4）", () =>
     expect(text).not.toContain("#pending");
     expect(text).not.toContain("#abcdef");
     expect(body.filter((l) => l.includes("节点明细"))).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 翻页模式任务 23.4：分页模式下阅读器正文的对比度扫描（翻页模式需求 13.4、15.5）
+// ---------------------------------------------------------------------------
+
+/** 翻页模式 15.5 的 5 个主题键，按设置抽屉的顺序（与 15.2 的 5 次相同）。 */
+const PAGED_THEMES = ["default", "sepia", "eyecare", "dark", "black"] as const;
+
+/** 分页模式扫描在节名中的视图写法：阅读器正文，注明所 seed 的翻页模式（覆盖）。 */
+const PAGED_VIEW_LABEL = "阅读器正文（翻页模式：覆盖）";
+
+test.describe("A11y_Scan 分页模式扫描（翻页模式任务 23.4）", () => {
+  test("翻页模式 15.5 最后 5 次是覆盖模式下阅读器正文的 color-contrast 扫描：主题按 default、sepia、eyecare、dark、black，书与进入路径同 a11y-reader，结果文件为 a11y-contrast-paged-<主题>.json", () => {
+    const base = a11yScan("a11y-reader");
+    // 覆盖的编号为 0（Legado PageAnim）
+    expect(A11Y_PAGED_ANIM).toBe(0);
+    const paged = A11Y_SCANS.slice(31);
+    expect(paged.map(({ name, view, theme, rules, book, url, pageAnim }) => ({ name, view, theme, rules, book, url, pageAnim }))).toEqual(
+      PAGED_THEMES.map((theme) => ({
+        name: `a11y-contrast-paged-${theme}`,
+        view: "reader",
+        theme,
+        rules: "color-contrast",
+        book: "volumes",
+        url: base.url,
+        pageAnim: 0,
+      })),
+    );
+    for (const def of paged) {
+      expect(a11yTestTitle(def), def.name).toBe(
+        `翻页模式 15.5 ${def.name}：${PAGED_VIEW_LABEL} · ${describeTheme(def.theme)} · 仅 color-contrast`,
+      );
+      expect(path.relative(REPO_ROOT, a11yResultFile(def.name)).split(path.sep).join("/"), def.name).toBe(
+        `e2e/.out/a11y/a11y-contrast-paged-${def.theme}.json`,
+      );
+    }
+
+    // Run_Summary：排在最后，计为对比度扫描，节名标明视图、翻页模式、主题与规则
+    const { lines } = section(A11Y_SCANS.map((def) => scanCase(def.name, { attachments: [attachment(okResult(def.name))] })));
+    expect(headings(lines).slice(31)).toEqual(
+      PAGED_THEMES.map((theme, i) => `### ${32 + i}. ${PAGED_VIEW_LABEL} · ${describeTheme(theme)} · 仅 color-contrast`),
+    );
+    expect(bodyOf(lines, "a11y-contrast-paged-dark")).toEqual([
+      "- 扫描：`a11y-contrast-paged-dark`；结果：完成",
+      "- 用例结果：通过",
+      ZERO_VIOLATIONS,
+      "- incomplete（axe 判为需人工复核）：0",
+    ]);
   });
 });
 

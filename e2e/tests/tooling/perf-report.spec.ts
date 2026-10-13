@@ -2,8 +2,9 @@
  * Run_Summary "Perf_Metrics"一节与 `e2e/.out/perf.json` 的例子测试（`tooling` 项目，无浏览器；
  * 任务 19.6，需求 1.7、14.2、14.4、14.5、14.7）。被测的是 `perf/report.ts` 的纯函数：
  *
- * - `buildPerfReport`：(a)–(d) 由 `perf-metrics` 附件得出、按 `PERF_KEYS` 排列；缺附件时按用例的
- *   结果写明未采集的原因；(e) 只保留桌面视口、默认主题、Opaque_Mode 的 `[book-load]` 行。
+ * - `buildPerfReport`：设预算的各项（`PERF_KEYS`）由 `perf-metrics` 附件得出、按 `PERF_KEYS` 排列；
+ *   缺附件时按用例的结果写明未采集的原因；(e) 只保留桌面视口、默认主题、Opaque_Mode 的 `[book-load]` 行。
+ *   项数与行序只取 `PERF_KEYS`；按项写出的期望值用 `Record<PerfKey, …>`，新增一项时在此漏写即编译期报错。
  * - `renderPerfSection`：表头的环境（14.5）、每项 5 次读数与中位数、最大值、Perf_Budget、状态，
  *   (e) 的预算列写"无预算"。
  *
@@ -16,9 +17,17 @@ import { expect, test } from "@playwright/test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PERF_KEYS, PERF_METRICS_ATTACHMENT, type PerfItem } from "../../perf/metrics";
+import {
+  PERF_KEYS,
+  PERF_METRICS_ATTACHMENT,
+  type PerfEvaluated,
+  type PerfItem,
+  type PerfKey,
+  type PerfStatus,
+} from "../../perf/metrics";
 import {
   NO_BUDGET_TEXT,
+  PERF_CASE_OF_KEY,
   PERF_ITEM_LABELS,
   PERF_SPEC_FILE,
   buildPerfReport,
@@ -111,15 +120,36 @@ function rowOf(lines: readonly string[], first: string): string[] {
   return cellsOf(row);
 }
 
+/** 设预算各项那张表的数据行（表头"项"与分隔行之后、空行之前）。 */
+function itemRowsOf(lines: readonly string[]): string[] {
+  const header = lines.findIndex((l) => l.startsWith("| 项 |"));
+  assert.ok(header >= 0, `没有表头"项"：\n${lines.join("\n")}`);
+  const end = lines.indexOf("", header);
+  return lines.slice(header + 2, end < 0 ? undefined : end);
+}
+
+/** 报告中 `key` 那一项。 */
+function itemOf(r: PerfReport, key: PerfKey): PerfEvaluated {
+  const item = r.items.find((i) => i.key === key);
+  assert.ok(item !== undefined, `报告中没有 ${key}`);
+  return item;
+}
+
+/** 本次运行没有收集到负责 `key` 的用例时的未采集原因。 */
+function notCollectedReason(key: PerfKey): string {
+  return `本次运行未收集用例 ${PERF_CASE_OF_KEY[key]}`;
+}
+
 // ---------------------------------------------------------------------------
 // 用例
 // ---------------------------------------------------------------------------
 
 test.describe("Perf_Metrics 一节与 perf.json（任务 19.6）", () => {
-  test("三个 perf 用例都附上读数：按 (a)–(d) 排列，中位数、最大值与状态来自 5 次读数，表头注明运行环境", () => {
+  test("各 perf 用例都附上读数：按 PERF_KEYS 排列，中位数、最大值与状态来自 5 次读数，表头注明运行环境", () => {
     const r = report([
-      // 用例顺序与 (a)–(d) 不同：行序只取 PERF_KEYS
+      // 用例顺序与 PERF_KEYS 不同：行序只取 PERF_KEYS
       perfCase("perf-reader-search", { attachments: [metrics([{ key: "readerSearchLongTask", readings: [0, 0, 0, 0, 0] }])] }),
+      perfCase("perf-repaginate", { attachments: [metrics([{ key: "repaginate", readings: [310, 290, 335, 305, 280] }])] }),
       perfCase("perf-toc", {
         attachments: [
           metrics([
@@ -128,23 +158,47 @@ test.describe("Perf_Metrics 一节与 perf.json（任务 19.6）", () => {
           ]),
         ],
       }),
+      perfCase("perf-paged-turn", {
+        attachments: [
+          metrics([
+            // 一个用例负责两项，附件内的顺序与 PERF_KEYS 相反
+            { key: "neighborPaginate", readings: [180.4, 210, 195.6, 640, 201] },
+            { key: "pagedTurnLongTask", readings: [0, 0, 0, 62, 0] },
+          ]),
+        ],
+      }),
       perfCase("perf-shelf-search", {
         attachments: [metrics([{ key: "shelfSearch", readings: [263, 265, 270.7000000178814, 261, 267.89999997615814] }])],
       }),
     ]);
 
+    // 期望值按项写出；PERF_KEYS 新增一项而此处漏写时编译期报错
+    const expectedStatus: Record<PerfKey, PerfStatus> = {
+      tocOpen: "within",
+      tocScrollLongTask: "over",
+      shelfSearch: "within",
+      readerSearchLongTask: "within",
+      pagedTurnLongTask: "within",
+      repaginate: "over",
+      neighborPaginate: "within",
+    };
     expect(r.items.map((i) => i.key)).toEqual([...PERF_KEYS]);
-    expect(r.items.map((i) => i.status)).toEqual(["within", "over", "within", "within"]);
+    expect(r.items.map((i) => i.status)).toEqual(PERF_KEYS.map((k) => expectedStatus[k]));
     // (b)：排序后 [0, 0, 110, 120, 130]，中位数 110 > 预算 100 → 超预算；最大值 130
-    const scroll = r.items[1];
+    const scroll = itemOf(r, "tocScrollLongTask");
     expect([scroll.median, scroll.max, scroll.budgetMs]).toEqual([110, 130, PERF.budgetsMs.tocScrollLongTask]);
-    expect(r.items[2].median).toBe(265);
+    expect(itemOf(r, "shelfSearch").median).toBe(265);
+    // (g)：排序后 [280, 290, 305, 310, 335]，中位数 305 > 预算 300 → 超预算
+    const repaginate = itemOf(r, "repaginate");
+    expect([repaginate.median, repaginate.max, repaginate.budgetMs]).toEqual([305, 335, PERF.budgetsMs.repaginate]);
     expect(r.env).toEqual({ cpu: HOST.cpu, cores: HOST.cores, chromium: CHROMIUM, headless: true });
     expect(r.runStartedAt).toBe(STARTED_AT);
     expect(r.problems).toEqual([]);
     expect(r.cases.map((c) => [c.title, c.outcome])).toEqual([
       ["perf-reader-search", "passed"],
+      ["perf-repaginate", "passed"],
       ["perf-toc", "passed"],
+      ["perf-paged-turn", "passed"],
       ["perf-shelf-search", "passed"],
     ]);
 
@@ -159,7 +213,9 @@ test.describe("Perf_Metrics 一节与 perf.json（任务 19.6）", () => {
     expect(head).toContain(`- 运行开始时间：${STARTED_AT}`);
     expect(head).toContain(`- CPU：${HOST.cpu}，${HOST.cores} 个逻辑核`);
     expect(head).toContain(`- Chromium：${CHROMIUM}；浏览器模式：headless`);
-    expect(head.some((l) => l.includes("超预算 1") && l.includes("不影响用例结果与退出码"))).toBe(true);
+    expect(
+      head.some((l) => l.includes("超预算 2") && l.includes(`共 ${PERF_KEYS.length} 项`) && l.includes("不影响用例结果与退出码")),
+    ).toBe(true);
 
     // 每项一行：5 次读数、中位数、最大值、Perf_Budget、状态
     const header = rowOf(lines, "项");
@@ -173,7 +229,17 @@ test.describe("Perf_Metrics 一节与 perf.json（任务 19.6）", () => {
     expect(rowOf(lines, PERF_ITEM_LABELS.shelfSearch).slice(1)).toEqual([
       "263", "265", "270.7", "261", "267.9", "265", "270.7", "350", STATUS.within,
     ]);
-    expect(lines.filter((l) => /^\| \([a-d]\) /.test(l))).toHaveLength(PERF_KEYS.length);
+    expect(rowOf(lines, PERF_ITEM_LABELS.pagedTurnLongTask).slice(1)).toEqual([
+      "0", "0", "0", "62", "0", "0", "62", "50", STATUS.within,
+    ]);
+    expect(rowOf(lines, PERF_ITEM_LABELS.repaginate).slice(1)).toEqual([
+      "310", "290", "335", "305", "280", "305", "335", "300", STATUS.over,
+    ]);
+    expect(rowOf(lines, PERF_ITEM_LABELS.neighborPaginate).slice(1)).toEqual([
+      "180.4", "210", "195.6", "640", "201", "201", "640", "600", STATUS.within,
+    ]);
+    // 表中恰好每项一行，按 PERF_KEYS 的顺序
+    expect(itemRowsOf(lines).map((row) => cellsOf(row)[0])).toEqual(PERF_KEYS.map((k) => PERF_ITEM_LABELS[k]));
     expect(lines).not.toContain("### 附件问题");
   });
 
@@ -184,13 +250,17 @@ test.describe("Perf_Metrics 一节与 perf.json（任务 19.6）", () => {
       perfCase("perf-reader-search", { status: null }),
     ]);
 
-    expect(r.items.map((i) => i.status)).toEqual(["uncollected", "uncollected", "uncollected", "uncollected"]);
-    expect(r.items.map((i) => i.reason)).toEqual([
-      `用例 perf-toc 跳过：${skip}`,
-      `用例 perf-toc 跳过：${skip}`,
-      "本次运行未收集用例 perf-shelf-search",
-      "用例 perf-reader-search 未执行",
-    ]);
+    const expectedReason: Record<PerfKey, string> = {
+      tocOpen: `用例 perf-toc 跳过：${skip}`,
+      tocScrollLongTask: `用例 perf-toc 跳过：${skip}`,
+      shelfSearch: "本次运行未收集用例 perf-shelf-search",
+      readerSearchLongTask: "用例 perf-reader-search 未执行",
+      pagedTurnLongTask: "本次运行未收集用例 perf-paged-turn",
+      repaginate: "本次运行未收集用例 perf-repaginate",
+      neighborPaginate: "本次运行未收集用例 perf-paged-turn",
+    };
+    expect(r.items.map((i) => i.status)).toEqual(PERF_KEYS.map(() => "uncollected"));
+    expect(r.items.map((i) => i.reason)).toEqual(PERF_KEYS.map((k) => expectedReason[k]));
     for (const item of r.items) {
       expect(item.readings).toEqual(Array.from({ length: PERF.samples }, () => null));
       expect([item.median, item.max]).toEqual([null, null]);
@@ -210,18 +280,30 @@ test.describe("Perf_Metrics 一节与 perf.json（任务 19.6）", () => {
     ]);
   });
 
-  test("perf 用例一个都没收集到时照常列出 4 项未采集，并注明未收集 perf.spec.ts", () => {
+  test("perf 用例一个都没收集到时照常列出 PERF_KEYS 各项未采集，并注明未收集 perf.spec.ts", () => {
+    // 各项的负责用例按设计原文（e2e-visual-testing 需求 14.2；reader-page-turn-modes 设计 §10 的表）
+    const expectedCase: Record<PerfKey, string> = {
+      tocOpen: "perf-toc",
+      tocScrollLongTask: "perf-toc",
+      shelfSearch: "perf-shelf-search",
+      readerSearchLongTask: "perf-reader-search",
+      pagedTurnLongTask: "perf-paged-turn",
+      repaginate: "perf-repaginate",
+      neighborPaginate: "perf-paged-turn",
+    };
+    expect(PERF_CASE_OF_KEY).toEqual(expectedCase);
+
     const r = report([]);
-    expect(r.items.map((i) => [i.status, i.reason])).toEqual([
-      ["uncollected", "本次运行未收集用例 perf-toc"],
-      ["uncollected", "本次运行未收集用例 perf-toc"],
-      ["uncollected", "本次运行未收集用例 perf-shelf-search"],
-      ["uncollected", "本次运行未收集用例 perf-reader-search"],
-    ]);
+    expect(r.items.map((i) => [i.key, i.status, i.reason])).toEqual(
+      PERF_KEYS.map((k) => [k, "uncollected", notCollectedReason(k)]),
+    );
     expect(r.cases).toEqual([]);
     expect(r.bookLoads).toEqual([]);
     const lines = renderPerfSection(r);
     expect(lines).toContain(`- perf 用例：本次运行未收集 \`${PERF_SPEC_FILE}\` 的用例`);
+    expect(itemRowsOf(lines).map((row) => cellsOf(row).at(-1))).toEqual(
+      PERF_KEYS.map((k) => `${STATUS.uncollected}：${notCollectedReason(k)}`),
+    );
     expect(lines).toContain("本次没有满足条件的 `[book-load]` 行。");
   });
 
@@ -290,7 +372,7 @@ test.describe("Perf_Metrics 一节与 perf.json（任务 19.6）", () => {
     expect(lines.some((l) => l.includes(`默认主题（未存储，实际 ${defaultTheme}）`))).toBe(true);
   });
 
-  test("附件问题：无法解析或只有路径时记入附件问题，负责的项记未采集；附件内写明的未采集原因原样保留", () => {
+  test("附件问题：无法解析或只有路径时记入附件问题，负责的项记未采集；附件内写明的未采集原因原样保留；附件漏了某项时写明没有附上读数", () => {
     const timeout = "第 2 次：键入「檐角铜铃响」后 10000 ms 内结果列表未出现该关键词的命中";
     const r = report([
       perfCase("perf-toc", {
@@ -300,15 +382,22 @@ test.describe("Perf_Metrics 一节与 perf.json（任务 19.6）", () => {
       perfCase("perf-reader-search", {
         attachments: [metrics([{ key: "readerSearchLongTask", readings: [0, null, 0, 0, 0], reason: timeout }], false)],
       }),
+      // 负责两项的用例只附了其中一项
+      perfCase("perf-paged-turn", { attachments: [metrics([{ key: "pagedTurnLongTask", readings: [0, 0, 0, 0, 0] }])] }),
     ]);
 
-    expect(r.items.map((i) => [i.key, i.status, i.reason])).toEqual([
-      ["tocOpen", "uncollected", "用例 perf-toc（通过）的 perf-metrics 附件无法读取或解析"],
-      ["tocScrollLongTask", "uncollected", "用例 perf-toc（通过）的 perf-metrics 附件无法读取或解析"],
-      ["shelfSearch", "uncollected", "用例 perf-shelf-search（通过）的 perf-metrics 附件无法读取或解析"],
-      ["readerSearchLongTask", "uncollected", timeout],
-    ]);
-    expect(r.items[3].readings).toEqual([0, null, 0, 0, 0]);
+    const unreadable = (title: string): string => `用例 ${title}（通过）的 perf-metrics 附件无法读取或解析`;
+    const expected: Record<PerfKey, [PerfStatus, string | undefined]> = {
+      tocOpen: ["uncollected", unreadable("perf-toc")],
+      tocScrollLongTask: ["uncollected", unreadable("perf-toc")],
+      shelfSearch: ["uncollected", unreadable("perf-shelf-search")],
+      readerSearchLongTask: ["uncollected", timeout],
+      pagedTurnLongTask: ["within", undefined],
+      repaginate: ["uncollected", notCollectedReason("repaginate")],
+      neighborPaginate: ["uncollected", "用例 perf-paged-turn（通过）没有附上该项的读数"],
+    };
+    expect(r.items.map((i) => [i.key, i.status, i.reason])).toEqual(PERF_KEYS.map((k) => [k, ...expected[k]]));
+    expect(itemOf(r, "readerSearchLongTask").readings).toEqual([0, null, 0, 0, 0]);
     expect(r.env.headless).toBe(false);
     expect(r.problems).toHaveLength(2);
     expect(r.problems[0]).toContain("perf-metrics 附件没有正文，文件 e2e/.out/test-results/x/perf-metrics.json 未能读取");

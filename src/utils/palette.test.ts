@@ -19,6 +19,8 @@ import { READER_THEMES } from "./theme";
  * - 色相差取圆周上的较短弧（355° 与 5° 相差 10°）；新旧颜色的 HSL 饱和度均 ≥ 10% 时才比较。
  * - 12.3 只约束 D5 允许修改的 `--text`、`--accent`、`--border`；对未修改的变量，两条约束
  *   自然成立，这里不区分改没改，五套主题的三个变量一律核对。
+ * - 翻页阴影变量 `--turn-shadow`、`--turn-fold-shadow`（reader-page-turn-modes 需求 13.1，
+ *   design §2.4）是半透明色，只核对每个主题块都声明了它们，不求值、不参与对比度核对。
  */
 
 /** Start_Snapshot（`.kiro/specs/reader-defect-fixes/start-snapshot.json`）记下的 `HEAD`。 */
@@ -111,6 +113,9 @@ const BACKGROUND_VARS = ["--bg", "--card-bg"] as const;
 
 /** 由裸 `:root` 定义的派生量（design §8、§11）。 */
 const DERIVED_VARS = ["--selected", "--text-muted"] as const;
+
+/** 每个主题块都要自带的翻页阴影变量（reader-page-turn-modes 需求 13.1，design §2.4）。 */
+const TURN_SHADOW_VARS = ["--turn-shadow", "--turn-fold-shadow"] as const;
 
 const MIN_CONTRAST = 4.5;
 const MAX_HUE_SHIFT = 15;
@@ -429,6 +434,18 @@ describe("需求 12.5：5 个主题的 --bg 两两不同", () => {
         expect(bgs[i].bg, `${bgs[i].key} 与 ${bgs[j].key} 的 --bg`).not.toBe(bgs[j].bg);
       }
     }
+  });
+});
+
+describe("reader-page-turn-modes 需求 13.1：五个主题块都声明 --turn-shadow 与 --turn-fold-shadow", () => {
+  // 只看主题块自己的声明，不看层叠结果：漏声明时会串到 `:root`（默认明亮）的阴影色上，
+  // 极夜纯黑下就成了黑底上的黑阴影。
+  describe.each(SNAPSHOT_THEMES)("$key（$name）", (theme) => {
+    it.each(TURN_SHADOW_VARS)("%s 在本主题块中声明且非空", (name) => {
+      const raw = themeBlockVars(RULES, theme.key).get(name);
+      expect(raw, `index.css 的 [data-theme="${theme.key}"] 块缺少 ${name}`).toBeDefined();
+      expect(raw!.trim(), `${theme.key} 的 ${name}`).not.toBe("");
+    });
   });
 });
 

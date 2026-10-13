@@ -110,16 +110,17 @@ export interface SiteConfig {
 export const DEFAULT_SITE_CONFIG: SiteConfig = {
   name: "云端小说书架",
   description:
-    "纯静态的 Web 小说书库：单书 Gzip 压缩存储，浏览器流式解压，章节化阅读与精确续读。",
-  keywords: ["小说", "在线阅读", "电子书", "静态网站", "Cloudflare Pages"],
+    "在线小说书库：按章节阅读，记住读到哪一段，支持全书检索和整本下载。",
+  keywords: ["小说", "在线阅读", "电子书", "整本下载"],
   favicon: "/favicon.svg",
-  // 以下文案取值与改为可配置之前 BookshelfPage 里硬编码的一致，零配置时页面不变。
-  tagline: "Cloudflare Pages + Gzip 静态阅读器",
+  // 以下文案是给读者看的：只说能做什么，不提存储格式、解压方式、托管平台这类实现细节
+  // （那些写在 README 和 docs/ 里）。
+  tagline: "在线阅读 · 整本下载",
   banner: {
-    badge: "Pure Cloudflare Pages 架构",
-    title: "轻量、丝滑且无限制的 Web 电子书库",
+    badge: "打开即读",
+    title: "轻量、丝滑的在线书库",
     description:
-      "采用单书原生 Gzip 压缩存储，通过浏览器 DecompressionStream 内存流解压，配合分级正则状态机与绝对字符偏移断章，彻底告别切片乱码与文件数超限。",
+      "按章节阅读，自动记住读到哪一段；全书检索、书签、离线缓存，整本也能一键下载成 TXT。",
     countLabel: "精校藏书",
   },
 };

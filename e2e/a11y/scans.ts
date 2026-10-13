@@ -1,6 +1,7 @@
 /**
- * A11y_Scan 的 31 个扫描定义（需求 15.1、15.2；设计"无障碍冒烟（需求 15）"的表；任务 20.3。
- * Contrast_Extension_Scan：reader-defect-fixes（RDF）需求 15.6、D12，RDF 设计第 14 节，任务 6.3）。
+ * A11y_Scan 的 36 个扫描定义（需求 15.1、15.2；设计"无障碍冒烟（需求 15）"的表；任务 20.3。
+ * Contrast_Extension_Scan：reader-defect-fixes（RDF）需求 15.6、D12，RDF 设计第 14 节，任务 6.3。
+ * 分页模式的对比度扫描：reader-page-turn-modes（翻页模式）需求 13.4、15.5，设计 §13.2，任务 23.4）。
  *
  * | 名称 | 视图 | 进入方式（`url`） | 主题 | 规则 |
  * | --- | --- | --- | --- | --- |
@@ -12,6 +13,7 @@
  * | `a11y-settings` | 设置抽屉 | 同上，再打开设置 | 默认（不 seed） | `A11Y_TAGS` |
  * | `a11y-contrast-<theme>` × 5 | 阅读器正文 | `seedTheme(theme)` 后同 `a11y-reader` | 该主题键 | 仅 `color-contrast` |
  * | `a11y-contrast-<view>-<theme>` × 20 | 书架首屏、详情弹窗、三个抽屉 | `seedTheme(theme)` 后同该视图的 15.1 扫描 | `EXTENSION_THEMES` 之一 | 仅 `color-contrast` |
+ * | `a11y-contrast-paged-<theme>` × 5 | 阅读器正文（翻页模式：覆盖） | `seedTheme(theme)`、`seedPageMode(覆盖)` 后同 `a11y-reader`，等本章第 1 页落定 | 该主题键 | 仅 `color-contrast` |
  *
  * - 全部在 fixture、桌面视口（1280×800）、Opaque_Mode 下运行；书为 volumes 用途（3.3 (b)），
  *   书架首屏不涉及某本书（`book: null`）。
@@ -23,9 +25,16 @@
  *   默认主题已由 15.1 的视图扫描覆盖）下扫描 1 次，只运行 `color-contrast`，首次导航前 seed 该
  *   主题键；`book`、`url` 取同一视图的 15.1 定义，进入方式与等待条件因此也相同（`a11y.spec.ts`
  *   与 `scan.ts` 只按 `view` 分支）。
+ * - 翻页模式 15.5 的 5 次分页模式扫描：`pageAnim` 为 `A11Y_PAGED_ANIM`（覆盖），其余同 15.2 的 5 次
+ *   对比度扫描。用例在 `seedTheme` 之后、首次导航之前 `seedPageMode`，进入阅读器后等本章第 1 页落定
+ *   （`<main data-turning="false">`）、底栏的页码标签 `x / y` 与顶栏、底栏可见再扫描（需求 13.4"无动画
+ *   进行"；页面加载后不做任何操作，控制栏不会自动隐藏）。分页测量盒是 `visibility: hidden` 且
+ *   `aria-hidden`，axe 不检查它。15.1–RDF 15.6 的 31 次都不 seed 翻页模式（`pageAnim` 为 null），
+ *   阅读器为默认的滚动模式。
  * - 顺序即 Run_Summary A11y_Scan 节的顺序（15.4）：先 15.1 的 6 个视图，再按 `THEME_KEYS`
  *   （设置抽屉的呈现顺序）排列的 5 次对比度扫描，再按视图（`A11Y_CONTRAST_EXT_VIEWS`：书架首屏 →
- *   详情弹窗 → 目录抽屉 → 检索抽屉 → 设置抽屉）× `EXTENSION_THEMES` 排列的 20 次（RDF 设计第 14 节）。
+ *   详情弹窗 → 目录抽屉 → 检索抽屉 → 设置抽屉）× `EXTENSION_THEMES` 排列的 20 次（RDF 设计第 14 节），
+ *   最后是按 `THEME_KEYS` 排列的 5 次分页模式扫描（翻页模式 15.5）。
  * - axe 标签清单只在 `settings.ts` 的 `A11Y_TAGS` 一处（15.3），本文件只记规则集的种类。
  *
  * 本文件只依赖 Node 内置模块与无副作用的模块，reporter（20.5）也可导入它；执行扫描的
@@ -34,6 +43,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ReaderThemeKey } from "../../src/types";
+import { PAGE_ANIM, PAGE_ANIM_OPTIONS, type PageAnim } from "../../src/utils/pageAnim";
 import { BOOK_ID_PLACEHOLDER } from "../review/catalog";
 import type { BookRole } from "../support/library";
 import { THEME_KEYS, THEME_UNSET, appDefaultTheme, describeTheme, type DeclaredTheme } from "../support/theme";
@@ -91,7 +101,20 @@ export const EXTENSION_THEMES: readonly ReaderThemeKey[] = Object.freeze(
 /** RDF 15.6 的 Contrast_Extension_Scan 名称：`a11y-contrast-<视图>-<主题键>`。 */
 export type A11yContrastExtScanName = `a11y-contrast-${A11yContrastExtView}-${ReaderThemeKey}`;
 
-export type A11yScanName = A11yViewScanName | A11yContrastScanName | A11yContrastExtScanName;
+/**
+ * 翻页模式 15.5 的分页模式扫描所 seed 的翻页模式：覆盖（设计 §13.2"分页模式（覆盖）下的阅读页扫描"）。
+ * 四种分页族模式（覆盖、滑动、仿真、无动画）静止时的页面相同，动画只在翻页途中。
+ */
+export const A11Y_PAGED_ANIM: PageAnim = PAGE_ANIM.cover;
+
+/** 翻页模式 15.5 的分页模式扫描名称：`a11y-contrast-paged-<主题键>`。 */
+export type A11yContrastPagedScanName = `a11y-contrast-paged-${ReaderThemeKey}`;
+
+export type A11yScanName =
+  | A11yViewScanName
+  | A11yContrastScanName
+  | A11yContrastExtScanName
+  | A11yContrastPagedScanName;
 
 /** 一次 A11y_Scan 的定义（设计 Data Models 的 `A11yScanDef`，另加 `book` 与 `url` 两个进入方式字段）。 */
 export interface A11yScanDef {
@@ -103,6 +126,11 @@ export interface A11yScanDef {
   readonly rules: A11yRules;
   /** 所用的书（按用途）；书架首屏为 null。 */
   readonly book: BookRole | null;
+  /**
+   * 首次导航前 `seedPageMode` 写入的翻页模式（翻页模式 15.5 的 5 次为 `A11Y_PAGED_ANIM`）；null 为
+   * 不 seed，阅读器为默认的滚动模式（书架首屏与详情弹窗不涉及阅读器，也为 null）。
+   */
+  readonly pageAnim: PageAnim | null;
   /**
    * 首次导航的路径；`{id}`（`BOOK_ID_PLACEHOLDER`）处代入 `book` 的书 id（`resolveA11yUrl`），
    * 不做百分号编码（与 Review_Catalog 相同，`page.goto` 负责编码）。抽屉视图在此路径打开阅读器后
@@ -149,6 +177,7 @@ function viewScan(name: A11yViewScanName): A11yScanDef {
     rules: "wcag",
     book: view === "shelf" ? null : A11Y_BOOK_ROLE,
     url: VIEW_URLS[view],
+    pageAnim: null,
   });
 }
 
@@ -160,7 +189,17 @@ function contrastScan(theme: ReaderThemeKey): A11yScanDef {
     rules: COLOR_CONTRAST_RULE,
     book: A11Y_BOOK_ROLE,
     url: VIEW_URLS.reader,
+    pageAnim: null,
   });
+}
+
+/**
+ * 翻页模式 15.5 的一次分页模式扫描：同 15.2 的 `a11y-contrast-<theme>`（阅读器正文、只运行
+ * `color-contrast`、同一本书的同一章），另 seed 翻页模式 `A11Y_PAGED_ANIM`。
+ */
+function pagedContrastScan(theme: ReaderThemeKey): A11yScanDef {
+  const name: A11yContrastPagedScanName = `a11y-contrast-paged-${theme}`;
+  return Object.freeze({ ...contrastScan(theme), name, pageAnim: A11Y_PAGED_ANIM });
 }
 
 /** 15.1 的 6 个视图扫描，按 `A11Y_VIEW_SCAN_NAMES` 的顺序。 */
@@ -174,18 +213,27 @@ function contrastExtScan(view: A11yContrastExtView, theme: ReaderThemeKey): A11y
   const base = VIEW_SCANS.find((d) => d.view === view);
   if (base === undefined) throw new Error(`15.1 的视图扫描中没有 ${view} 视图`);
   const name: A11yContrastExtScanName = `a11y-contrast-${view}-${theme}`;
-  return Object.freeze({ name, view, theme, rules: COLOR_CONTRAST_RULE, book: base.book, url: base.url });
+  return Object.freeze({
+    name,
+    view,
+    theme,
+    rules: COLOR_CONTRAST_RULE,
+    book: base.book,
+    url: base.url,
+    pageAnim: base.pageAnim,
+  });
 }
 
 /**
- * 全部 31 次扫描，按 Run_Summary 节的顺序（15.4；RDF 设计第 14 节）：15.1 的 6 个视图扫描、15.2 的
- * 5 次阅读器正文对比度扫描、RDF 15.6 的 20 次 Contrast_Extension_Scan（按视图 × `EXTENSION_THEMES`）。
- * `a11y.spec.ts`（20.4）为每项建一个用例。
+ * 全部 36 次扫描，按 Run_Summary 节的顺序（15.4；RDF 设计第 14 节）：15.1 的 6 个视图扫描、15.2 的
+ * 5 次阅读器正文对比度扫描、RDF 15.6 的 20 次 Contrast_Extension_Scan（按视图 × `EXTENSION_THEMES`）、
+ * 翻页模式 15.5 的 5 次分页模式扫描（按 `THEME_KEYS`）。`a11y.spec.ts`（20.4）为每项建一个用例。
  */
 export const A11Y_SCANS: readonly A11yScanDef[] = Object.freeze([
   ...VIEW_SCANS,
   ...THEME_KEYS.map(contrastScan),
   ...A11Y_CONTRAST_EXT_VIEWS.flatMap((view) => EXTENSION_THEMES.map((theme) => contrastExtScan(view, theme))),
+  ...THEME_KEYS.map(pagedContrastScan),
 ]);
 
 /** 按名称取定义；名称不在 `A11Y_SCANS` 中时抛错。 */
@@ -209,22 +257,34 @@ export function a11yResultFile(name: string): string {
   return path.join(A11Y_DIR, `${name}.json`);
 }
 
+/** 翻页模式编号在节名中的写法：设置抽屉"翻页模式"选项组的按钮文字（如"覆盖"）。 */
+function pageAnimLabel(anim: PageAnim): string {
+  const option = PAGE_ANIM_OPTIONS.find((o) => o.value === anim);
+  if (option === undefined) throw new Error(`没有编号为 ${String(anim)} 的翻页模式`);
+  return option.label;
+}
+
 /**
- * Run_Summary 的节名（15.4）：视图与主题，对比度扫描另注明规则。例如
- * `阅读器正文 · 默认主题（未存储，实际 sepia）`、`阅读器正文 · dark（暗色夜间）· 仅 color-contrast`。
+ * Run_Summary 的节名（15.4）：视图与主题，对比度扫描另注明规则，seed 了翻页模式的在视图后注明。例如
+ * `阅读器正文 · 默认主题（未存储，实际 sepia）`、`阅读器正文 · dark（暗色夜间）· 仅 color-contrast`、
+ * `阅读器正文（翻页模式：覆盖）· dark（暗色夜间）· 仅 color-contrast`。
  */
-export function describeA11yScan(def: Pick<A11yScanDef, "view" | "theme" | "rules">): string {
-  const parts = [A11Y_VIEW_LABELS[def.view], describeTheme(def.theme)];
+export function describeA11yScan(def: Pick<A11yScanDef, "view" | "theme" | "rules" | "pageAnim">): string {
+  const view = A11Y_VIEW_LABELS[def.view];
+  const where = def.pageAnim === null ? view : `${view}（翻页模式：${pageAnimLabel(def.pageAnim)}）`;
+  const parts = [where, describeTheme(def.theme)];
   if (def.rules === COLOR_CONTRAST_RULE) parts.push(`仅 ${COLOR_CONTRAST_RULE}`);
   return parts.join(" · ");
 }
 
 /**
  * 扫描对应的需求条目：15.1 的视图扫描为 `15.1`，15.2 的阅读器正文对比度扫描为 `15.2`，
- * RDF 15.6 的 Contrast_Extension_Scan（阅读器正文以外视图上的对比度扫描）为 `RDF 15.6`。
+ * RDF 15.6 的 Contrast_Extension_Scan（阅读器正文以外视图上的对比度扫描）为 `RDF 15.6`，
+ * 分页模式扫描（seed 了翻页模式）为 `翻页模式 15.5`。
  */
-export function a11yClause(def: Pick<A11yScanDef, "view" | "rules">): string {
+export function a11yClause(def: Pick<A11yScanDef, "view" | "rules" | "pageAnim">): string {
   if (def.rules !== COLOR_CONTRAST_RULE) return "15.1";
+  if (def.pageAnim !== null) return "翻页模式 15.5";
   return def.view === "reader" ? "15.2" : "RDF 15.6";
 }
 
@@ -233,7 +293,7 @@ export function a11yClause(def: Pick<A11yScanDef, "view" | "rules">): string {
  * reporter（20.5）按附件里的扫描名归节；只有没附 `a11y-result` 的用例才按与本函数结果相等的标题
  * 找回，不解析标题。
  */
-export function a11yTestTitle(def: Pick<A11yScanDef, "name" | "view" | "theme" | "rules">): string {
+export function a11yTestTitle(def: Pick<A11yScanDef, "name" | "view" | "theme" | "rules" | "pageAnim">): string {
   return `${a11yClause(def)} ${def.name}：${describeA11yScan(def)}`;
 }
 

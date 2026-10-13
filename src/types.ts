@@ -7,6 +7,8 @@
  * 就是失去编译期共享类型（需求 A8），两边只能靠"一起改"维持一致。
  */
 
+import type { PageAnim } from "./utils/pageAnim";
+
 /**
  * `books.json` 中的单本条目（design §2.2）。
  *
@@ -145,4 +147,12 @@ export interface ReaderSettings {
    * 是恒等，仍保留作为淘汰计算的入口校验。设置 UI 由任务 50 负责。
    */
   cacheMaxBooks: number;
+  /**
+   * 翻页模式（Page_Mode，需求 1.1）：覆盖 0、滑动 1、仿真 2、滚动 3、无动画 4，编号与 Legado 一致。
+   *
+   * 默认 3（滚动，D5）。`getStoredSettings()` 读出时经 `utils/pageAnim.ts` 的
+   * `normalizePageAnim` 归一：缺失、非整数、越界一律取 3（需求 1.2），旧存储没有这个键，
+   * 老用户升级后仍是滚动阅读。
+   */
+  pageAnim: PageAnim;
 }

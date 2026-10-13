@@ -39,7 +39,9 @@
  *
  * 正文滚动容器是 `<main>`（reader-defect-fixes 需求 2.1、2.2）。应用把命中段落滚入视口时赋值
  * `<main>.scrollTop`。"滚动位置不变"类比较（9.3、9.11、RS-11）比较 `<main>` 的 `scrollTop`，比较前核对
- * 文档本身不可滚动（`expectDocumentNotScrollable`，需求 14.2）；9.11 的"滚到章中"同样只设 `<main>`。
+ * 文档本身不可滚动（`expectDocumentNotScrollable`，需求 14.2）；9.11 的"滚到章中"同样只设 `<main>`，且以
+ * 当前章区段为界（`readChapterScroll`）：默认的滚动模式下 `<main>` 里同时挂着前后几章（reader-page-turn-modes
+ * 需求 10.1、10.2），按整个容器取"可视高度"会滚进上方挂着的前一章。
  *
  * 历史：EV 验收时 `<main>` 随内容增高、实际滚动的是文档（Findings_Log F-002，已修复（reader-defect-fixes））：
  * 命中段落的滚入赋值无效，高亮落在视口之下。9.2 的边界框断言因此按 16.7 拆成单独的预期失败用例，"滚动位置
@@ -75,13 +77,14 @@ import {
   openReader,
   openSearchDrawer,
   openTocDrawer,
+  readChapterScroll,
   readMainScroll,
   readSearchResults,
   setMainScrollTop,
   waitFrames,
   type BookText,
   type BookUnderTest,
-  type MainScroll,
+  type ChapterScroll,
   type SearchResultSnapshot,
 } from "../../support/reader";
 import { step } from "../../support/step";
@@ -489,10 +492,14 @@ async function expectHighlightInView(page: Page): Promise<void> {
   );
 }
 
-/** 章中的滚动位置：可视高度与最大可滚距离一半中的较小者（不可滚动时为 0）。 */
-async function midScrollTop(reading: Promise<MainScroll>): Promise<number> {
-  const { clientHeight, scrollHeight } = await reading;
-  return Math.max(0, Math.min(clientHeight, Math.floor((scrollHeight - clientHeight) / 2)));
+/**
+ * 当前章章中的滚动位置（`scrollTop`）：本章章首之下、可视高度与本章最大可滚距离一半中的较小者处（本章
+ * 不可滚动时即章首）。滚动模式下 `<main>` 里挂着当前章前后的若干章（reader-page-turn-modes 需求 10.1、
+ * 10.2），`scrollTop = 0` 是窗口首章的顶边而不是当前章的章首，所以以当前章区段为界（`readChapterScroll`）。
+ */
+async function midScrollTop(reading: Promise<ChapterScroll>): Promise<number> {
+  const { chapterStart, chapterEnd, clientHeight } = await reading;
+  return chapterStart + Math.max(0, Math.min(clientHeight, Math.floor((chapterEnd - chapterStart) / 2)));
 }
 
 /** 正文滚动容器 `<main>` 的 `scrollTop`。 */
@@ -767,12 +774,13 @@ test.describe("9.11 无命中", () => {
     await openAt(page, bookLog, plan.book, chapter);
     await expectDocumentNotScrollable(page);
     const before = await step(
-      "把正文滚到章中：<main> 的 scrollTop 设为其可视高度与最大可滚距离一半中的较小者",
+      "把正文滚到本章章中：<main> 的 scrollTop 设为本章章首之下、可视高度与本章最大可滚距离一半中的较小者处",
       async () => {
-        await setMainScrollTop(page, await midScrollTop(readMainScroll(page)));
+        await setMainScrollTop(page, await midScrollTop(readChapterScroll(page)));
         await waitFrames(page);
         const position = await readPosition(page);
-        expect(position, "<main> 应已离开章首（命中章节的正文应可滚动）").toBeGreaterThan(0);
+        const { intoChapter } = await readChapterScroll(page);
+        expect(intoChapter, "<main> 应已离开本章章首（命中章节的正文应可滚动）").toBeGreaterThan(0);
         return position;
       },
     );
